@@ -1,0 +1,4 @@
+FROM LIB:c.o "openpcidump.o"
+TO "openpcidump"
+LIB lib:debug.lib LIB:sc.lib LIB:amiga.lib
+

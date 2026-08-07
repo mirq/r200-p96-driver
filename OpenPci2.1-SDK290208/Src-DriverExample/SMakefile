@@ -1,0 +1,2 @@
+all:
+		sc nostackcheck nosmallcode nosmalldata DriverExample.c link to DriverExample

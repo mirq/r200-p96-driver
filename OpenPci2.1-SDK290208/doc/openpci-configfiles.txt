@@ -1,0 +1,26 @@
+
+OpenPCI config file(s) rules
+-----------------------------------------------------------
+All OpenPCI config files are in: ENV(ARC):OpenPCI/
+
+ The syntax is:  <yourdrivername>_<card id>.config
+
+
+  Example: If you used the yourdrivername.device the config 
+  file for unit 0 would be
+
+   ENV(ARC):OpenPCI/yourdrivername_0.config
+
+  The next card (unit 1) would be 
+ 
+   ENV(ARC):OpenPCI/yourdrivername_1.config
+
+
+ NOTE: The current valid driver range is 0 thru 5
+
+
+Getting the driver configuration
+-----------------------------------------------------------
+To get the driver configuration value you can use the
+dos.library/GetVar() function.
+

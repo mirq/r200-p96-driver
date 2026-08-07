@@ -1,0 +1,2 @@
+all:
+		sc nostackcheck nosmallcode nosmalldata openpcidump.c link to openpcidump

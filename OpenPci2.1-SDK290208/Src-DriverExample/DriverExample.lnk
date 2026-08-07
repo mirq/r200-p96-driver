@@ -1,0 +1,4 @@
+FROM LIB:c.o "DriverExample.o"
+TO "DriverExample"
+LIB lib:debug.lib LIB:sc.lib LIB:amiga.lib
+

@@ -1,0 +1,51 @@
+==id $Id: openpci_lib.sfd 2.1 2005/28/03 11:16:00 titan Exp $
+==base _OpenPciBase
+==bias 30
+==copyright Copyright © 2005 Benjamin Vernoux
+==public
+==version 2
+==include <exec/types.h>
+==include <exec/interrupts.h>
+==include <utility/tagitem.h>
+==include <devices/timer.h>
+*
+UWORD pci_bus() ()
+*
+UBYTE pci_inb(ULONG address) (a0)
+void pci_outb(UBYTE value, ULONG address) (d0,a0)
+*
+UWORD pci_inw(ULONG address) (a0)
+void pci_outw(UWORD value, ULONG address) (d0,a0)
+*
+ULONG pci_inl(ULONG address) (a0)
+void pci_outl(ULONG value, ULONG address) (d0,a0)
+*
+void pci_to_hostcpy(void *pcimemsrc, void *memdest, ULONG packetsize) (a0,a1,d0)
+void host_to_pcicpy(void *memsrc, void *pcimemdest, ULONG packetsize) (a0,a1,d0)
+void pci_to_pcicpy(void *pcimemsrc, void *pcimemdest, ULONG packetsize) (a0,a1,d0)
+*
+struct  pci_dev *pci_find_device(UWORD vendor, UWORD device, struct pci_dev *pcidev) (d0,d1,a0)
+struct  pci_dev *pci_find_class(ULONG pciclass, struct pci_dev *pcidev) (d0,a0)
+struct  pci_dev *pci_find_slot(UBYTE bus, ULONG devfn) (d0,d1)
+*
+UBYTE pci_read_config_byte(UBYTE registernum, struct pci_dev *pcidev) (d0,a0)
+UWORD pci_read_config_word(UBYTE registernum, struct pci_dev *pcidev) (d0,a0)
+ULONG pci_read_config_long(UBYTE registernum, struct pci_dev *pcidev) (d0,a0)
+void pci_write_config_byte(UBYTE registernum, UBYTE val, struct pci_dev *pcidev) (d0,d1,a0)
+void pci_write_config_word(UBYTE registernum, UWORD val, struct pci_dev *pcidev) (d0,d1,a0)
+void pci_write_config_long(UBYTE registernum, ULONG val, struct pci_dev *pcidev) (d0,d1,a0)
+*
+BOOL pci_set_master(struct  pci_dev *pcidev) (a0)
+*
+BOOL pci_add_intserver(struct Interrupt *PciInterrupt, struct pci_dev *pcidev) (a0,a1)
+void pci_rem_intserver(struct Interrupt *PciInterrupt, struct pci_dev *pcidev) (a0,a1)
+*
+APTR pci_allocdma_mem(ULONG size, ULONG flags) (d0,d1)
+void pci_freedma_mem(APTR buffer, ULONG size) (a0,d0)
+*
+APTR pci_logic_to_physic_addr(APTR PciLogicalAddr, struct pci_dev *pcidev) (a0,a1)
+APTR pci_physic_to_logic_addr(APTR PciPhysicalAddr, struct pci_dev *pcidev) (a0,a1)
+*
+BOOL pci_obtain_card(struct pci_dev *pcidev) (a0)
+void pci_release_card(struct pci_dev *pcidev) (a0)
+==end
