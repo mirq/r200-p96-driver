@@ -1,0 +1,66 @@
+name: Radeon9200 CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # stefanreinauer/amiga-gcc provides m68k-amigaos-gcc at /opt/amiga/bin
+    # Pinned explicitly — also available: gcc-v6.5.0b, gcc-v15.2, gcc-v16.1
+    container: stefanreinauer/amiga-gcc:gcc-v13.4
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark git directory as safe
+        run: git config --global --add safe.directory '*'
+
+      - name: Verify toolchain
+        run: |
+          m68k-amigaos-gcc --version | head -1
+          m68k-amigaos-strip --version | head -1
+
+      - name: Build release driver
+        run: make clean && make
+        env:
+          CROSS: m68k-amigaos-
+
+      - name: Stage release artifact
+        run: |
+          mkdir -p dist
+          cp Radeon9200.card dist/Radeon9200.card
+
+      - name: Build debug driver
+        run: make clean && make DEBUG=1
+        env:
+          CROSS: m68k-amigaos-
+
+      - name: Stage debug artifact
+        run: cp Radeon9200.card dist/Radeon9200-debug.card
+
+      - name: Build tools
+        run: make clean && make tools
+        env:
+          CROSS: m68k-amigaos-
+
+      - name: Stage tools
+        run: cp build/p96screen dist/p96screen
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Archive CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: radeon9200-build-artifacts
+          path: |
+            dist/Radeon9200.card
+            dist/Radeon9200-debug.card
+            dist/p96screen
+          if-no-files-found: error
