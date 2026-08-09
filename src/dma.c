@@ -306,6 +306,26 @@ BOOL RadeonReserveDmaMemory(struct BoardInfo *bi, ULONG requestedSize)
     return TRUE;
 }
 
+APTR RadeonAllocateDmaMemory(struct BoardInfo *bi, ULONG requestedSize)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!bi || !data || !data->DmaArena || !bi->ExecBase)
+        return NULL;
+    return ArenaAlloc(data->DmaArena, requestedSize, bi->ExecBase);
+}
+
+BOOL RadeonFreeDmaMemory(struct BoardInfo *bi, APTR memory,
+                         ULONG requestedSize)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!bi || !data || !data->DmaArena || !bi->ExecBase)
+        return FALSE;
+    return ArenaFree(data->DmaArena, memory, requestedSize,
+                     bi->ExecBase);
+}
+
 void RadeonDestroyDmaMemory(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);

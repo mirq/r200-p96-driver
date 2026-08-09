@@ -15,6 +15,10 @@ SOURCES := \
 	src/library.c \
 	src/radeon9200.c \
 	src/dma.c \
+	src/r200_microcode.c \
+	src/radeon_cp.c \
+	src/radeon_debug.c \
+	src/radeon_cursor.c \
 	src/radeon_accel.c \
 	src/radeon_bios.c \
 	src/radeon_mode.c

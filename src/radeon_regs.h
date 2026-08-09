@@ -16,9 +16,13 @@
 #define RADEON_CLOCK_CNTL_DATA      0x000cUL
 #define RADEON_BIOS_0_SCRATCH       0x0010UL
 #define RADEON_BUS_CNTL             0x0030UL
+#define RADEON_BUS_MASTER_DIS       (1UL << 6)
 #define RADEON_BUS_BIOS_DIS_ROM     (1UL << 12)
 #define RADEON_GEN_INT_CNTL         0x0040UL
 #define RADEON_CRTC_GEN_CNTL        0x0050UL
+#define RADEON_CRTC_CUR_EN          (1UL << 16)
+#define RADEON_CRTC_CUR_MODE_MASK   (7UL << 20)
+#define RADEON_CRTC_CUR_MODE_24BPP  (2UL << 20)
 #define RADEON_CRTC_DBL_SCAN_EN     (1UL << 0)
 #define RADEON_CRTC_INTERLACE_EN    (1UL << 1)
 #define RADEON_CRTC_PIX_WIDTH_SHIFT 8
@@ -64,6 +68,7 @@
 #define RADEON_CONFIG_APER_SIZE     0x0108UL
 #define RADEON_HOST_PATH_CNTL       0x0130UL
 #define RADEON_HDP_SOFT_RESET       (1UL << 26)
+#define RADEON_HDP_READ_BUFFER_INVALIDATE (1UL << 27)
 #define RADEON_MC_FB_LOCATION       0x0148UL
 #define RADEON_MC_AGP_LOCATION      0x014cUL
 #define RADEON_MEM_STR_CNTL         0x0150UL
@@ -126,6 +131,7 @@
 /* Direct-MMIO 2D engine registers. */
 #define RADEON_RBBM_STATUS                  0x0e40UL
 #define RADEON_RBBM_FIFOCNT_MASK            0x0000007fUL
+#define RADEON_CP_CMDSTRM_BUSY               (1UL << 16)
 #define RADEON_RBBM_ACTIVE                  (1UL << 31)
 #define RADEON_SRC_PITCH_OFFSET             0x1428UL
 #define RADEON_DST_PITCH_OFFSET             0x142cUL
@@ -157,8 +163,49 @@
 #define RADEON_WAIT_UNTIL                   0x1720UL
 #define RADEON_WAIT_DMA_GUI_IDLE            (1UL << 9)
 #define RADEON_WAIT_2D_IDLECLEAN            (1UL << 16)
+#define RADEON_WAIT_HOST_IDLECLEAN          (1UL << 18)
+#define RADEON_ISYNC_CNTL                   0x1724UL
+#define RADEON_ISYNC_ANY2D_IDLE3D           (1UL << 0)
+#define RADEON_ISYNC_ANY3D_IDLE2D           (1UL << 1)
+#define RADEON_ISYNC_WAIT_IDLEGUI           (1UL << 4)
+#define RADEON_ISYNC_CPSCRATCH_IDLEGUI      (1UL << 5)
+#define RADEON_SCRATCH_REG0                 0x15e0UL
+#define RADEON_SCRATCH_REG1                 0x15e4UL
+
+#define RADEON_CUR_OFFSET                   0x0260UL
+#define RADEON_CUR_HORZ_VERT_POSN           0x0264UL
+#define RADEON_CUR_HORZ_VERT_OFF            0x0268UL
+#define RADEON_CUR_CLR0                     0x026cUL
+#define RADEON_CUR_CLR1                     0x0270UL
+#define RADEON_CUR_LOCK                     (1UL << 31)
 #define RADEON_RB3D_CNTL                    0x1c3cUL
 #define RADEON_RB2D_DSTCACHE_MODE           0x3428UL
+
+/* R200 command processor registers and packet encodings. */
+#define RADEON_CP_RB_BASE                   0x0700UL
+#define RADEON_CP_RB_CNTL                   0x0704UL
+#define RADEON_RB_NO_UPDATE                 (1UL << 27)
+#define RADEON_RB_RPTR_WR_ENA               (1UL << 31)
+#define RADEON_CP_RB_RPTR_ADDR              0x070cUL
+#define RADEON_CP_RB_RPTR                   0x0710UL
+#define RADEON_CP_RB_WPTR                   0x0714UL
+#define RADEON_CP_RB_WPTR_DELAY             0x0718UL
+#define RADEON_CP_RB_RPTR_WR                0x071cUL
+#define RADEON_CP_CSQ_CNTL                  0x0740UL
+#define RADEON_CP_CSQ_MODE                  0x0744UL
+#define RADEON_CSQ_PRIBM_INDBM              (4UL << 28)
+#define RADEON_SCRATCH_UMSK                 0x0770UL
+#define RADEON_SCRATCH_ADDR                 0x0774UL
+#define RADEON_CP_ME_RAM_ADDR               0x07d4UL
+#define RADEON_CP_ME_RAM_DATAH              0x07dcUL
+#define RADEON_CP_ME_RAM_DATAL              0x07e0UL
+
+#define RADEON_CP_PACKET0(reg, count) \
+    (((ULONG)(count) << 16) | ((ULONG)(reg) >> 2))
+#define RADEON_CP_PACKET2                   0x80000000UL
+#define RADEON_CP_PACKET3(packet, count) \
+    (0xc0000000UL | (ULONG)(packet) | ((ULONG)(count) << 16))
+#define RADEON_CNTL_PAINT_MULTI             0x00009a00UL
 
 #define RADEON_GMC_SRC_PITCH_OFFSET_CNTL    (1UL << 0)
 #define RADEON_GMC_DST_PITCH_OFFSET_CNTL    (1UL << 1)

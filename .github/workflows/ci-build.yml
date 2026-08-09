@@ -35,6 +35,7 @@ jobs:
         run: |
           mkdir -p dist
           cp Radeon9200.card dist/Radeon9200.card
+          cp R200_MICROCODE_LICENSE.txt dist/R200_MICROCODE_LICENSE.txt
 
       - name: Build debug driver
         run: make clean && make DEBUG=1
@@ -63,4 +64,5 @@ jobs:
             dist/Radeon9200.card
             dist/Radeon9200-debug.card
             dist/p96screen
+            dist/R200_MICROCODE_LICENSE.txt
           if-no-files-found: error

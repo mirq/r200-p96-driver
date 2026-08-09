@@ -17,7 +17,8 @@ DAC.
   cannot be expressed safely in C.
 - Initial PCI IDs are ATI `1002:5960`, `1002:5961`, and `1002:5964`.
 - Initial display output is VGA only. DVI, TMDS, CRTC1, TV output, overlays,
-  interrupts, and hardware cursors are later milestones.
+  and interrupts are later milestones. The current hardware-cursor subset is a
+  64x64 ARGB RV280 cursor backed by the private DMA arena.
 - Do not inspect or copy code from
   `/home/mirek/warp3d-r9200/Prometheus/PrometheusCard`; it is not a valid
   reference for this driver.
@@ -65,10 +66,11 @@ OpenPCI provider. Publication and real inter-card transfers remain unresolved.
 
 ## Acceleration Policy
 
-The RV280 direct-MMIO 2D engine does not use a CP ring or the DMA arena. Every
-FIFO, idle, and cache poll is bounded. One timeout recovery reset is allowed;
-successful recovery permanently routes the session to software, and failed
-recovery blocks further VRAM rendering through the wrappers.
+The CP ring may remain initialized for future 3D work, but all current
+Picasso96 2D operations use direct MMIO. Every FIFO, idle, and cache poll is
+bounded. One timeout recovery reset is allowed; successful recovery permanently
+routes the session to software, and failed recovery blocks further VRAM
+rendering through the wrappers.
 
 The validated hardware subset is `FillRect` in CLUT8/RGB565PC/BGRA32 (including
 CLUT8 partial masks), same-`RenderInfo` `BlitRect` in all three formats, and
@@ -110,6 +112,8 @@ bus access to OpenPCI 2.1.
    inter-card DMA behavior if a provider path is deliberately added.
 8. Completed first 2D subset: fills and overlap-safe same-surface copies in all
    advertised formats. Additional operations remain separate milestones.
+9. CP initialization retained for future 3D while Picasso96 2D uses MMIO, plus
+   a private-VRAM RV280 hardware cursor with per-board state.
 
 ## Build And Verification
 

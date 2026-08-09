@@ -36,7 +36,7 @@ and opens Picasso96-managed screens. It implements:
   source row repeats the same eight horizontal pixels.
 
 `InitCard` returns success only after hardware initialization and startup
-screen setup have completed. Version 0.9 is validated from a cold boot on a
+screen setup have completed. Version 0.10 is validated from a cold boot on a
 real 68060 Amiga with a Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB
 COMBIOS board, and `rtg.library` 43.538. The tested configuration provides a
 64 MiB linear aperture and boots a `1024x768x8` Workbench on the Radeon. With
@@ -112,6 +112,38 @@ The monitor icon must use `BOARDTYPE=Radeon9200`. The corresponding entry in
 `Radeon9200`. Load `DEVS:Monitors/Radeon` before `IPrefs` if the system startup
 does not run `LoadMonDrvs`.
 
+### Monitor Icon ToolTypes
+
+`InitCard` receives its ToolTypes from the active monitor icon
+`DEVS:Monitors/Radeon.info`, not from an icon beside
+`LIBS:Picasso96/Radeon9200.card`. The `.info` file is a binary Amiga
+`DiskObject`; do not create or edit it as a text file.
+
+The validated ToolTypes are:
+
+```text
+BOARDTYPE=Radeon9200
+OUTPUT=VGA
+DMASIZE=2M
+CP=YES
+HWSPRITE=YES
+```
+
+`BOARDTYPE` selects this card driver. `OUTPUT=VGA` makes the supported output
+explicit, although VGA is also the default. The CP ring is 1 MiB, so `DMASIZE`
+must reserve at least 1 MiB; 2 MiB is the validated setting. `CP=YES` opts into
+CP initialization so the ring remains available for future 3D work. Picasso96
+2D fill, pattern, and copy callbacks use direct MMIO even while the CP is
+active. `HWSPRITE=YES` enables the RV280 64x64 ARGB hardware cursor; allocation
+or initialization failure leaves Picasso96's software cursor active.
+
+To create the icon, copy a valid Picasso96 monitor icon to
+`DEVS:Monitors/Radeon.info`, then use Workbench **Information** to preserve its
+existing Picasso96 options and add the five active entries above. Inactive
+Workbench ToolTypes are parenthesized and do not reach the driver as active
+options. Back up the previous icon, save the new one, and cold-reboot so
+Picasso96 calls `InitCard` with the new ToolType array.
+
 Back up an existing settings file before editing it. The validated target has
 `640x480` modes for depths 8, 16, and 32; the 32-bit mode uses the standard
 25.175 MHz `640x480@60` timing.
@@ -142,6 +174,10 @@ way to disable the driver on the next boot. Connect a VGA monitor that accepts
 `640x480@60`. `OUTPUT=VGA` is the only accepted output ToolType; omitting it
 also selects VGA.
 
+The validated Amiga needs approximately 90 seconds after a reboot before the
+AmigaBridge TCP service is reachable. Wait the full interval before treating a
+failed reconnect as a boot failure.
+
 Record the bridge model, CPU, exact PCI device ID, VRAM size, ROM type, and
 whether the card was cold or already posted. A successful first test should
 show eight equal-width vertical color bars. A debug build reports posted/cold
@@ -155,7 +191,8 @@ initialization stage.
 - The only direct-color layouts are `RGBFB_R5G6B5PC` and
   `RGBFB_B8G8R8A8`. There is no 15-bit, packed 24-bit, native-endian alias, or
   alternate channel ordering yet.
-- No DVI, TMDS, TV output, CRTC1, interrupts, cursor, or overlay.
+- No DVI, TMDS, TV output, CRTC1, interrupts, or overlay. The hardware cursor
+  is limited to one 64x64 ARGB image on the single supported board instance.
 - Pattern acceleration is limited to JAM2, heights up to eight rows, and
   16-pixel source rows whose two bytes are identical. Other patterns use P96
   software.
@@ -174,3 +211,9 @@ The private `DMASIZE` reservation is not an OpenPCI 2.1 `MEM_PCI` provider.
 OpenPCI publication, address translation for a cooperating client, and real
 inter-card DMA transfers remain separate, unimplemented work. Newer openpci
 memory-provider APIs are deliberately out of scope.
+
+## Licensing
+
+The R200 command-processor microcode is distributed under the notice in
+[`R200_MICROCODE_LICENSE.txt`](R200_MICROCODE_LICENSE.txt). Release archives
+and GitHub release assets include that notice beside the driver binaries.

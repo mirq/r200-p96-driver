@@ -13,6 +13,8 @@
 #define RADEON_DEVICE_RV280_5964 0x5964U
 
 struct RadeonDmaArena;
+struct RadeonCpState;
+struct RadeonCursorState;
 
 struct RadeonBoardData {
     struct pci_dev *Device;
@@ -22,32 +24,37 @@ struct RadeonBoardData {
     struct ModeInfo *StartupMode;
     UWORD DeviceId;
     UWORD SavedCommand;
-    UBYTE Obtained;
-    UBYTE CommandSaved;
-    UBYTE Initialized;
-    UBYTE ModeValid;
+    ULONG Obtained : 1;
+    ULONG CommandSaved : 1;
+    ULONG Initialized : 1;
+    ULONG ModeValid : 1;
+    ULONG DisplayEnabled : 1;
+    ULONG AccelRecoveryTried : 1;
+    ULONG AccelPending : 2;
+    ULONG ReservedFlags : 24;
     ULONG RefClockKHz;
     ULONG MinPllKHz;
     ULONG MaxPllKHz;
     ULONG MemoryClockHz;
-    ULONG CurrentPitch;
+    struct RadeonCpState *CpState;
     UWORD RefDivider;
     UWORD FeedbackDivider;
     UBYTE PostDividerCode;
     UBYTE PostDivider;
-    UBYTE DisplayEnabled;
     UBYTE DpmsLevel;
-    ULONG FramebufferGpuBase;
     UBYTE AccelState;
-    UBYTE AccelPending;
-    UBYTE AccelRecoveryTried;
-    UBYTE AccelTimeouts;
+    ULONG FramebufferGpuBase;
+    struct RadeonCursorState *CursorState;
 };
 
 #define RADEON_ACCEL_OFF      0U
 #define RADEON_ACCEL_READY    1U
 #define RADEON_ACCEL_FALLBACK 2U
 #define RADEON_ACCEL_UNSAFE   3U
+
+#define RADEON_PENDING_NONE 0U
+#define RADEON_PENDING_MMIO 1U
+#define RADEON_PENDING_CP   2U
 
 struct RadeonCardBase {
     struct CardBase Card;
@@ -77,7 +84,7 @@ BOOL RadeonMaskPll(struct BoardInfo *bi, UBYTE index, ULONG andMask,
 void RadeonDelayUs(ULONG microseconds);
 
 BOOL RadeonInitializeHardware(struct BoardInfo *bi);
-BOOL RadeonInitializeAcceleration(struct BoardInfo *bi);
+BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp);
 void RadeonShutdownAcceleration(struct BoardInfo *bi);
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi));
 void RadeonFillRect(__REGA0(struct BoardInfo *bi),
@@ -107,10 +114,36 @@ void RadeonBlitRectNoMaskComplete(
     __REGD2(WORD dstX), __REGD3(WORD dstY),
     __REGD4(WORD width), __REGD5(WORD height),
     __REGD6(UBYTE opcode), __REGD7(RGBFTYPE format));
-void RadeonInstallCallbacks(struct BoardInfo *bi);
+void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite);
+BOOL RadeonInitializeCursor(struct BoardInfo *bi);
+void RadeonShutdownCursor(struct BoardInfo *bi);
+BOOL RadeonSetSprite(__REGA0(struct BoardInfo *bi),
+                     __REGD0(BOOL active),
+                     __REGD7(RGBFTYPE format));
+void RadeonSetSpritePosition(__REGA0(struct BoardInfo *bi),
+                             __REGD0(WORD x), __REGD1(WORD y),
+                             __REGD7(RGBFTYPE format));
+void RadeonSetSpriteImage(__REGA0(struct BoardInfo *bi),
+                          __REGD7(RGBFTYPE format));
+void RadeonSetSpriteColor(__REGA0(struct BoardInfo *bi),
+                          __REGD0(UBYTE index),
+                          __REGD1(UBYTE red),
+                          __REGD2(UBYTE green),
+                          __REGD3(UBYTE blue),
+                          __REGD7(RGBFTYPE format));
 BOOL RadeonShowStartupScreen(struct BoardInfo *bi);
 BOOL RadeonReserveDmaMemory(struct BoardInfo *bi, ULONG requestedSize);
+APTR RadeonAllocateDmaMemory(struct BoardInfo *bi, ULONG requestedSize);
+BOOL RadeonFreeDmaMemory(struct BoardInfo *bi, APTR memory,
+                         ULONG requestedSize);
 void RadeonDestroyDmaMemory(struct BoardInfo *bi);
+BOOL RadeonCpInitialize(struct BoardInfo *bi);
+void RadeonCpShutdown(struct BoardInfo *bi);
+void RadeonCpAbort(struct BoardInfo *bi);
+BOOL RadeonCpIsReady(struct BoardInfo *bi);
+BOOL RadeonCpSubmit(struct BoardInfo *bi, const ULONG *commands,
+                    ULONG commandCount);
+BOOL RadeonCpWait(struct BoardInfo *bi);
 
 #ifdef DEBUG
 #include <clib/debug_protos.h>

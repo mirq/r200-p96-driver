@@ -7,9 +7,11 @@
 #include <proto/exec.h>
 
 #include "radeon9200.h"
+#include "radeon_debug.h"
 #include "radeon_regs.h"
 
 #define ACCEL_TIMEOUT_POLLS 100000UL
+#define ACCEL_SPIN_POLLS    256UL
 #define ACCEL_MAX_PITCH     16320UL
 #define ACCEL_MAX_COORD     8191UL
 
@@ -43,7 +45,8 @@ static BOOL WaitFifo(struct BoardInfo *bi, ULONG entries)
         if ((RadeonRead32(bi, RADEON_RBBM_STATUS) &
              RADEON_RBBM_FIFOCNT_MASK) >= entries)
             return TRUE;
-        RadeonDelayUs(1);
+        if (count >= ACCEL_SPIN_POLLS)
+            RadeonDelayUs(1);
     }
     return FALSE;
 }
@@ -58,19 +61,27 @@ static BOOL WaitIdleAndFlush(struct BoardInfo *bi)
         if (!(RadeonRead32(bi, RADEON_RBBM_STATUS) &
               RADEON_RBBM_ACTIVE))
             break;
-        RadeonDelayUs(1);
+        if (count >= ACCEL_SPIN_POLLS)
+            RadeonDelayUs(1);
     }
     if (count == ACCEL_TIMEOUT_POLLS ||
         !RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                       RADEON_RB2D_DC_FLUSH_ALL) ||
-        !WaitFifo(bi, 64))
+                       RADEON_RB2D_DC_FLUSH_ALL))
         return FALSE;
 
     for (count = 0; count < ACCEL_TIMEOUT_POLLS; ++count) {
         if (!(RadeonRead32(bi, RADEON_DSTCACHE_CTLSTAT) &
-              RADEON_RB2D_DC_BUSY))
+              RADEON_RB2D_DC_BUSY)) {
+            if (!RadeonWrite32(
+                    bi, RADEON_HOST_PATH_CNTL,
+                    RADEON_HDP_READ_BUFFER_INVALIDATE) ||
+                !RadeonWrite32(bi, RADEON_HOST_PATH_CNTL, 0))
+                return FALSE;
+            (void)RadeonRead32(bi, RADEON_HOST_PATH_CNTL);
             return TRUE;
-        RadeonDelayUs(1);
+        }
+        if (count >= ACCEL_SPIN_POLLS)
+            RadeonDelayUs(1);
     }
     return FALSE;
 }
@@ -108,7 +119,9 @@ static BOOL ResetEngine(struct BoardInfo *bi)
 
 static BOOL RestoreEngineState(struct BoardInfo *bi)
 {
-    return RadeonWrite32(bi, RADEON_RB3D_CNTL, 0) &&
+    /* All later HDP invalidates restore this driver-owned baseline. */
+    return RadeonWrite32(bi, RADEON_HOST_PATH_CNTL, 0) &&
+           RadeonWrite32(bi, RADEON_RB3D_CNTL, 0) &&
            RadeonWrite32(bi, RADEON_RB2D_DSTCACHE_MODE, 0) &&
            RadeonWrite32(bi, RADEON_DP_DATATYPE,
                          RADEON_HOST_BIG_ENDIAN_EN) &&
@@ -138,8 +151,8 @@ static BOOL RecoverEngine(struct BoardInfo *bi)
     if (!data || data->AccelRecoveryTried)
         return FALSE;
     data->AccelRecoveryTried = TRUE;
-    ++data->AccelTimeouts;
-    data->AccelPending = FALSE;
+    data->AccelPending = RADEON_PENDING_NONE;
+    RadeonCpAbort(bi);
 
     if (!ResetEngine(bi) || !RestoreEngineState(bi) ||
         !WaitIdleAndFlush(bi)) {
@@ -159,8 +172,10 @@ static BOOL SynchronizeEngine(struct BoardInfo *bi)
 
     if (!data || !data->AccelPending)
         return !data || data->AccelState != RADEON_ACCEL_UNSAFE;
-    if (WaitIdleAndFlush(bi)) {
-        data->AccelPending = FALSE;
+    if ((data->AccelPending == RADEON_PENDING_CP && RadeonCpWait(bi)) ||
+        (data->AccelPending == RADEON_PENDING_MMIO &&
+         WaitIdleAndFlush(bi))) {
+        data->AccelPending = RADEON_PENDING_NONE;
         return TRUE;
     }
     return RecoverEngine(bi);
@@ -340,9 +355,8 @@ static BOOL SubmitFill(struct BoardInfo *bi,
                                                    0xffffffffUL;
     ULONG master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
                    RADEON_GMC_BRUSH_SOLID_COLOR | datatype |
-                   RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
-                   RADEON_GMC_CLR_CMP_CNTL_DIS;
-
+                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
+                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     (void)bytesPerPixel;
     pen = HardwarePen(pen, format);
     x = (WORD)(x + surface->XBias);
@@ -388,7 +402,6 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
                     (destinationX & 7UL)) & 7UL;
     ULONG phaseY = ((pattern->YOffset & 7UL) + 8UL -
                     (destinationY & 7UL)) & 7UL;
-
     (void)bytesPerPixel;
     return WaitFifo(bi, 13) &&
            RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
@@ -436,7 +449,6 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                    RADEON_DP_SRC_SOURCE_MEMORY |
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     ULONG direction = 0;
-
     (void)bytesPerPixel;
     srcX = (WORD)(srcX + source->XBias);
     dstX = (WORD)(dstX + destination->XBias);
@@ -477,7 +489,7 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                              (UWORD)width);
 }
 
-BOOL RadeonInitializeAcceleration(struct BoardInfo *bi)
+BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     ULONG location;
@@ -485,9 +497,8 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi)
     if (!data || !bi->MemoryBase || !bi->MemoryIOBase)
         return FALSE;
     data->AccelState = RADEON_ACCEL_OFF;
-    data->AccelPending = FALSE;
+    data->AccelPending = RADEON_PENDING_NONE;
     data->AccelRecoveryTried = FALSE;
-    data->AccelTimeouts = 0;
 
     location = (RadeonRead32(bi, RADEON_MC_FB_LOCATION) & 0xffffUL) << 16;
     RLOG("Radeon9200: 2D init fb=%lx mc=%lx status=%lx\n",
@@ -500,8 +511,11 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi)
     }
 
     data->AccelState = RADEON_ACCEL_READY;
-    RLOG("Radeon9200: direct-MMIO 2D engine ready, status=%lx\n",
-         RadeonRead32(bi, RADEON_RBBM_STATUS));
+    if (!enableCp || !RadeonCpInitialize(bi))
+        RLOG("Radeon9200: direct-MMIO 2D engine ready, status=%lx\n",
+              RadeonRead32(bi, RADEON_RBBM_STATUS));
+    else
+        RLOG("Radeon9200: CP ready; Picasso96 2D uses direct MMIO\n");
     return TRUE;
 }
 
@@ -513,9 +527,10 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
     if (!SysBase || !data)
         return;
     ObtainSemaphore(&bi->BoardLock);
-    if (data->AccelPending && !WaitIdleAndFlush(bi))
-        (void)ResetEngine(bi);
-    data->AccelPending = FALSE;
+    if (data->AccelPending)
+        (void)SynchronizeEngine(bi);
+    RadeonCpShutdown(bi);
+    data->AccelPending = RADEON_PENDING_NONE;
     data->AccelState = RADEON_ACCEL_OFF;
     ReleaseSemaphore(&bi->BoardLock);
 }
@@ -523,11 +538,14 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi))
 {
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    RDEBUG_SAMPLE
 
     if (!SysBase)
         return;
     ObtainSemaphore(&bi->BoardLock);
+    RDEBUG_BEGIN();
     (void)SynchronizeEngine(bi);
+    RDEBUG_END_DRAIN();
     ReleaseSemaphore(&bi->BoardLock);
 }
 
@@ -543,6 +561,8 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
     struct AccelSurface surface;
     enum SurfaceResult result;
     BOOL software = FALSE;
+    RDEBUG_SAMPLE
+    RDEBUG_SAMPLE_OUTER
 
     if (!SysBase || !data)
         return;
@@ -550,6 +570,7 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                              format, &surface);
     if (result == SURFACE_REJECT)
         return;
+    RDEBUG_BEGIN_OUTER();
 
     ObtainSemaphore(&bi->BoardLock);
     if (result == SURFACE_HARDWARE &&
@@ -565,11 +586,15 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
             FillLogged = TRUE;
         }
 #endif
+        RDEBUG_BEGIN();
         if (SubmitFill(bi, &surface, x, y, width, height,
-                       pen, mask, format))
-            data->AccelPending = TRUE;
-        else
+                       pen, mask, format)) {
+            data->AccelPending = RADEON_PENDING_MMIO;
+            RDEBUG_MARK_HARDWARE();
+        } else {
             software = RecoverEngine(bi);
+        }
+        RDEBUG_END_FILL();
     } else {
         software = SynchronizeEngine(bi) &&
                    data->AccelState != RADEON_ACCEL_UNSAFE;
@@ -580,6 +605,7 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
         bi->FillRectDefault != RadeonFillRect)
         bi->FillRectDefault(bi, render, x, y, width, height,
                             pen, mask, format);
+    RDEBUG_END_CALL();
 }
 
 void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
@@ -613,7 +639,7 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
         data->AccelState == RADEON_ACCEL_READY) {
         if (SubmitPattern(bi, &surface, pattern, x, y, width, height,
                           mask, format, patternData0, patternData1)) {
-            data->AccelPending = TRUE;
+            data->AccelPending = RADEON_PENDING_MMIO;
 #ifdef DEBUG
             RLOG("Radeon9200: HW BlitPattern mem=%lx pitchoff=%lx "
                  "xy=%ld,%ld size=%ldx%ld fmt=%ld mask=%lx "
@@ -684,7 +710,7 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
         if (SubmitCopy(bi, &source, &destination,
                        srcX, srcY, dstX, dstY,
                        width, height, mask, format, TRUE))
-            data->AccelPending = TRUE;
+            data->AccelPending = RADEON_PENDING_MMIO;
         else
             software = RecoverEngine(bi);
     } else {
@@ -755,7 +781,7 @@ void RadeonBlitRectNoMaskComplete(
         if (SubmitCopy(bi, &source, &destination,
                        srcX, srcY, dstX, dstY,
                        width, height, 0xffU, format, FALSE))
-            data->AccelPending = TRUE;
+            data->AccelPending = RADEON_PENDING_MMIO;
         else
             software = RecoverEngine(bi);
     } else {

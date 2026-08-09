@@ -4,6 +4,7 @@
 #include <proto/openpci.h>
 
 #include "radeon9200.h"
+#include "radeon_debug.h"
 #include "radeon_regs.h"
 
 static const char RadeonBoardName[] = "Radeon9200";
@@ -13,7 +14,8 @@ struct RadeonOptions {
     UBYTE VgaOutput;
     UBYTE DmaSpecified;
     UBYTE DmaValid;
-    UBYTE Reserved;
+    UBYTE CpEnabled;
+    UBYTE HwSpriteEnabled;
 };
 
 static void ClearBoardData(struct RadeonBoardData *data)
@@ -135,7 +137,8 @@ static void ParseOptions(char **toolTypes, struct RadeonOptions *options)
     options->VgaOutput = TRUE;
     options->DmaSpecified = FALSE;
     options->DmaValid = FALSE;
-    options->Reserved = 0;
+    options->CpEnabled = FALSE;
+    options->HwSpriteEnabled = FALSE;
 
     if (!toolTypes)
         return;
@@ -154,6 +157,16 @@ static void ParseOptions(char **toolTypes, struct RadeonOptions *options)
                                               &options->DmaRequested);
             if (!options->DmaValid)
                 options->DmaRequested = 0;
+        } else if (MatchOption(option, "CP=", &value)) {
+            options->CpEnabled = UpperAscii(value[0]) == 'Y' &&
+                                 UpperAscii(value[1]) == 'E' &&
+                                 UpperAscii(value[2]) == 'S' &&
+                                 value[3] == '\0';
+        } else if (MatchOption(option, "HWSPRITE=", &value)) {
+            options->HwSpriteEnabled = UpperAscii(value[0]) == 'Y' &&
+                                       UpperAscii(value[1]) == 'E' &&
+                                       UpperAscii(value[2]) == 'S' &&
+                                       value[3] == '\0';
         }
     }
 }
@@ -174,6 +187,7 @@ ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg)
         (reg & 3UL) || reg > data->MmioSize - sizeof(ULONG))
         return 0;
 
+    RDEBUG_COUNT_READ();
     return SWAPLONG(pci_inl((ULONG)mmio + reg));
 }
 
@@ -186,6 +200,7 @@ BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value)
         (reg & 3UL) || reg > data->MmioSize - sizeof(ULONG))
         return FALSE;
 
+    RDEBUG_COUNT_WRITE();
     pci_outl(SWAPLONG(value), (ULONG)mmio + reg);
     return TRUE;
 }
@@ -275,8 +290,10 @@ void RadeonReleaseBoard(struct RadeonCardBase *base)
     OpenPciBase = base->OpenPciBase;
     bi = base->BoardInfo;
     data = RadeonGetBoardData(bi);
+    RDEBUG_CLOSE(bi);
 
     if (data) {
+        RadeonShutdownCursor(bi);
         RadeonShutdownAcceleration(bi);
         RadeonDestroyDmaMemory(bi);
     }
@@ -436,8 +453,10 @@ BOOL InitCard(__REGA0(struct BoardInfo *bi),
         RLOG("Radeon9200: DMASIZE request could not be reserved\n");
     }
 
-    (void)RadeonInitializeAcceleration(bi);
-    RadeonInstallCallbacks(bi);
+    (void)RadeonInitializeAcceleration(bi, options.CpEnabled);
+    RDEBUG_OPEN(bi, options.CpEnabled, options.DmaRequested,
+                options.HwSpriteEnabled);
+    RadeonInstallCallbacks(bi, options.HwSpriteEnabled);
 
     RLOG("Radeon9200: VGA CRTC0 startup screen active\n");
     return TRUE;

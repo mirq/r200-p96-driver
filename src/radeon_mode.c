@@ -27,6 +27,7 @@
 #include <proto/openpci.h>
 
 #include "radeon9200.h"
+#include "radeon_debug.h"
 #include "radeon_regs.h"
 
 #define STARTUP_WIDTH  640U
@@ -664,7 +665,6 @@ static void RadeonSetPanning(__REGA0(struct BoardInfo *bi),
         ApplyDisplayState(bi);
         return;
     }
-    data->CurrentPitch = pitch;
     bi->XOffset = (WORD)actualX;
     bi->YOffset = yOffset;
 }
@@ -821,9 +821,10 @@ static void RadeonSetDPMSLevel(__REGA0(struct BoardInfo *bi),
     ApplyDisplayState(bi);
 }
 
-void RadeonInstallCallbacks(struct BoardInfo *bi)
+void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    BOOL cursorReady = hardwareSprite && RadeonInitializeCursor(bi);
     UWORD index;
 
     for (index = 0; index < MAXMODES; ++index) {
@@ -836,7 +837,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi)
 
     bi->BitsPerCannon = 8;
     bi->RGBFormats = RADEON_SCANOUT_FORMATS;
-    bi->SoftSpriteFlags = RADEON_SCANOUT_FORMATS;
+    bi->SoftSpriteFlags = cursorReady ? 0 : RADEON_SCANOUT_FORMATS;
     for (index = CHUNKY; index <= TRUEALPHA; ++index) {
         if (index == TRUECOLOR)
             continue;
@@ -877,6 +878,15 @@ void RadeonInstallCallbacks(struct BoardInfo *bi)
     bi->GetVSyncState = RadeonGetVSyncState;
     bi->GetVBeamPos = RadeonGetVBeamPos;
     bi->SetDPMSLevel = RadeonSetDPMSLevel;
+
+    if (cursorReady) {
+        bi->SetSprite = RadeonSetSprite;
+        bi->SetSpritePosition = RadeonSetSpritePosition;
+        bi->SetSpriteImage = RadeonSetSpriteImage;
+        bi->SetSpriteColor = RadeonSetSpriteColor;
+        bi->Flags |= BIF_HARDWARESPRITE;
+        RLOG("Radeon9200: RV280 hardware cursor enabled\n");
+    }
 
     if (data && data->AccelState == RADEON_ACCEL_READY &&
         !(bi->Flags & BIF_NOBLITTER)) {
@@ -936,7 +946,6 @@ BOOL RadeonShowStartupScreen(struct BoardInfo *bi)
         !RadeonWrite32(bi, RADEON_CRTC_OFFSET, 0))
         goto failed;
 
-    data->CurrentPitch = STARTUP_PITCH;
     bi->XOffset = 0;
     bi->YOffset = 0;
 
