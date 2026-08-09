@@ -65,20 +65,26 @@ OpenPCI provider. Publication and real inter-card transfers remain unresolved.
 
 ## Acceleration Policy
 
-Version 0.6 uses the RV280 direct-MMIO 2D engine without a CP ring or the DMA
-arena. Every FIFO, idle, and cache poll is bounded. One timeout recovery reset
-is allowed; successful recovery permanently routes the session to software,
-and failed recovery blocks further VRAM rendering through the wrappers.
+The RV280 direct-MMIO 2D engine does not use a CP ring or the DMA arena. Every
+FIFO, idle, and cache poll is bounded. One timeout recovery reset is allowed;
+successful recovery permanently routes the session to software, and failed
+recovery blocks further VRAM rendering through the wrappers.
 
-The validated hardware subset is CLUT8 `FillRect` (including partial masks),
-same-`RenderInfo` `BlitRect` in CLUT8/RGB565PC/BGRA32, and cross-surface
-`BlitRectNoMaskComplete` for opcode `$C` (source copy) between disjoint,
-same-pitch surfaces. Surface bases are rebased to a 1 KiB GPU address with
-checked X/Y bias so ordinary 16-byte P96 allocations remain usable. RGB565PC
-and BGRA32 fills must remain software until hardware brush-color endian
-handling is separately proven. Template, pattern, line, invert, planar,
-host-data, and any cross-surface operations with overlap, unequal pitch, or
-non-copy opcodes remain software fallbacks.
+The validated hardware subset is `FillRect` in CLUT8/RGB565PC/BGRA32 (including
+CLUT8 partial masks), same-`RenderInfo` `BlitRect` in all three formats, and
+cross-surface `BlitRectNoMaskComplete` for opcode `$C` (source copy) between
+disjoint, same-pitch surfaces. Surface bases are rebased to a 1 KiB GPU address
+with checked X/Y bias so ordinary 16-byte P96 allocations remain usable.
+
+The validated subset also includes JAM2 `BlitPattern` for 1/2/4/8-row patterns
+whose 16-bit rows contain identical bytes. Hardware activity is established by
+the P96Speed pattern increase from 37 to 1387 operations/second; 8/16/32/8
+readback tests pass every accepted height, phase, edge, and overdraw guard.
+CLUT8 partial-mask patterns and synchronized software fallback for a rejected
+16-pixel pattern also pass.
+Template, line, invert, planar, host-data, unsupported patterns, and any
+cross-surface operations with overlap, unequal pitch, or non-copy opcodes
+remain software fallbacks.
 
 ## Source Priorities
 
@@ -102,8 +108,8 @@ bus access to OpenPCI 2.1.
 6. Verified 16-bit and 32-bit formats, panning, palette, and DPMS.
 7. Private `DMASIZE` reservation, followed separately by proven OpenPCI 2.1
    inter-card DMA behavior if a provider path is deliberately added.
-8. Completed first 2D subset: CLUT8 fills and overlap-safe same-surface copies.
-   Additional operations remain separate milestones.
+8. Completed first 2D subset: fills and overlap-safe same-surface copies in all
+   advertised formats. Additional operations remain separate milestones.
 
 ## Build And Verification
 

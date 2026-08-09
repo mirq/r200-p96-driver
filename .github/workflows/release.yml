@@ -5,7 +5,6 @@ on:
     tags:
       - "release_*"
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,7 +13,7 @@ jobs:
   build:
     name: Build release artifacts
     runs-on: ubuntu-latest
-    container: stefanreinauer/amiga-gcc:gcc-v13.4
+    container: stefanreinauer/amiga-gcc:gcc-v6.5.0b-20251124@sha256:11b06254ed512d9a8f65fb13eeb723d5e33cacc1880b80df9f63c29e95fc879a
 
     steps:
       - name: Checkout repository
@@ -29,6 +28,20 @@ jobs:
         run: |
           m68k-amigaos-gcc --version | head -1
           m68k-amigaos-strip --version | head -1
+
+      - name: Reproduce validated libnix runtime
+        run: |
+          set -eu
+          archive=/opt/amiga/m68k-amigaos/libnix/lib/libm020/libnix.a
+          patch_dir=$(mktemp -d)
+          base64 -d toolchain/libnix-runtime/__bufsiz.o.b64 > "$patch_dir/__bufsiz.o"
+          base64 -d toolchain/libnix-runtime/fopen.o.b64 > "$patch_dir/fopen.o"
+          base64 -d toolchain/libnix-runtime/setbuf.o.b64 > "$patch_dir/setbuf.o"
+          printf '%s  %s\n' 2dde8a53c6ad3f8e9de847786153389f9d66fbd22fd3e870e8c1c0325dccbb77 "$patch_dir/__bufsiz.o" | sha256sum -c -
+          printf '%s  %s\n' 234e9f820cbc7c43a9477b210198f3611eb833e2db54c0788775fdaa4fa7fa06 "$patch_dir/fopen.o" | sha256sum -c -
+          printf '%s  %s\n' 90ddc33ea625eda3c42e1f244ec855db006f8e9a9da7a35ad285753f1259d611 "$patch_dir/setbuf.o" | sha256sum -c -
+          m68k-amigaos-ar rcs "$archive" "$patch_dir/__bufsiz.o" "$patch_dir/fopen.o" "$patch_dir/setbuf.o"
+          printf '%s  %s\n' 1ffa3b50cb5d81b3022aa20f0543d4632d3705e49d298dc743c8469796fdce1d "$archive" | sha256sum -c -
 
       - name: Build release driver
         run: make clean && make
@@ -55,6 +68,12 @@ jobs:
 
       - name: Stage tools
         run: cp build/p96screen dist/p96screen
+
+      - name: Verify validated artifacts
+        run: |
+          printf '%s  %s\n' 5a0fbd21a78f00717cbbd1890b6de4b241f95b27b982cda3c8abd6d59bcf46ee dist/Radeon9200.card | sha256sum -c -
+          printf '%s  %s\n' 29910589c750471d6eeb68fd5bc68df1510b4cc3cc41bb2d65dbea44b259c584 dist/Radeon9200-debug.card | sha256sum -c -
+          printf '%s  %s\n' 5bf98c4b96a38f1be374412cb4a635b6e3bc673e72f0fbb8bd946fa323786298 dist/p96screen | sha256sum -c -
 
       - name: List artifacts
         run: ls -la dist
@@ -87,9 +106,10 @@ jobs:
           path: artifacts
 
       - name: Create release (draft for release_*, published for v*)
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           draft: ${{ !startsWith(github.ref_name, 'v') }}
+          body_path: RELEASE_NOTES.md
           files: |
             artifacts/Radeon9200.card
             artifacts/Radeon9200-debug.card

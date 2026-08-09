@@ -3,6 +3,7 @@
  * driver's ACCEL_MMIO path and Linux radeonfb's bounded engine reset model.
  */
 
+#include <graphics/rastport.h>
 #include <proto/exec.h>
 
 #include "radeon9200.h"
@@ -36,6 +37,8 @@ static BOOL WaitFifo(struct BoardInfo *bi, ULONG entries)
 {
     ULONG count;
 
+    if (!entries || entries > 64)
+        return FALSE;
     for (count = 0; count < ACCEL_TIMEOUT_POLLS; ++count) {
         if ((RadeonRead32(bi, RADEON_RBBM_STATUS) &
              RADEON_RBBM_FIFOCNT_MASK) >= entries)
@@ -181,6 +184,24 @@ static ULONG HardwareDatatype(RGBFTYPE format, ULONG *bytesPerPixel)
     }
 }
 
+static ULONG HardwarePen(ULONG pen, RGBFTYPE format)
+{
+    switch (format) {
+    case RGBFB_CLUT:
+        return pen & 0xffUL;
+    case RGBFB_R5G6B5PC:
+        return ((pen & 0x00ffUL) << 8) |
+               ((pen & 0xff00UL) >> 8);
+    case RGBFB_B8G8R8A8:
+        return ((pen & 0x000000ffUL) << 24) |
+               ((pen & 0x0000ff00UL) << 8) |
+               ((pen & 0x00ff0000UL) >> 8) |
+               ((pen & 0xff000000UL) >> 24);
+    default:
+        return pen;
+    }
+}
+
 static enum SurfaceResult ValidateSurface(
     struct BoardInfo *bi, const struct RenderInfo *render,
     WORD x, WORD y, WORD width, WORD height, RGBFTYPE format,
@@ -270,6 +291,44 @@ static enum SurfaceResult ValidateSurface(
     return SURFACE_HARDWARE;
 }
 
+static BOOL PrepareMonoPattern(struct BoardInfo *bi,
+                               const struct Pattern *pattern,
+                               ULONG *data0, ULONG *data1)
+{
+    const UBYTE *source;
+    UBYTE rows[8];
+    ULONG memoryAddress;
+    ULONG memoryBase;
+    ULONG patternHeight;
+    ULONG row;
+
+    if (!bi || !pattern || !pattern->Memory || !data0 || !data1 ||
+        pattern->Size > 3 || pattern->DrawMode != JAM2)
+        return FALSE;
+
+    memoryAddress = (ULONG)pattern->Memory;
+    memoryBase = (ULONG)bi->MemoryBase;
+    if (memoryAddress >= memoryBase &&
+        (unsigned long long)memoryAddress <
+            (unsigned long long)memoryBase + bi->MemorySpaceSize)
+        return FALSE;
+
+    source = (const UBYTE *)pattern->Memory;
+    patternHeight = 1UL << pattern->Size;
+    for (row = 0; row < patternHeight; ++row) {
+        if (source[row * 2UL] != source[row * 2UL + 1UL])
+            return FALSE;
+    }
+    for (row = 0; row < 8; ++row)
+        rows[row] = source[(row & (patternHeight - 1UL)) * 2UL];
+
+    *data0 = (ULONG)rows[0] | ((ULONG)rows[1] << 8) |
+             ((ULONG)rows[2] << 16) | ((ULONG)rows[3] << 24);
+    *data1 = (ULONG)rows[4] | ((ULONG)rows[5] << 8) |
+             ((ULONG)rows[6] << 16) | ((ULONG)rows[7] << 24);
+    return TRUE;
+}
+
 static BOOL SubmitFill(struct BoardInfo *bi,
                        const struct AccelSurface *surface,
                        WORD x, WORD y, WORD width, WORD height,
@@ -285,29 +344,78 @@ static BOOL SubmitFill(struct BoardInfo *bi,
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
 
     (void)bytesPerPixel;
+    pen = HardwarePen(pen, format);
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);
-    return WaitFifo(bi, 4) &&
+    return WaitFifo(bi, 9) &&
            RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
            RadeonWrite32(bi, RADEON_DP_BRUSH_FRGD_CLR, pen) &&
            RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
            RadeonWrite32(bi, RADEON_DP_CNTL,
-                         RADEON_DST_X_LEFT_TO_RIGHT |
-                             RADEON_DST_Y_TOP_TO_BOTTOM) &&
-           WaitFifo(bi, 2) &&
+                          RADEON_DST_X_LEFT_TO_RIGHT |
+                              RADEON_DST_Y_TOP_TO_BOTTOM) &&
            RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                         RADEON_RB2D_DC_FLUSH_ALL) &&
+                          RADEON_RB2D_DC_FLUSH_ALL) &&
            RadeonWrite32(bi, RADEON_WAIT_UNTIL,
-                         RADEON_WAIT_2D_IDLECLEAN |
-                             RADEON_WAIT_DMA_GUI_IDLE) &&
-           WaitFifo(bi, 3) &&
+                          RADEON_WAIT_2D_IDLECLEAN |
+                              RADEON_WAIT_DMA_GUI_IDLE) &&
            RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
-                         surface->PitchOffset) &&
+                          surface->PitchOffset) &&
            RadeonWrite32(bi, RADEON_DST_Y_X,
                          ((ULONG)(UWORD)y << 16) | (UWORD)x) &&
            RadeonWrite32(bi, RADEON_DST_WIDTH_HEIGHT,
                          ((ULONG)(UWORD)width << 16) |
-                             (UWORD)height);
+                              (UWORD)height);
+}
+
+static BOOL SubmitPattern(struct BoardInfo *bi,
+                          const struct AccelSurface *surface,
+                          const struct Pattern *pattern,
+                          WORD x, WORD y, WORD width, WORD height,
+                          UBYTE mask, RGBFTYPE format,
+                          ULONG data0, ULONG data1)
+{
+    ULONG bytesPerPixel;
+    ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
+    ULONG writeMask = format == RGBFB_CLUT ? (ULONG)mask :
+                                                   0xffffffffUL;
+    ULONG master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
+                   RADEON_GMC_BRUSH_8X8_MONO_FG_BG | datatype |
+                   RADEON_ROP3_P | RADEON_GMC_CLR_CMP_CNTL_DIS;
+    ULONG destinationX = (ULONG)(UWORD)(x + surface->XBias);
+    ULONG destinationY = (ULONG)(UWORD)(y + surface->YBias);
+    ULONG phaseX = ((pattern->XOffset & 7UL) + 8UL -
+                    (destinationX & 7UL)) & 7UL;
+    ULONG phaseY = ((pattern->YOffset & 7UL) + 8UL -
+                    (destinationY & 7UL)) & 7UL;
+
+    (void)bytesPerPixel;
+    return WaitFifo(bi, 13) &&
+           RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
+           RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
+           RadeonWrite32(bi, RADEON_DP_BRUSH_FRGD_CLR,
+                          HardwarePen(pattern->FgPen, format)) &&
+           RadeonWrite32(bi, RADEON_DP_BRUSH_BKGD_CLR,
+                          HardwarePen(pattern->BgPen, format)) &&
+           RadeonWrite32(bi, RADEON_BRUSH_DATA0, data0) &&
+           RadeonWrite32(bi, RADEON_BRUSH_DATA1, data1) &&
+           RadeonWrite32(bi, RADEON_DP_CNTL,
+                          RADEON_DST_X_LEFT_TO_RIGHT |
+                              RADEON_DST_Y_TOP_TO_BOTTOM) &&
+           RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
+                          RADEON_RB2D_DC_FLUSH_ALL) &&
+           RadeonWrite32(bi, RADEON_WAIT_UNTIL,
+                          RADEON_WAIT_2D_IDLECLEAN |
+                              RADEON_WAIT_DMA_GUI_IDLE) &&
+           RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
+                          surface->PitchOffset) &&
+           RadeonWrite32(bi, RADEON_BRUSH_Y_X,
+                          (phaseY << 8) | phaseX) &&
+           RadeonWrite32(bi, RADEON_DST_Y_X,
+                          (destinationY << 16) | destinationX) &&
+           RadeonWrite32(bi, RADEON_DST_HEIGHT_WIDTH,
+                          ((ULONG)(UWORD)height << 16) |
+                              (UWORD)width);
 }
 
 static BOOL SubmitCopy(struct BoardInfo *bi,
@@ -347,17 +455,15 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
         dstY = (WORD)(dstY + height - 1);
     }
 
-    return WaitFifo(bi, 3) &&
+    return WaitFifo(bi, 10) &&
            RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
            RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
            RadeonWrite32(bi, RADEON_DP_CNTL, direction) &&
-           WaitFifo(bi, 2) &&
            RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                         RADEON_RB2D_DC_FLUSH_ALL) &&
+                          RADEON_RB2D_DC_FLUSH_ALL) &&
            RadeonWrite32(bi, RADEON_WAIT_UNTIL,
-                         RADEON_WAIT_2D_IDLECLEAN |
-                             RADEON_WAIT_DMA_GUI_IDLE) &&
-           WaitFifo(bi, 5) &&
+                          RADEON_WAIT_2D_IDLECLEAN |
+                              RADEON_WAIT_DMA_GUI_IDLE) &&
            RadeonWrite32(bi, RADEON_SRC_PITCH_OFFSET,
                           source->PitchOffset) &&
            RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
@@ -444,8 +550,6 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                              format, &surface);
     if (result == SURFACE_REJECT)
         return;
-    if (format != RGBFB_CLUT)
-        result = SURFACE_SOFTWARE;
 
     ObtainSemaphore(&bi->BoardLock);
     if (result == SURFACE_HARDWARE &&
@@ -476,6 +580,64 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
         bi->FillRectDefault != RadeonFillRect)
         bi->FillRectDefault(bi, render, x, y, width, height,
                             pen, mask, format);
+}
+
+void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
+                       __REGA1(struct RenderInfo *render),
+                       __REGA2(struct Pattern *pattern),
+                       __REGD0(WORD x), __REGD1(WORD y),
+                       __REGD2(WORD width), __REGD3(WORD height),
+                       __REGD4(UBYTE mask),
+                       __REGD7(RGBFTYPE format))
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct AccelSurface surface;
+    enum SurfaceResult result;
+    ULONG patternData0 = 0;
+    ULONG patternData1 = 0;
+    BOOL hardware;
+    BOOL software = FALSE;
+
+    if (!SysBase || !data || !pattern || !pattern->Memory)
+        return;
+    result = ValidateSurface(bi, render, x, y, width, height,
+                             format, &surface);
+    if (result == SURFACE_REJECT)
+        return;
+    hardware = PrepareMonoPattern(bi, pattern,
+                                  &patternData0, &patternData1);
+
+    ObtainSemaphore(&bi->BoardLock);
+    if (hardware && result == SURFACE_HARDWARE &&
+        data->AccelState == RADEON_ACCEL_READY) {
+        if (SubmitPattern(bi, &surface, pattern, x, y, width, height,
+                          mask, format, patternData0, patternData1)) {
+            data->AccelPending = TRUE;
+#ifdef DEBUG
+            RLOG("Radeon9200: HW BlitPattern mem=%lx pitchoff=%lx "
+                 "xy=%ld,%ld size=%ldx%ld fmt=%ld mask=%lx "
+                 "offset=%ld,%ld patsize=%ld data=%lx,%lx\n",
+                 (ULONG)render->Memory, surface.PitchOffset,
+                 (ULONG)(UWORD)x, (ULONG)(UWORD)y,
+                 (ULONG)(UWORD)width, (ULONG)(UWORD)height,
+                 (ULONG)format, (ULONG)mask,
+                 (ULONG)pattern->XOffset, (ULONG)pattern->YOffset,
+                 (ULONG)pattern->Size, patternData0, patternData1);
+#endif
+        } else {
+            software = RecoverEngine(bi);
+        }
+    } else {
+        software = SynchronizeEngine(bi) &&
+                   data->AccelState != RADEON_ACCEL_UNSAFE;
+    }
+    ReleaseSemaphore(&bi->BoardLock);
+
+    if (software && bi->BlitPatternDefault &&
+        bi->BlitPatternDefault != RadeonBlitPattern)
+        bi->BlitPatternDefault(bi, render, pattern, x, y,
+                               width, height, mask, format);
 }
 
 void RadeonBlitRect(__REGA0(struct BoardInfo *bi),

@@ -8,16 +8,16 @@
 #include "radeon9200.h"
 
 #define LIB_VERSION 0
-#define LIB_REVISION 7
+#define LIB_REVISION 9
 
 #define USED __attribute__((used))
 
 static const char LibName[] = "Radeon9200.card";
 static const char CardName[] = "Radeon9200";
 static const char LibIdString[] =
-    "Radeon9200.card 0.7 (7.8.2026)\r\n";
+    "Radeon9200.card 0.9 (9.8.2026)\r\n";
 static const char VerTag[] USED =
-    "\0$VER: Radeon9200.card 0.7 (7.8.2026)";
+    "\0$VER: Radeon9200.card 0.9 (9.8.2026)";
 
 struct Library *OpenPciBase;
 

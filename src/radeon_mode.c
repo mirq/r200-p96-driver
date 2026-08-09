@@ -882,6 +882,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi)
         !(bi->Flags & BIF_NOBLITTER)) {
         bi->FillRect = RadeonFillRect;
         bi->BlitRect = RadeonBlitRect;
+        bi->BlitPattern = RadeonBlitPattern;
         bi->BlitRectNoMaskComplete = RadeonBlitRectNoMaskComplete;
         bi->Flags |= BIF_BLITTER;
         RLOG("Radeon9200: rectangle acceleration enabled\n");

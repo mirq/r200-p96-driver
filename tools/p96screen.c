@@ -177,6 +177,161 @@ static ULONG ExpectedColor(RGBFTYPE format, ULONG color)
     return color;
 }
 
+static BOOL TestPattern(struct RastPort *rastPort, RGBFTYPE format)
+{
+    static UWORD areaPattern[4] = {
+        0x8888U, 0x2222U, 0x8888U, 0x2222U
+    };
+    static UWORD widePattern[1] = {0xff00U};
+    static UWORD maskPattern[1] = {0xaaaaU};
+    static UWORD heightPatterns[4][8] = {
+        {0xffffU, 0xffffU, 0xffffU, 0xffffU,
+         0xffffU, 0xffffU, 0xffffU, 0xffffU},
+        {0xffffU, 0x0000U, 0xffffU, 0x0000U,
+         0xffffU, 0x0000U, 0xffffU, 0x0000U},
+        {0xffffU, 0x0000U, 0x0000U, 0xffffU,
+         0xffffU, 0x0000U, 0x0000U, 0xffffU},
+        {0xffffU, 0x0000U, 0xffffU, 0xffffU,
+         0x0000U, 0x0000U, 0xffffU, 0x0000U}
+    };
+    static const char *rowNames[8] = {
+        "pattern-row0", "pattern-row1", "pattern-row2", "pattern-row3",
+        "pattern-row4", "pattern-row5", "pattern-row6", "pattern-row7"
+    };
+    ULONG foreground;
+    ULONG background;
+    ULONG guard;
+    UWORD size;
+    UWORD row;
+    BOOL success = TRUE;
+
+    rastPort->AreaPtrn = NULL;
+    rastPort->AreaPtSz = 0;
+    SetWriteMask(rastPort, 0xff);
+    SetDrMd(rastPort, JAM2);
+    SetAPen(rastPort, 2);
+    RectFill(rastPort, 12, 16, 77, 49);
+    SetAPen(rastPort, 1);
+    RectFill(rastPort, 500, 20, 500, 20);
+    SetAPen(rastPort, 0);
+    RectFill(rastPort, 501, 20, 501, 20);
+    WaitBlit();
+    guard = p96ReadPixel(rastPort, 12, 16);
+    foreground = p96ReadPixel(rastPort, 500, 20);
+    background = p96ReadPixel(rastPort, 501, 20);
+    if (format == RGBFB_CLUT) {
+        foreground &= 0xffUL;
+        background &= 0xffUL;
+        guard &= 0xffUL;
+    }
+    success &= foreground != background && foreground != guard &&
+               background != guard;
+    printf("TEST pattern-pens fg=%08x bg=%08x guard=%08x %s\n",
+           (unsigned int)foreground, (unsigned int)background,
+           (unsigned int)guard, success ? "PASS" : "FAIL");
+
+    SetAPen(rastPort, 1);
+    SetBPen(rastPort, 0);
+    rastPort->AreaPtrn = areaPattern;
+    rastPort->AreaPtSz = 2;
+    RectFill(rastPort, 13, 17, 76, 48);
+    WaitBlit();
+    rastPort->AreaPtrn = NULL;
+    rastPort->AreaPtSz = 0;
+
+    success &= CheckPixel(rastPort, 13, 17, background,
+                          format, "pattern-bg1");
+    success &= CheckPixel(rastPort, 14, 17, foreground,
+                          format, "pattern-fg1");
+    success &= CheckPixel(rastPort, 16, 18, foreground,
+                          format, "pattern-fg2");
+    success &= CheckPixel(rastPort, 17, 18, background,
+                          format, "pattern-bg2");
+    success &= CheckPixel(rastPort, 76, 48, foreground,
+                          format, "pattern-edgef");
+    success &= CheckPixel(rastPort, 75, 48, background,
+                          format, "pattern-edgeb");
+    success &= CheckPixel(rastPort, 12, 17, guard,
+                          format, "pattern-left");
+    success &= CheckPixel(rastPort, 77, 48, guard,
+                          format, "pattern-right");
+    success &= CheckPixel(rastPort, 13, 16, guard,
+                          format, "pattern-top");
+    success &= CheckPixel(rastPort, 76, 49, guard,
+                          format, "pattern-bottom");
+
+    for (size = 0; size < 4; ++size) {
+        UWORD x = (UWORD)(96U + size * 16U);
+
+        printf("PATTERN size=%u\n", (unsigned int)size);
+        rastPort->AreaPtrn = heightPatterns[size];
+        rastPort->AreaPtSz = (BYTE)size;
+        RectFill(rastPort, x, 64, x + 7U, 71);
+        WaitBlit();
+        rastPort->AreaPtrn = NULL;
+        rastPort->AreaPtSz = 0;
+        for (row = 0; row < 8; ++row) {
+            ULONG expected = heightPatterns[size]
+                [row & ((1U << size) - 1U)] ? foreground : background;
+
+            success &= CheckPixel(rastPort, x + 3U, 64U + row,
+                                  expected, format, rowNames[row]);
+        }
+    }
+
+    rastPort->AreaPtrn = NULL;
+    rastPort->AreaPtSz = 0;
+    SetWriteMask(rastPort, 0xff);
+    SetAPen(rastPort, 2);
+    RectFill(rastPort, 159, 63, 176, 65);
+    SetAPen(rastPort, 1);
+    SetBPen(rastPort, 0);
+    rastPort->AreaPtrn = widePattern;
+    RectFill(rastPort, 160, 64, 175, 64);
+    WaitBlit();
+    rastPort->AreaPtrn = NULL;
+    success &= CheckPixel(rastPort, 160, 64, foreground,
+                          format, "pattern-wide-f1");
+    success &= CheckPixel(rastPort, 167, 64, foreground,
+                          format, "pattern-wide-f2");
+    success &= CheckPixel(rastPort, 168, 64, background,
+                          format, "pattern-wide-b1");
+    success &= CheckPixel(rastPort, 175, 64, background,
+                          format, "pattern-wide-b2");
+    success &= CheckPixel(rastPort, 159, 64, guard,
+                          format, "pattern-wide-l");
+    success &= CheckPixel(rastPort, 176, 64, guard,
+                          format, "pattern-wide-r");
+
+    if (format == RGBFB_CLUT) {
+        ULONG first;
+        ULONG second;
+        BOOL maskSuccess;
+
+        SetWriteMask(rastPort, 0xff);
+        SetAPen(rastPort, 0xa0);
+        RectFill(rastPort, 192, 64, 199, 64);
+        SetWriteMask(rastPort, 0x0f);
+        SetAPen(rastPort, 0x55);
+        SetBPen(rastPort, 0x0a);
+        rastPort->AreaPtrn = maskPattern;
+        RectFill(rastPort, 192, 64, 199, 64);
+        WaitBlit();
+        rastPort->AreaPtrn = NULL;
+        rastPort->AreaPtSz = 0;
+        SetWriteMask(rastPort, 0xff);
+        first = p96ReadPixel(rastPort, 192, 64) & 0xffUL;
+        second = p96ReadPixel(rastPort, 193, 64) & 0xffUL;
+        maskSuccess = (first == 0xa5UL && second == 0xaaUL) ||
+                      (first == 0xaaUL && second == 0xa5UL);
+        success &= maskSuccess;
+        printf("TEST pattern-mask values=%02x,%02x %s\n",
+               (unsigned int)first, (unsigned int)second,
+               maskSuccess ? "PASS" : "FAIL");
+    }
+    return success;
+}
+
 static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
 {
     struct RastPort *rastPort = &screen->RastPort;
@@ -188,6 +343,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
     BOOL success = TRUE;
 
     TestFill(rastPort, format, 10, 10, 74, 32, colorA);
+    WaitBlit();
     expectedA = ExpectedColor(format, colorA);
     expectedB = ExpectedColor(format, colorB);
     success &= CheckPixel(rastPort, 74, 32, expectedA, format,
@@ -195,6 +351,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
 
     TestFill(rastPort, format, 250, 40, 449, 59, colorB);
     TestFill(rastPort, format, 300, 45, 399, 54, colorA);
+    WaitBlit();
     success &= CheckPixel(rastPort, 300, 45, expectedA, format,
                           "rebase-start");
     success &= CheckPixel(rastPort, 399, 54, expectedA, format,
@@ -203,6 +360,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
                           "rebase-left");
     success &= CheckPixel(rastPort, 400, 54, expectedB, format,
                           "rebase-right");
+    success &= TestPattern(rastPort, format);
 
     TestFill(rastPort, format, 20, 80, 39, 99, colorA);
     TestFill(rastPort, format, 40, 80, 59, 99, colorB);
@@ -211,6 +369,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
     success &= expectedA != expectedB;
     BltBitMap(bitmap, 20, 80, bitmap, 30, 80, 40, 20,
               0xc0, 0xff, NULL);
+    WaitBlit();
     success &= CheckPixel(rastPort, 35, 90, expectedA, format,
                           "copy-right-a");
     success &= CheckPixel(rastPort, 55, 90, expectedB, format,
@@ -220,6 +379,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
     TestFill(rastPort, format, 40, 190, 59, 209, colorB);
     BltBitMap(bitmap, 30, 190, bitmap, 20, 190, 30, 20,
               0xc0, 0xff, NULL);
+    WaitBlit();
     success &= CheckPixel(rastPort, 25, 200, expectedA, format,
                           "copy-left-a");
     success &= CheckPixel(rastPort, 45, 200, expectedB, format,
@@ -227,10 +387,12 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
 
     TestFill(rastPort, format, 80, 120, 99, 129, colorA);
     TestFill(rastPort, format, 80, 130, 99, 139, colorB);
+    WaitBlit();
     expectedA = p96ReadPixel(rastPort, 90, 123);
     expectedB = p96ReadPixel(rastPort, 90, 133);
     BltBitMap(bitmap, 80, 120, bitmap, 80, 125, 20, 20,
               0xc0, 0xff, NULL);
+    WaitBlit();
     success &= CheckPixel(rastPort, 90, 128, expectedA, format,
                           "copy-down-a");
     success &= CheckPixel(rastPort, 90, 138, expectedB, format,
@@ -240,6 +402,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
     TestFill(rastPort, format, 80, 240, 99, 254, colorB);
     BltBitMap(bitmap, 80, 235, bitmap, 80, 230, 20, 20,
               0xc0, 0xff, NULL);
+    WaitBlit();
     success &= CheckPixel(rastPort, 90, 233, expectedA, format,
                           "copy-up-a");
     success &= CheckPixel(rastPort, 90, 248, expectedB, format,
@@ -253,6 +416,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
         SetAPen(rastPort, 0x55);
         RectFill(rastPort, 120, 160, 139, 179);
         SetWriteMask(rastPort, 0xff);
+        WaitBlit();
         success &= CheckPixel(rastPort, 130, 170, 0xa5, format,
                               "fill-mask");
 
@@ -263,6 +427,7 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
         RectFill(rastPort, 240, 280, 259, 299);
         BltBitMap(bitmap, 200, 280, bitmap, 240, 280, 20, 20,
                   0xc0, 0x0f, NULL);
+        WaitBlit();
         success &= CheckPixel(rastPort, 250, 290, 0xa5, format,
                               "copy-mask");
     }
@@ -271,6 +436,13 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
            (unsigned int)p96GetBitMapAttr(bitmap, P96BMA_DEPTH),
            success ? "PASS" : "FAIL");
     return success;
+}
+
+static unsigned long long StampTicks(const struct DateStamp *stamp)
+{
+    return (((unsigned long long)stamp->ds_Days * 24ULL * 60ULL +
+             (ULONG)stamp->ds_Minute) * 60ULL * 50ULL) +
+           (ULONG)stamp->ds_Tick;
 }
 
 static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
@@ -283,6 +455,11 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
     ULONG colorB = format == RGBFB_CLUT ? 4UL : 0x0000ffffUL;
     ULONG expectedA;
     ULONG expectedB;
+    struct DateStamp start;
+    struct DateStamp end;
+    unsigned long long elapsed;
+    UWORD index;
+    BOOL eligible;
     BOOL success = TRUE;
 
     source = AllocBitMap(screen->Width, 64,
@@ -304,12 +481,14 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
            (unsigned int)p96GetBitMapAttr(destination,
                                           P96BMA_BYTESPERROW),
            (unsigned int)p96GetBitMapAttr(source, P96BMA_ISONBOARD));
-    success &= p96GetBitMapAttr(source, P96BMA_ISONBOARD) != 0;
-    success &= p96GetBitMapAttr(source, P96BMA_BYTESPERROW) ==
-               p96GetBitMapAttr(destination, P96BMA_BYTESPERROW);
+    eligible = p96GetBitMapAttr(source, P96BMA_ISONBOARD) != 0 &&
+               p96GetBitMapAttr(source, P96BMA_BYTESPERROW) ==
+                   p96GetBitMapAttr(destination, P96BMA_BYTESPERROW);
+    success &= eligible;
 
     TestFill(&sourcePort, format, 16, 8, 79, 39, colorA);
     TestFill(destinationPort, format, 490, 310, 573, 361, colorB);
+    WaitBlit();
     expectedA = p96ReadPixel(&sourcePort, 20, 10);
     expectedB = p96ReadPixel(destinationPort, 495, 315);
     if (format == RGBFB_CLUT) {
@@ -329,6 +508,34 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
     success &= CheckPixel(&sourcePort, 20, 10, expectedA,
                           format, "complete-source");
 
+    if (eligible) {
+        for (index = 0; index < 16; ++index) {
+            UWORD destinationX = (index & 1U) ? 400U : 500U;
+
+            BltBitMap(source, 16, 8, destination, destinationX, 320,
+                      64, 32, 0xc0, 0xff, NULL);
+        }
+        WaitBlit();
+        DateStamp(&start);
+        for (index = 0; index < 4096; ++index) {
+            UWORD destinationX = (index & 1U) ? 400U : 500U;
+
+            BltBitMap(source, 16, 8, destination, destinationX, 320,
+                      64, 32, 0xc0, 0xff, NULL);
+        }
+        WaitBlit();
+        DateStamp(&end);
+        elapsed = StampTicks(&end) - StampTicks(&start);
+        printf("BENCH complete4096 ticks=%lu\n",
+               (unsigned long)elapsed);
+        success &= CheckPixel(destinationPort, 400, 320, expectedA,
+                              format, "complete-bench");
+        success &= CheckPixel(&sourcePort, 20, 10, expectedA,
+                              format, "complete-src2");
+    } else {
+        printf("BENCH complete4096 skipped\n");
+    }
+
     FreeBitMap(source);
     printf("COMPLETECOPY depth=%u %s\n",
            (unsigned int)p96GetBitMapAttr(destination, P96BMA_DEPTH),
@@ -336,36 +543,58 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
     return success;
 }
 
-static unsigned long long StampTicks(const struct DateStamp *stamp)
-{
-    return (((unsigned long long)stamp->ds_Days * 24ULL * 60ULL +
-             (ULONG)stamp->ds_Minute) * 60ULL * 50ULL) +
-           (ULONG)stamp->ds_Tick;
-}
-
-static void BenchmarkClut(struct Screen *screen)
+static BOOL BenchmarkScreen(struct Screen *screen, RGBFTYPE format)
 {
     struct RastPort *rastPort = &screen->RastPort;
     struct BitMap *bitmap = rastPort->BitMap;
     struct DateStamp start;
     struct DateStamp end;
     unsigned long long elapsed;
+    UWORD lastX = 0;
+    UWORD lastY = 0;
     UWORD index;
+    BOOL success = TRUE;
 
     DateStamp(&start);
     for (index = 0; index < 256; ++index) {
-        SetAPen(rastPort, index & 1U);
-        RectFill(rastPort, 0, 0, screen->Width - 1,
-                 screen->Height - 1);
+        ULONG color = format == RGBFB_CLUT ? index & 1U :
+            ((index & 1U) ? 0x00ff0000UL : 0x0000ffffUL);
+
+        TestFill(rastPort, format, 0, 0, screen->Width - 1,
+                 screen->Height - 1, color);
     }
-    (void)p96ReadPixel(rastPort, 0, 0);
+    WaitBlit();
     DateStamp(&end);
     elapsed = StampTicks(&end) - StampTicks(&start);
     printf("BENCH fill256 ticks=%lu\n", (unsigned long)elapsed);
 
-    SetAPen(rastPort, 1);
-    RectFill(rastPort, 0, 0, screen->Width / 2U - 1,
-             screen->Height - 1);
+    DateStamp(&start);
+    for (index = 0; index < 4096; ++index) {
+        ULONG color = format == RGBFB_CLUT ? index & 1U :
+            ((index & 1U) ? 0x00ff0000UL : 0x0000ffffUL);
+
+        lastX = (UWORD)(((ULONG)index * 37UL) %
+                        (screen->Width - 64U));
+        lastY = (UWORD)(((ULONG)index * 23UL) %
+                        (screen->Height - 32U));
+        TestFill(rastPort, format, lastX, lastY,
+                 lastX + 63U, lastY + 31U, color);
+    }
+    WaitBlit();
+    DateStamp(&end);
+    elapsed = StampTicks(&end) - StampTicks(&start);
+    printf("BENCH scatterfill4096 ticks=%lu\n",
+           (unsigned long)elapsed);
+    success &= CheckPixel(rastPort, lastX, lastY,
+                          ExpectedColor(format,
+                              format == RGBFB_CLUT ? 1UL :
+                                  0x00ff0000UL),
+                          format, "scatterfill");
+
+    TestFill(rastPort, format, 0, 0, screen->Width / 2U - 1,
+             screen->Height - 1,
+             format == RGBFB_CLUT ? 1UL : 0x00ff0000UL);
+    WaitBlit();
     DateStamp(&start);
     for (index = 0; index < 256; ++index) {
         UWORD source = (index & 1U) ? screen->Width / 2U : 0;
@@ -375,10 +604,11 @@ static void BenchmarkClut(struct Screen *screen)
                   screen->Width / 2U, screen->Height,
                   0xc0, 0xff, NULL);
     }
-    (void)p96ReadPixel(rastPort, 0, 0);
+    WaitBlit();
     DateStamp(&end);
     elapsed = StampTicks(&end) - StampTicks(&start);
     printf("BENCH copy256 ticks=%lu\n", (unsigned long)elapsed);
+    return success;
 }
 
 int main(int argc, char **argv)
@@ -526,13 +756,16 @@ int main(int argc, char **argv)
            (unsigned int)p96GetBitMapAttr(screen->RastPort.BitMap,
                                           P96BMA_ISONBOARD));
     DrawBars(screen, format);
+    WaitBlit();
     if (runTests) {
         if (!RunAccelerationTests(screen, format))
             result = RETURN_WARN;
         if (!RunCompleteCopyTests(screen, format))
             result = RETURN_WARN;
-        if (format == RGBFB_CLUT)
-            BenchmarkClut(screen);
+        if (!BenchmarkScreen(screen, format))
+            result = RETURN_WARN;
+        DrawBars(screen, format);
+        WaitBlit();
     }
     if (format != RGBFB_CLUT) {
         UWORD index;

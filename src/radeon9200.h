@@ -92,6 +92,13 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
                     __REGD2(WORD dstX), __REGD3(WORD dstY),
                     __REGD4(WORD width), __REGD5(WORD height),
                     __REGD6(UBYTE mask), __REGD7(RGBFTYPE format));
+void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
+                       __REGA1(struct RenderInfo *render),
+                       __REGA2(struct Pattern *pattern),
+                       __REGD0(WORD x), __REGD1(WORD y),
+                       __REGD2(WORD width), __REGD3(WORD height),
+                       __REGD4(UBYTE mask),
+                       __REGD7(RGBFTYPE format));
 void RadeonBlitRectNoMaskComplete(
     __REGA0(struct BoardInfo *bi),
     __REGA1(struct RenderInfo *sourceRender),

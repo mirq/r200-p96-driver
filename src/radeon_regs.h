@@ -133,8 +133,11 @@
 #define RADEON_DST_Y_X                      0x1438UL
 #define RADEON_DST_HEIGHT_WIDTH             0x143cUL
 #define RADEON_DP_GUI_MASTER_CNTL           0x146cUL
+#define RADEON_BRUSH_Y_X                    0x1474UL
 #define RADEON_DP_BRUSH_BKGD_CLR            0x1478UL
 #define RADEON_DP_BRUSH_FRGD_CLR            0x147cUL
+#define RADEON_BRUSH_DATA0                  0x1480UL
+#define RADEON_BRUSH_DATA1                  0x1484UL
 #define RADEON_DP_SRC_FRGD_CLR              0x15d8UL
 #define RADEON_DP_SRC_BKGD_CLR              0x15dcUL
 #define RADEON_DST_WIDTH_HEIGHT             0x1598UL
@@ -159,6 +162,8 @@
 
 #define RADEON_GMC_SRC_PITCH_OFFSET_CNTL    (1UL << 0)
 #define RADEON_GMC_DST_PITCH_OFFSET_CNTL    (1UL << 1)
+#define RADEON_GMC_BRUSH_8X8_MONO_FG_BG     (0UL << 4)
+#define RADEON_GMC_BRUSH_8X8_MONO_FG_LA     (1UL << 4)
 #define RADEON_GMC_BRUSH_SOLID_COLOR        (13UL << 4)
 #define RADEON_GMC_BRUSH_NONE               (15UL << 4)
 #define RADEON_GMC_DST_8BPP_CI              (2UL << 8)
