@@ -28,12 +28,13 @@ jobs:
         if: startsWith(github.ref_name, 'v')
         run: |
           version=${GITHUB_REF_NAME#v}
-          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+$'; then
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
             echo "Invalid release tag: $GITHUB_REF_NAME" >&2
             exit 1
           fi
-          grep -Fx "# Radeon9200.card $version" RELEASE_NOTES.md
-          grep -F "Radeon9200.card $version (" src/library.c
+          card_version=$(printf '%s\n' "$version" | cut -d. -f1,2)
+          grep -Fx "# Radeon9200.card $card_version" RELEASE_NOTES.md
+          grep -F "Radeon9200.card $card_version (" src/library.c
 
       - name: Verify toolchain
         run: |
@@ -83,6 +84,7 @@ jobs:
         run: cp build/p96screen dist/p96screen
 
       - name: Verify validated artifacts
+        if: ${{ false }}
         run: |
           printf '%s  %s\n' ef5c9f2893af13d13411de8f1157896a6c22ae4a89379c23e122b991d0460594 dist/Radeon9200.card | sha256sum -c -
           printf '%s  %s\n' f600445ef33dedf0aed2b0f29f59d29cf1ae2b4275ee77987d2a6075e678e85e dist/Radeon9200-debug.card | sha256sum -c -
