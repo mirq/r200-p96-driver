@@ -28,7 +28,7 @@ jobs:
         if: startsWith(github.ref_name, 'v')
         run: |
           version=${GITHUB_REF_NAME#v}
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+$'; then
             echo "Invalid release tag: $GITHUB_REF_NAME" >&2
             exit 1
           fi
