@@ -24,6 +24,17 @@ jobs:
       - name: Mark git directory as safe
         run: git config --global --add safe.directory '*'
 
+      - name: Verify release tag metadata
+        if: startsWith(github.ref_name, 'v')
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          grep -Fx "# Radeon9200.card $version" RELEASE_NOTES.md
+          grep -F "Radeon9200.card $version (" src/library.c
+
       - name: Verify toolchain
         run: |
           m68k-amigaos-gcc --version | head -1
@@ -53,6 +64,7 @@ jobs:
           mkdir -p dist
           cp Radeon9200.card dist/Radeon9200.card
           cp R200_MICROCODE_LICENSE.txt dist/R200_MICROCODE_LICENSE.txt
+          cp THIRD_PARTY_NOTICES.txt dist/THIRD_PARTY_NOTICES.txt
 
       - name: Build debug driver
         run: make clean && make DEBUG=1
@@ -72,10 +84,11 @@ jobs:
 
       - name: Verify validated artifacts
         run: |
-          printf '%s  %s\n' 0790823a6ab0347f43f67ab5c2ba9b2da2d0c6b5e6cfa1d2ecf108b5aa410b60 dist/Radeon9200.card | sha256sum -c -
-          printf '%s  %s\n' ec317448c2faade63be60139ee45f5ca9a773ece22931ba97935e3fc5c0aa3a6 dist/Radeon9200-debug.card | sha256sum -c -
+          printf '%s  %s\n' ef5c9f2893af13d13411de8f1157896a6c22ae4a89379c23e122b991d0460594 dist/Radeon9200.card | sha256sum -c -
+          printf '%s  %s\n' f600445ef33dedf0aed2b0f29f59d29cf1ae2b4275ee77987d2a6075e678e85e dist/Radeon9200-debug.card | sha256sum -c -
           printf '%s  %s\n' 5bf98c4b96a38f1be374412cb4a635b6e3bc673e72f0fbb8bd946fa323786298 dist/p96screen | sha256sum -c -
           printf '%s  %s\n' 43c0f5d180789677303c49fb87909fcc256d69feefc48260c2873bbe877f6c65 dist/R200_MICROCODE_LICENSE.txt | sha256sum -c -
+          printf '%s  %s\n' 98900dbe52f47acfffb9ea4647aacce95963de60335b6acfd5fc4050315d75ed dist/THIRD_PARTY_NOTICES.txt | sha256sum -c -
 
       - name: List artifacts
         run: ls -la dist
@@ -89,6 +102,7 @@ jobs:
             dist/Radeon9200-debug.card
             dist/p96screen
             dist/R200_MICROCODE_LICENSE.txt
+            dist/THIRD_PARTY_NOTICES.txt
           if-no-files-found: error
 
   release:
@@ -118,3 +132,4 @@ jobs:
             artifacts/Radeon9200-debug.card
             artifacts/p96screen
             artifacts/R200_MICROCODE_LICENSE.txt
+            artifacts/THIRD_PARTY_NOTICES.txt

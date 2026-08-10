@@ -36,7 +36,7 @@ and opens Picasso96-managed screens. It implements:
   source row repeats the same eight horizontal pixels.
 
 `InitCard` returns success only after hardware initialization and startup
-screen setup have completed. Version 0.10 is validated from a cold boot on a
+screen setup have completed. Version 0.11 is validated from a cold boot on a
 real 68060 Amiga with a Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB
 COMBIOS board, and `rtg.library` 43.538. The tested configuration provides a
 64 MiB linear aperture and boots a `1024x768x8` Workbench on the Radeon. With
@@ -53,14 +53,18 @@ transition sequence. Pattern tests cover phase, rectangle edges, overdraw
 guards, complete row ordering for all four accepted heights, CLUT8 partial
 masks, and synchronized fallback for unsupported 16-pixel patterns.
 
-On the validated `640x480x8` surface, 256 full-screen fills dropped from 627
-DOS ticks through the software path to 17-23 ticks in hardware. The matching
-256 half-screen copies dropped from 718 ticks to 16-22 ticks. These runs are
-approximately 27-37 times faster for fills and 33-45 times faster for copies.
+In an earlier hardware milestone on the validated `640x480x8` surface, 256
+full-screen fills dropped from 627 DOS ticks through the software path to 17-23
+ticks in hardware. The matching 256 half-screen copies dropped from 718 ticks
+to 16-22 ticks. These runs were approximately 27-37 times faster for fills and
+33-45 times faster for copies; the final v0.11 timings are recorded in
+[`performance.md`](performance.md).
 Cross-surface `BlitBitMap` and `BlitBitMapRastPort` improved from 242/237
 ops/s to 3483/2573 ops/s (roughly 14x and 11x) in P96Speed 640x480x16 tests.
 The validated monochrome pattern path improved `RectFill Pattern` from 37 to
-1387 ops/s (37.5x). A repeated solid-fill sample reached 2593 ops/s.
+1387 ops/s (37.5x). The exact v0.11 direct-MMIO artifact averages 5066.7 ops/s,
+2.2 percent above v0.10; paired builds isolate a 3.65 percent improvement from
+its seven-write submission sequence.
 
 ## Build
 
@@ -217,3 +221,6 @@ memory-provider APIs are deliberately out of scope.
 The R200 command-processor microcode is distributed under the notice in
 [`R200_MICROCODE_LICENSE.txt`](R200_MICROCODE_LICENSE.txt). Release archives
 and GitHub release assets include that notice beside the driver binaries.
+Additional inherited-code attribution and binary redistribution terms are in
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt), which is also included
+with release assets.

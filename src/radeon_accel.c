@@ -361,18 +361,13 @@ static BOOL SubmitFill(struct BoardInfo *bi,
     pen = HardwarePen(pen, format);
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);
-    return WaitFifo(bi, 9) &&
+    return WaitFifo(bi, 7) &&
            RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
            RadeonWrite32(bi, RADEON_DP_BRUSH_FRGD_CLR, pen) &&
            RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
            RadeonWrite32(bi, RADEON_DP_CNTL,
                           RADEON_DST_X_LEFT_TO_RIGHT |
                               RADEON_DST_Y_TOP_TO_BOTTOM) &&
-           RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                          RADEON_RB2D_DC_FLUSH_ALL) &&
-           RadeonWrite32(bi, RADEON_WAIT_UNTIL,
-                          RADEON_WAIT_2D_IDLECLEAN |
-                              RADEON_WAIT_DMA_GUI_IDLE) &&
            RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
                           surface->PitchOffset) &&
            RadeonWrite32(bi, RADEON_DST_Y_X,

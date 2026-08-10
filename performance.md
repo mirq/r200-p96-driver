@@ -12,13 +12,13 @@ P96Speed automation is documented separately in [`p96speed.md`](p96speed.md).
 - P96Speed 1.2, 640x480x16, 13 seconds per test
 
 The closed-driver reference is `Work:P96Speed_org.txt`. The current validated
-result is `Work:P96Speed_10pattern2.txt`.
+solid-fill result is `Work:P96Speed_v011_final.txt`.
 
 ## Current Gaps
 
 | Operation | Closed driver | Validated driver | Remaining gap |
 |---|---:|---:|---:|
-| RectFill | 11881 | 2593 | 4.6x |
+| RectFill | 11881 | 5067 | 2.3x |
 | RectFill Pattern | 11246 | 1387 | 8.1x |
 | WritePixel | 134097 | 129429 | 1.04x |
 | WriteChunkyPixels | 133 | 131 | 1.02x |
@@ -55,11 +55,12 @@ All CLUT8, RGB565PC, and BGRA32 cross-surface tests pass.
 Fill and copy submission reserve all required FIFO entries with one hardware
 status read instead of three:
 
-- Fill: one reservation for 9 writes
+- Fill: one reservation for 7 writes
 - Copy: one reservation for 10 writes
 
 Five-run focused copy averages improved from 53.8 to 51.6 ticks (about four
-percent). All cache flush and `WAIT_UNTIL` ordering remains unchanged.
+percent). Copy ordering remains unchanged. The fill path's later seven-write
+sequence is documented below.
 
 ### Direct-color solid fills
 
@@ -106,16 +107,15 @@ for pending hardware before using `BlitPatternDefault`. P96Speed `RectFill
 Pattern` improved from 37 to 1387 operations/second (37.5x), independently
 proving that the hardware callback is active.
 
-## Rejected Experiment
+## Superseded Experiment
 
-Removing the destination-cache flush and `WAIT_UNTIL` pair from every solid
-fill was correct under synthetic queue stress but did not improve the real
-workload. Two P96Speed samples produced RectFill results of 1460 and 1493,
-below the validated 2011 result. The barrier removal has therefore been
-reverted.
-
-Do not reintroduce it without dependency/cache accounting and a repeatable
-P96Speed improvement.
+An early attempt to remove the destination-cache flush and `WAIT_UNTIL` pair
+from every solid fill was correct under synthetic queue stress but produced
+RectFill results of 1460 and 1493, below that build's validated 2011 result. It
+was reverted at the time. After the MMIO backend, hardware cursor, and HDP
+completion path were finalized, paired builds differing only by these two
+writes improved from 4933.3 to 5113.3 operations/second and passed the complete
+correctness sequence. The later controlled result supersedes the early one.
 
 ## Experimental CP Validation
 
@@ -175,30 +175,39 @@ CP-active mean. The final report is
 
 DEBUG counters prove the intended split during these runs: `CpActive=1`, every
 fill used the hardware callback, `FillSoftware=0`, and each fill issued exactly
-nine MMIO writes. In the final instrumented build the whole `RadeonFillRect`
-call averaged
+nine MMIO writes before the final submission optimization. In the instrumented
+build the whole `RadeonFillRect` call averaged
 61.3 us net and drain contribution averaged 44.4 us per fill, for about 105.7
 us inside the driver. At 3487.7 operations/second the complete operation takes
 286.7 us, leaving roughly 181 us above the driver callbacks.
 
 The DEBUG hooks themselves bracket nested regions with `ReadEClock`, so release
-performance must be measured separately. The deployed release card produced
-4960, 4956, and 4964 operations/second: mean and median 4960, with an 8 op/s or
-0.16 percent spread. This is 42.2 percent above the final instrumented mean and
-153.8 percent above the original CP-active mean. The saved report is
-`Work:P96Speed_release_mmio_rectfill.txt`, CRC32 `E374B4AB` (1889 bytes).
+performance must be measured separately. The exact pre-optimization release
+artifact produced 4938, 4946, and 4916 operations/second, mean 4933.3 or 202.70
+us per operation. Removing the redundant pre-trigger `DSTCACHE_CTLSTAT` and
+`WAIT_UNTIL` writes reduced fill submission from nine to seven writes. The
+same-build repeats were 5136, 5088, and 5116 operations/second, mean 5113.3 or
+195.57 us per operation. The change saves 7.14 us per fill and improves
+throughput by 3.65 percent. The final report is
+`Work:P96Speed_v010_fill7.txt`, CRC32 `8865D258` (1889 bytes).
+
+After changing only the embedded version to 0.11, the exact release artifact
+produced 5080, 5083, and 5037 operations/second: mean 5066.7, median 5080, and a
+0.91 percent spread. This is 2.2 percent above the published v0.10 mean of 4960
+and 159.3 percent above the original CP-active mean. The saved exact-artifact
+report is `Work:P96Speed_v011_final.txt`, CRC32 `57CECA86` (1889 bytes).
 
 The final HDP sequence passed the full 8/16/32/8 fill, pattern, mask, overlap,
 complete-copy, guard, and direct-color readback suite without a crash:
 
 | Result | CRC32 | Size | Fill256 | ScatterFill4096 | Copy256 |
 |---|---:|---:|---:|---:|---:|
-| `Work:p96screen_v010final_8.txt` | `CDE47391` | 4675 | 4 | 35 | 5 |
-| `Work:p96screen_v010final_16.txt` | `0506FCC6` | 4616 | 6 | 27 | 9 |
-| `Work:p96screen_v010final_32.txt` | `2F66E5E5` | 4619 | 12 | 24 | 13 |
-| `Work:p96screen_v010final_8return.txt` | `BC93CD8B` | 4675 | 6 | 32 | 5 |
+| `Work:p96screen_v011_8.txt` | `00F2C01B` | 4675 | 3 | 33 | 7 |
+| `Work:p96screen_v011_16.txt` | `B94C0AAA` | 4616 | 5 | 27 | 7 |
+| `Work:p96screen_v011_32.txt` | `2E80F380` | 4619 | 10 | 26 | 15 |
+| `Work:p96screen_v011_8return.txt` | `1E10C436` | 4675 | 4 | 34 | 6 |
 
-The final release mean remains 53.6 percent below the 10693 target. The cursor and MMIO
+The final release mean remains 52.6 percent below the 10693 target. The cursor and MMIO
 changes remove the identified driver-side penalties, but the remaining gap is
 still dominated by rtg.library/graphics.library work outside the callbacks.
 Moving cursor state from a file-static singleton into per-board `CardData` did
@@ -207,9 +216,9 @@ sample after the complete readback sequence.
 
 ## Hardware Validation Record
 
-- Current release card: CRC32 `2AC0183B`, 31260 bytes
-- Current release result: `Work:P96Speed_release_mmio_rectfill.txt`, CRC32
-  `E374B4AB`, 1889 bytes
+- Current release card: CRC32 `E7E2F009`, 31204 bytes
+- Current release result: `Work:P96Speed_v011_final.txt`, CRC32 `57CECA86`,
+  1889 bytes
 - Release card: `Radeon9200.card.0.9-pattern`, CRC32 `B5ABB580`, 23088 bytes
 - Previous rollback: `Radeon9200.card.0.8-fill`, CRC32 `D2A76396`, 21776 bytes
 - Test utility: CRC32 `85036F1D`, 24392 bytes
@@ -244,7 +253,7 @@ overhead. The earlier 2593 figure in the gap table above has not been
 reproducible on any subsequent boot and should be treated as an outlier, not a
 regression baseline.
 
-Per RectFill the driver issues roughly:
+At that stage each RectFill issued roughly:
 
 - `WaitFifo(9)` — at least one `RBBM_STATUS` read
 - nine register writes to program the fill
@@ -328,11 +337,11 @@ does bypass `RadeonRead32`/`RadeonWrite32` and so are not counted:
 2. `host_to_pcicpy()` of 64 bytes, because `CP_RING_ALIGNMENT` pads every
    submission to 16 dwords when a fill needs 14.
 
-For comparison, the direct-MMIO submit path is 9 writes plus one `WaitFifo`
-read, about 23 us. **CP submission is currently a little over four times more
-expensive than MMIO submission**, which fully explains why enabling the CP did
-not help. The ring is not wrong in principle; it is being throttled by a
-readback and an oversized copy on every single operation.
+For comparison, the final direct-MMIO submit path is seven writes plus one
+`WaitFifo` read. **CP submission is substantially more expensive than MMIO
+submission**, which explains why enabling the CP did not help. The ring is not
+wrong in principle; it is being throttled by a readback and an oversized copy
+on every single operation.
 
 `DrainCount` is roughly twice `FillCount` because `SynchronizeEngine()` returns
 immediately when `AccelPending` is false; the table above divides by the drains
@@ -401,7 +410,7 @@ Two items from the earlier draft are now retired:
   against an unquantified hardware risk.
 
 More fundamentally, CP submission must write more dwords (8 for the fill plus 6
-for the fence) than the MMIO path writes registers (9). At roughly 2.5 us per
+for the fence) than the MMIO path writes registers (7). At roughly 2.5 us per
 PCI access in either direction, **the CP cannot beat direct MMIO for
 per-operation-fenced work while the ring sits behind the aperture**. It would
 need the ring in Fast RAM via PCI GART, which is a large project and is not
@@ -470,7 +479,7 @@ Lower value than Phase 2 because writes are posted, but cheap to do.
    per-operation sequence.
 2. Shadow `DP_GUI_MASTER_CNTL`, `DP_WRITE_MASK`, `DP_CNTL` and the brush colour,
    and skip writes when unchanged. P96Speed's RectFill loop holds pen and format
-   constant, so most of the nine writes are redundant.
+   constant, so most of the seven writes are redundant.
 
 ### Phase 4 — Question the per-operation fence
 
@@ -479,8 +488,9 @@ Confirm from the CardDevelop documentation whether `WaitBlitter` after every
 flags this driver advertises in `BoardInfo`. If the fence can legitimately be
 deferred to the point of CPU framebuffer access, that removes the drain from the
 hot path entirely and dominates every other item here. Treat any change in this
-area as correctness-critical, and note that the barrier-removal experiment
-already recorded under "Rejected Experiment" failed on the workload.
+area as correctness-critical. The earlier broad barrier-removal experiment
+regressed, while the later paired retest accepted only the validated
+seven-write sequence described above.
 
 ## Planned Follow-up Work
 
