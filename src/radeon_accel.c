@@ -4,6 +4,7 @@
  */
 
 #include <graphics/rastport.h>
+#include <hardware/byteswap.h>
 #include <proto/exec.h>
 
 #include "radeon9200.h"
@@ -35,6 +36,26 @@ struct AccelSurface {
     UWORD YBias;
 };
 
+static __inline__ ULONG AccelRead32(struct BoardInfo *bi, ULONG reg)
+{
+    RDEBUG_COUNT_READ();
+    return SWAPLONG(*(volatile ULONG *)
+                    ((UBYTE *)bi->MemoryIOBase + reg));
+}
+
+static __inline__ BOOL AccelWrite32(struct BoardInfo *bi, ULONG reg,
+                                    ULONG value)
+{
+    RDEBUG_COUNT_WRITE();
+    *(volatile ULONG *)((UBYTE *)bi->MemoryIOBase + reg) =
+        SWAPLONG(value);
+    return TRUE;
+}
+
+#define RadeonRead32(bi, reg) AccelRead32((bi), (reg))
+#define RadeonWrite32(bi, reg, value) \
+    AccelWrite32((bi), (reg), (value))
+
 static BOOL WaitFifo(struct BoardInfo *bi, ULONG entries)
 {
     ULONG count;
@@ -60,26 +81,7 @@ static BOOL WaitIdleAndFlush(struct BoardInfo *bi)
     for (count = 0; count < ACCEL_TIMEOUT_POLLS; ++count) {
         if (!(RadeonRead32(bi, RADEON_RBBM_STATUS) &
               RADEON_RBBM_ACTIVE))
-            break;
-        if (count >= ACCEL_SPIN_POLLS)
-            RadeonDelayUs(1);
-    }
-    if (count == ACCEL_TIMEOUT_POLLS ||
-        !RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                       RADEON_RB2D_DC_FLUSH_ALL))
-        return FALSE;
-
-    for (count = 0; count < ACCEL_TIMEOUT_POLLS; ++count) {
-        if (!(RadeonRead32(bi, RADEON_DSTCACHE_CTLSTAT) &
-              RADEON_RB2D_DC_BUSY)) {
-            if (!RadeonWrite32(
-                    bi, RADEON_HOST_PATH_CNTL,
-                    RADEON_HDP_READ_BUFFER_INVALIDATE) ||
-                !RadeonWrite32(bi, RADEON_HOST_PATH_CNTL, 0))
-                return FALSE;
-            (void)RadeonRead32(bi, RADEON_HOST_PATH_CNTL);
             return TRUE;
-        }
         if (count >= ACCEL_SPIN_POLLS)
             RadeonDelayUs(1);
     }
@@ -236,9 +238,13 @@ static enum SurfaceResult ValidateSurface(
     ULONG xBias;
     ULONG yBias;
     ULONG pitch;
-    unsigned long long lineEnd;
-    unsigned long long rectangleStart;
-    unsigned long long rectangleEnd;
+    ULONG lineEnd;
+    ULONG lastRowOffset;
+    ULONG rectangleStart;
+    ULONG rectangleEnd;
+    ULONG remaining;
+    ULONG xEnd;
+    ULONG yEnd;
 
     (void)datatype;
     if (!data || !render || !render->Memory || !surface ||
@@ -259,27 +265,33 @@ static enum SurfaceResult ValidateSurface(
     apertureLimit = bi->MemorySpaceSize;
 
     if (memoryAddress < memoryBase ||
-        (unsigned long long)memoryAddress >=
-            (unsigned long long)memoryBase + apertureLimit)
+        memoryAddress - memoryBase >= apertureLimit)
         return SURFACE_SOFTWARE;
     surfaceOffset = memoryAddress - memoryBase;
     if (surfaceOffset >= memoryLimit)
         return SURFACE_REJECT;
 
     pitch = (ULONG)(UWORD)render->BytesPerRow;
-    lineEnd = ((unsigned long long)(UWORD)x + (UWORD)width) *
-              bytesPerPixel;
-    rectangleEnd = (unsigned long long)surfaceOffset +
-                   ((unsigned long long)(UWORD)y +
-                    (UWORD)height - 1ULL) * pitch + lineEnd;
-    rectangleStart = (unsigned long long)surfaceOffset +
-                     (unsigned long long)(UWORD)y * pitch +
-                     (unsigned long long)(UWORD)x * bytesPerPixel;
-    if (lineEnd > pitch || rectangleEnd > memoryLimit)
-        return SURFACE_REJECT;
-
     if ((pitch & 63UL) || pitch > ACCEL_MAX_PITCH)
         return SURFACE_SOFTWARE;
+
+    xEnd = (ULONG)(UWORD)x + (UWORD)width;
+    yEnd = (ULONG)(UWORD)y + (UWORD)height;
+    if (xEnd - 1UL > ACCEL_MAX_COORD ||
+        yEnd - 1UL > ACCEL_MAX_COORD)
+        return SURFACE_SOFTWARE;
+
+    lineEnd = xEnd * bytesPerPixel;
+    if (lineEnd > pitch)
+        return SURFACE_REJECT;
+    lastRowOffset = (yEnd - 1UL) * pitch;
+    remaining = memoryLimit - surfaceOffset;
+    if (lineEnd > remaining ||
+        lastRowOffset > remaining - lineEnd)
+        return SURFACE_REJECT;
+    rectangleEnd = surfaceOffset + lastRowOffset + lineEnd;
+    rectangleStart = surfaceOffset + (ULONG)(UWORD)y * pitch +
+                     (ULONG)(UWORD)x * bytesPerPixel;
 
     if (data->FramebufferGpuBase > 0xffffffffUL - surfaceOffset)
         return SURFACE_REJECT;
@@ -288,19 +300,24 @@ static enum SurfaceResult ValidateSurface(
     if (alignedGpuAddress > 0xfffffc00UL)
         return SURFACE_SOFTWARE;
     addressBias = gpuAddress - alignedGpuAddress;
-    yBias = addressBias / pitch;
-    addressBias -= yBias * pitch;
-    if (addressBias % bytesPerPixel)
-        return SURFACE_SOFTWARE;
-    xBias = addressBias / bytesPerPixel;
+    if (addressBias) {
+        yBias = addressBias / pitch;
+        addressBias -= yBias * pitch;
+        if (addressBias % bytesPerPixel)
+            return SURFACE_SOFTWARE;
+        xBias = addressBias / bytesPerPixel;
+    } else {
+        xBias = 0;
+        yBias = 0;
+    }
     if (xBias + (UWORD)x + (UWORD)width - 1UL > ACCEL_MAX_COORD ||
         yBias + (UWORD)y + (UWORD)height - 1UL > ACCEL_MAX_COORD)
         return SURFACE_SOFTWARE;
 
     surface->PitchOffset = ((pitch >> 6) << 22) |
                            (alignedGpuAddress >> 10);
-    surface->StartOffset = (ULONG)rectangleStart;
-    surface->EndOffset = (ULONG)rectangleEnd;
+    surface->StartOffset = rectangleStart;
+    surface->EndOffset = rectangleEnd;
     surface->XBias = (UWORD)xBias;
     surface->YBias = (UWORD)yBias;
     return SURFACE_HARDWARE;
@@ -344,25 +361,25 @@ static BOOL PrepareMonoPattern(struct BoardInfo *bi,
     return TRUE;
 }
 
-static BOOL SubmitFill(struct BoardInfo *bi,
-                       const struct AccelSurface *surface,
-                       WORD x, WORD y, WORD width, WORD height,
-                       ULONG pen, UBYTE mask, RGBFTYPE format)
+static BOOL SubmitSolidRect(struct BoardInfo *bi,
+                            const struct AccelSurface *surface,
+                            WORD x, WORD y, WORD width, WORD height,
+                            ULONG pen, UBYTE mask, RGBFTYPE format,
+                            ULONG rop)
 {
     ULONG bytesPerPixel;
     ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
     ULONG writeMask = format == RGBFB_CLUT ? (ULONG)mask :
-                                                   0xffffffffUL;
+                                                    0xffffffffUL;
     ULONG master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
-                   RADEON_GMC_BRUSH_SOLID_COLOR | datatype |
-                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
-                    RADEON_GMC_CLR_CMP_CNTL_DIS;
+                    RADEON_GMC_BRUSH_SOLID_COLOR | datatype |
+                     RADEON_GMC_SRC_DATATYPE_COLOR | rop |
+                     RADEON_GMC_CLR_CMP_CNTL_DIS;
     (void)bytesPerPixel;
     pen = HardwarePen(pen, format);
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);
-    return WaitFifo(bi, 7) &&
-           RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
+    return RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
            RadeonWrite32(bi, RADEON_DP_BRUSH_FRGD_CLR, pen) &&
            RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
            RadeonWrite32(bi, RADEON_DP_CNTL,
@@ -423,7 +440,138 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
                           (destinationY << 16) | destinationX) &&
            RadeonWrite32(bi, RADEON_DST_HEIGHT_WIDTH,
                           ((ULONG)(UWORD)height << 16) |
-                              (UWORD)width);
+                               (UWORD)width);
+}
+
+static ULONG TemplateWord(const struct Template *template, UWORD row,
+                          ULONG firstPixel, UWORD width)
+{
+    const UBYTE *source = (const UBYTE *)template->Memory +
+                          (ULONG)row * (UWORD)template->BytesPerRow;
+    ULONG word = 0;
+    ULONG pixel;
+
+    for (pixel = 0; pixel < 32 && firstPixel + pixel < width; ++pixel) {
+        ULONG sourceBit = template->XOffset + firstPixel + pixel;
+
+        if (source[sourceBit >> 3] & (0x80U >> (sourceBit & 7UL)))
+            word |= 1UL << pixel;
+    }
+    return word;
+}
+
+static BOOL PrepareTemplate(struct BoardInfo *bi,
+                            const struct Template *template,
+                            WORD width, WORD height)
+{
+    ULONG memoryAddress;
+    ULONG memoryBase;
+    ULONG rowBits;
+
+    if (!bi || !template || !template->Memory ||
+        template->BytesPerRow <= 0 || template->XOffset > 15 ||
+        (template->DrawMode != JAM1 && template->DrawMode != JAM2))
+        return FALSE;
+
+    memoryAddress = (ULONG)template->Memory;
+    memoryBase = (ULONG)bi->MemoryBase;
+    if (memoryAddress >= memoryBase &&
+        (unsigned long long)memoryAddress <
+            (unsigned long long)memoryBase + bi->MemorySpaceSize)
+        return FALSE;
+
+    rowBits = (ULONG)(UWORD)template->BytesPerRow * 8UL;
+    return width > 0 && height > 0 &&
+           (ULONG)template->XOffset + (UWORD)width <= rowBits;
+}
+
+static BOOL SubmitTemplate(struct BoardInfo *bi,
+                           const struct AccelSurface *surface,
+                           const struct Template *template,
+                           WORD x, WORD y, WORD width, WORD height,
+                           UBYTE mask, RGBFTYPE format)
+{
+    ULONG bytesPerPixel;
+    ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
+    ULONG sourceType = template->DrawMode == JAM2 ?
+        RADEON_GMC_SRC_DATATYPE_MONO_FG_BG :
+        RADEON_GMC_SRC_DATATYPE_MONO_FG_LA;
+    ULONG writeMask = format == RGBFB_CLUT ? (ULONG)mask :
+                                                   0xffffffffUL;
+    ULONG destinationX = (ULONG)(UWORD)(x + surface->XBias);
+    ULONG destinationY = (ULONG)(UWORD)(y + surface->YBias);
+    ULONG paddedWidth = ((ULONG)(UWORD)width + 31UL) & ~31UL;
+    ULONG words = paddedWidth >> 5;
+    UWORD row;
+
+    (void)bytesPerPixel;
+    if (!WaitFifo(bi, 13) ||
+        !RadeonWrite32(bi, RADEON_RBBM_GUICNTL,
+                       RADEON_HOST_DATA_SWAP_NONE) ||
+        !RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL,
+                       RADEON_GMC_DST_PITCH_OFFSET_CNTL |
+                           RADEON_GMC_DST_CLIPPING |
+                           RADEON_GMC_BRUSH_NONE | datatype | sourceType |
+                           RADEON_GMC_BYTE_LSB_TO_MSB | RADEON_ROP3_S |
+                           RADEON_DP_SRC_SOURCE_HOST_DATA |
+                           RADEON_GMC_CLR_CMP_CNTL_DIS) ||
+        !RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) ||
+        !RadeonWrite32(bi, RADEON_DP_SRC_FRGD_CLR,
+                       HardwarePen(template->FgPen, format)) ||
+        !RadeonWrite32(bi, RADEON_DP_SRC_BKGD_CLR,
+                       HardwarePen(template->BgPen, format)) ||
+        !RadeonWrite32(bi, RADEON_DP_CNTL,
+                       RADEON_DST_X_LEFT_TO_RIGHT |
+                           RADEON_DST_Y_TOP_TO_BOTTOM) ||
+        !RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
+                       RADEON_RB2D_DC_FLUSH_ALL) ||
+        !RadeonWrite32(bi, RADEON_WAIT_UNTIL,
+                       RADEON_WAIT_2D_IDLECLEAN |
+                           RADEON_WAIT_DMA_GUI_IDLE) ||
+        !RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
+                       surface->PitchOffset) ||
+        !RadeonWrite32(bi, RADEON_SC_TOP_LEFT,
+                       (destinationY << 16) | destinationX) ||
+        !RadeonWrite32(bi, RADEON_SC_BOTTOM_RIGHT,
+                       ((destinationY + (UWORD)height) << 16) |
+                           (destinationX + (UWORD)width)) ||
+        !RadeonWrite32(bi, RADEON_DST_Y_X,
+                       (destinationY << 16) | destinationX) ||
+        !RadeonWrite32(bi, RADEON_DST_HEIGHT_WIDTH,
+                       ((ULONG)(UWORD)height << 16) | paddedWidth))
+        return FALSE;
+
+    for (row = 0; row < (UWORD)height; ++row) {
+        ULONG left = words;
+        ULONG wordIndex = 0;
+
+        while (left) {
+            ULONG count = left > 8UL ? 8UL : left;
+            ULONG reg;
+            ULONG index;
+
+            if (left > 8UL)
+                reg = RADEON_HOST_DATA0;
+            else if (row == (UWORD)height - 1U)
+                reg = RADEON_HOST_DATA_LAST - (count - 1UL) * 4UL;
+            else
+                reg = RADEON_HOST_DATA7 - (count - 1UL) * 4UL;
+
+            if (!WaitFifo(bi, count))
+                return FALSE;
+            for (index = 0; index < count; ++index) {
+                if (!RadeonWrite32(
+                        bi, reg + index * 4UL,
+                        TemplateWord(template, row,
+                                     (wordIndex + index) * 32UL,
+                                     (UWORD)width)))
+                    return FALSE;
+            }
+            wordIndex += count;
+            left -= count;
+        }
+    }
+    return TRUE;
 }
 
 static BOOL SubmitCopy(struct BoardInfo *bi,
@@ -532,16 +680,13 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
 
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi))
 {
-    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     RDEBUG_SAMPLE
 
-    if (!SysBase)
+    if (!bi)
         return;
-    ObtainSemaphore(&bi->BoardLock);
     RDEBUG_BEGIN();
     (void)SynchronizeEngine(bi);
     RDEBUG_END_DRAIN();
-    ReleaseSemaphore(&bi->BoardLock);
 }
 
 void RadeonFillRect(__REGA0(struct BoardInfo *bi),
@@ -567,7 +712,6 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
         return;
     RDEBUG_BEGIN_OUTER();
 
-    ObtainSemaphore(&bi->BoardLock);
     if (result == SURFACE_HARDWARE &&
         data->AccelState == RADEON_ACCEL_READY) {
 #ifdef DEBUG
@@ -582,25 +726,71 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
         }
 #endif
         RDEBUG_BEGIN();
-        if (SubmitFill(bi, &surface, x, y, width, height,
-                       pen, mask, format)) {
+        if (SubmitSolidRect(bi, &surface, x, y, width, height,
+                            pen, mask, format, RADEON_ROP3_P)) {
             data->AccelPending = RADEON_PENDING_MMIO;
             RDEBUG_MARK_HARDWARE();
         } else {
+            ObtainSemaphore(&bi->BoardLock);
             software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
         }
         RDEBUG_END_FILL();
     } else {
+        ObtainSemaphore(&bi->BoardLock);
         software = SynchronizeEngine(bi) &&
                    data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
     }
-    ReleaseSemaphore(&bi->BoardLock);
 
     if (software && bi->FillRectDefault &&
         bi->FillRectDefault != RadeonFillRect)
         bi->FillRectDefault(bi, render, x, y, width, height,
                             pen, mask, format);
     RDEBUG_END_CALL();
+}
+
+void RadeonInvertRect(__REGA0(struct BoardInfo *bi),
+                      __REGA1(struct RenderInfo *render),
+                      __REGD0(WORD x), __REGD1(WORD y),
+                      __REGD2(WORD width), __REGD3(WORD height),
+                      __REGD4(UBYTE mask),
+                      __REGD7(RGBFTYPE format))
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct AccelSurface surface;
+    enum SurfaceResult result;
+    BOOL software = FALSE;
+
+    if (!SysBase || !data)
+        return;
+    result = ValidateSurface(bi, render, x, y, width, height,
+                             format, &surface);
+    if (result == SURFACE_REJECT)
+        return;
+
+    if (result == SURFACE_HARDWARE &&
+        data->AccelState == RADEON_ACCEL_READY) {
+        if (SubmitSolidRect(bi, &surface, x, y, width, height,
+                            0, mask, format, RADEON_ROP3_Dn)) {
+            data->AccelPending = RADEON_PENDING_MMIO;
+        } else {
+            ObtainSemaphore(&bi->BoardLock);
+            software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
+    } else {
+        ObtainSemaphore(&bi->BoardLock);
+        software = SynchronizeEngine(bi) &&
+                   data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
+    }
+
+    if (software && bi->InvertRectDefault &&
+        bi->InvertRectDefault != RadeonInvertRect)
+        bi->InvertRectDefault(bi, render, x, y, width, height,
+                              mask, format);
 }
 
 void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
@@ -629,7 +819,6 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
     hardware = PrepareMonoPattern(bi, pattern,
                                   &patternData0, &patternData1);
 
-    ObtainSemaphore(&bi->BoardLock);
     if (hardware && result == SURFACE_HARDWARE &&
         data->AccelState == RADEON_ACCEL_READY) {
         if (SubmitPattern(bi, &surface, pattern, x, y, width, height,
@@ -647,18 +836,73 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
                  (ULONG)pattern->Size, patternData0, patternData1);
 #endif
         } else {
+            ObtainSemaphore(&bi->BoardLock);
             software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
         }
     } else {
+        ObtainSemaphore(&bi->BoardLock);
         software = SynchronizeEngine(bi) &&
                    data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
     }
-    ReleaseSemaphore(&bi->BoardLock);
 
     if (software && bi->BlitPatternDefault &&
         bi->BlitPatternDefault != RadeonBlitPattern)
         bi->BlitPatternDefault(bi, render, pattern, x, y,
                                width, height, mask, format);
+}
+
+void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
+                        __REGA1(struct RenderInfo *render),
+                        __REGA2(struct Template *template),
+                        __REGD0(WORD x), __REGD1(WORD y),
+                        __REGD2(WORD width), __REGD3(WORD height),
+                        __REGD4(UBYTE mask),
+                        __REGD7(RGBFTYPE format))
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct AccelSurface surface;
+    enum SurfaceResult result;
+    BOOL hardware;
+    BOOL software = FALSE;
+
+    if (!SysBase || !data)
+        return;
+    result = ValidateSurface(bi, render, x, y, width, height,
+                             format, &surface);
+    if (result == SURFACE_REJECT)
+        return;
+    hardware = PrepareTemplate(bi, template, width, height);
+    if (hardware && result == SURFACE_HARDWARE) {
+        ULONG destinationX = (ULONG)(UWORD)(x + surface.XBias);
+        ULONG paddedWidth = ((ULONG)(UWORD)width + 31UL) & ~31UL;
+
+        hardware = destinationX + paddedWidth <= ACCEL_MAX_COORD + 1UL;
+    }
+
+    if (hardware && result == SURFACE_HARDWARE &&
+        data->AccelState == RADEON_ACCEL_READY) {
+        if (SubmitTemplate(bi, &surface, template, x, y, width, height,
+                           mask, format))
+            data->AccelPending = RADEON_PENDING_MMIO;
+        else {
+            ObtainSemaphore(&bi->BoardLock);
+            software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
+    } else {
+        ObtainSemaphore(&bi->BoardLock);
+        software = SynchronizeEngine(bi) &&
+                   data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
+    }
+
+    if (software && bi->BlitTemplateDefault &&
+        bi->BlitTemplateDefault != RadeonBlitTemplate)
+        bi->BlitTemplateDefault(bi, render, template, x, y,
+                                width, height, mask, format);
 }
 
 void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
@@ -685,7 +929,6 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
     if (srcResult == SURFACE_REJECT || dstResult == SURFACE_REJECT)
         return;
 
-    ObtainSemaphore(&bi->BoardLock);
     if (srcResult == SURFACE_HARDWARE &&
         dstResult == SURFACE_HARDWARE &&
         source.PitchOffset == destination.PitchOffset &&
@@ -706,13 +949,17 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
                        srcX, srcY, dstX, dstY,
                        width, height, mask, format, TRUE))
             data->AccelPending = RADEON_PENDING_MMIO;
-        else
+        else {
+            ObtainSemaphore(&bi->BoardLock);
             software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
     } else {
+        ObtainSemaphore(&bi->BoardLock);
         software = SynchronizeEngine(bi) &&
                    data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
     }
-    ReleaseSemaphore(&bi->BoardLock);
 
     if (software && bi->BlitRectDefault &&
         bi->BlitRectDefault != RadeonBlitRect)
@@ -751,7 +998,6 @@ void RadeonBlitRectNoMaskComplete(
                dstResult == SURFACE_HARDWARE &&
                (source.EndOffset <= destination.StartOffset ||
                 destination.EndOffset <= source.StartOffset);
-    ObtainSemaphore(&bi->BoardLock);
     if (opcode == 0x0cU && disjoint && sourceRender &&
         destinationRender &&
         sourceRender->BytesPerRow == destinationRender->BytesPerRow &&
@@ -777,13 +1023,17 @@ void RadeonBlitRectNoMaskComplete(
                        srcX, srcY, dstX, dstY,
                        width, height, 0xffU, format, FALSE))
             data->AccelPending = RADEON_PENDING_MMIO;
-        else
+        else {
+            ObtainSemaphore(&bi->BoardLock);
             software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
     } else {
+        ObtainSemaphore(&bi->BoardLock);
         software = SynchronizeEngine(bi) &&
                    data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
     }
-    ReleaseSemaphore(&bi->BoardLock);
 
     if (software && bi->BlitRectNoMaskCompleteDefault &&
         bi->BlitRectNoMaskCompleteDefault !=

@@ -35,8 +35,11 @@ DAC.
 - Preserve and restore the original PCI command word on failure or unload.
 - Use BAR0 for the framebuffer aperture and BAR2 for RV280 MMIO only after
   validating their type, address, and size.
-- Access PCI memory and registers only through `pci_in*()`, `pci_out*()`, and
-  the OpenPCI copy functions. Never use direct volatile pointer accesses.
+- Use OpenPCI for discovery, ownership, configuration space, and bridge setup.
+  After BAR type, size, and ownership validation, mapped Radeon framebuffer and
+  MMIO apertures may use endian-correct volatile CPU accesses. This is required
+  for the validated hot path; per-register `pci_in*()`/`pci_out*()` library
+  calls are prohibitively expensive on the target bridge.
 - Radeon registers are little-endian. Use `SWAPWORD()` and `SWAPLONG()` at the
   MMIO boundary; do not swap PCI configuration values or addresses.
 - Do not disable or alter unclaimed Radeon boards.
@@ -67,24 +70,27 @@ OpenPCI provider. Publication and real inter-card transfers remain unresolved.
 ## Acceleration Policy
 
 The CP ring may remain initialized for future 3D work, but all current
-Picasso96 2D operations use direct MMIO. Every FIFO, idle, and cache poll is
-bounded. One timeout recovery reset is allowed; successful recovery permanently
-routes the session to software, and failed recovery blocks further VRAM
-rendering through the wrappers.
+Picasso96 2D operations use direct MMIO. Explicit FIFO and idle polls are
+bounded; solid fills follow the validated hardware-backpressure path and do not
+pre-poll the FIFO. One timeout recovery reset is allowed; successful recovery
+permanently routes the session to software, and failed recovery blocks further
+VRAM rendering through the wrappers.
 
-The validated hardware subset is `FillRect` in CLUT8/RGB565PC/BGRA32 (including
-CLUT8 partial masks), same-`RenderInfo` `BlitRect` in all three formats, and
-cross-surface `BlitRectNoMaskComplete` for opcode `$C` (source copy) between
-disjoint, same-pitch surfaces. Surface bases are rebased to a 1 KiB GPU address
-with checked X/Y bias so ordinary 16-byte P96 allocations remain usable.
+The validated hardware subset is `FillRect` and destination-only `InvertRect`
+in CLUT8/RGB565PC/BGRA32 (including CLUT8 partial masks), same-`RenderInfo`
+`BlitRect` in all three formats, and cross-surface
+`BlitRectNoMaskComplete` for opcode `$C` (source copy) between disjoint,
+same-pitch surfaces. Surface bases are rebased to a 1 KiB GPU address with
+checked X/Y bias so ordinary 16-byte P96 allocations remain usable.
 
-The validated subset also includes JAM2 `BlitPattern` for 1/2/4/8-row patterns
+The validated subset also includes JAM1/JAM2 `BlitTemplate` and JAM2
+`BlitPattern` for 1/2/4/8-row patterns
 whose 16-bit rows contain identical bytes. Hardware activity is established by
 the P96Speed pattern increase from 37 to 1387 operations/second; 8/16/32/8
 readback tests pass every accepted height, phase, edge, and overdraw guard.
 CLUT8 partial-mask patterns and synchronized software fallback for a rejected
 16-pixel pattern also pass.
-Template, line, invert, planar, host-data, unsupported patterns, and any
+Line, planar, unsupported patterns, and any
 cross-surface operations with overlap, unequal pitch, or non-copy opcodes
 remain software fallbacks.
 

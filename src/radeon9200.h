@@ -67,7 +67,11 @@ typedef char RadeonBoardDataFitsCardData[
         ? 1
         : -1];
 
-struct RadeonBoardData *RadeonGetBoardData(struct BoardInfo *bi);
+static __inline__ struct RadeonBoardData *RadeonGetBoardData(
+    struct BoardInfo *bi)
+{
+    return bi ? (struct RadeonBoardData *)bi->CardData : NULL;
+}
 void RadeonReleaseBoard(struct RadeonCardBase *base);
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg);
@@ -93,6 +97,12 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                     __REGD2(WORD width), __REGD3(WORD height),
                     __REGD4(ULONG pen), __REGD5(UBYTE mask),
                     __REGD7(RGBFTYPE format));
+void RadeonInvertRect(__REGA0(struct BoardInfo *bi),
+                      __REGA1(struct RenderInfo *render),
+                      __REGD0(WORD x), __REGD1(WORD y),
+                      __REGD2(WORD width), __REGD3(WORD height),
+                      __REGD4(UBYTE mask),
+                      __REGD7(RGBFTYPE format));
 void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
                     __REGA1(struct RenderInfo *render),
                     __REGD0(WORD srcX), __REGD1(WORD srcY),
@@ -106,6 +116,13 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
                        __REGD2(WORD width), __REGD3(WORD height),
                        __REGD4(UBYTE mask),
                        __REGD7(RGBFTYPE format));
+void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
+                        __REGA1(struct RenderInfo *render),
+                        __REGA2(struct Template *template),
+                        __REGD0(WORD x), __REGD1(WORD y),
+                        __REGD2(WORD width), __REGD3(WORD height),
+                        __REGD4(UBYTE mask),
+                        __REGD7(RGBFTYPE format));
 void RadeonBlitRectNoMaskComplete(
     __REGA0(struct BoardInfo *bi),
     __REGA1(struct RenderInfo *sourceRender),
@@ -120,6 +137,9 @@ void RadeonShutdownCursor(struct BoardInfo *bi);
 BOOL RadeonSetSprite(__REGA0(struct BoardInfo *bi),
                      __REGD0(BOOL active),
                      __REGD7(RGBFTYPE format));
+BOOL RadeonEnableSoftSprite(__REGA0(struct BoardInfo *bi),
+                            __REGD0(ULONG formatFlags),
+                            __REGA1(struct ModeInfo *mode));
 void RadeonSetSpritePosition(__REGA0(struct BoardInfo *bi),
                              __REGD0(WORD x), __REGD1(WORD y),
                              __REGD7(RGBFTYPE format));

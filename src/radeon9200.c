@@ -171,13 +171,6 @@ static void ParseOptions(char **toolTypes, struct RadeonOptions *options)
     }
 }
 
-struct RadeonBoardData *RadeonGetBoardData(struct BoardInfo *bi)
-{
-    if (!bi)
-        return NULL;
-    return (struct RadeonBoardData *)bi->CardData;
-}
-
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
@@ -188,7 +181,7 @@ ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg)
         return 0;
 
     RDEBUG_COUNT_READ();
-    return SWAPLONG(pci_inl((ULONG)mmio + reg));
+    return SWAPLONG(*(volatile ULONG *)(mmio + reg));
 }
 
 BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value)
@@ -201,7 +194,7 @@ BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value)
         return FALSE;
 
     RDEBUG_COUNT_WRITE();
-    pci_outl(SWAPLONG(value), (ULONG)mmio + reg);
+    *(volatile ULONG *)(mmio + reg) = SWAPLONG(value);
     return TRUE;
 }
 

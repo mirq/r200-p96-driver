@@ -884,6 +884,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite)
         bi->SetSpritePosition = RadeonSetSpritePosition;
         bi->SetSpriteImage = RadeonSetSpriteImage;
         bi->SetSpriteColor = RadeonSetSpriteColor;
+        bi->EnableSoftSprite = RadeonEnableSoftSprite;
         bi->Flags |= BIF_HARDWARESPRITE;
         RLOG("Radeon9200: RV280 hardware cursor enabled\n");
     }
@@ -891,8 +892,10 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite)
     if (data && data->AccelState == RADEON_ACCEL_READY &&
         !(bi->Flags & BIF_NOBLITTER)) {
         bi->FillRect = RadeonFillRect;
+        bi->InvertRect = RadeonInvertRect;
         bi->BlitRect = RadeonBlitRect;
         bi->BlitPattern = RadeonBlitPattern;
+        bi->BlitTemplate = RadeonBlitTemplate;
         bi->BlitRectNoMaskComplete = RadeonBlitRectNoMaskComplete;
         bi->Flags |= BIF_BLITTER;
         RLOG("Radeon9200: rectangle acceleration enabled\n");

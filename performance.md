@@ -11,14 +11,14 @@ P96Speed automation is documented separately in [`p96speed.md`](p96speed.md).
 - RV280 Radeon 9200 `1002:5964`
 - P96Speed 1.2, 640x480x16, 13 seconds per test
 
-The closed-driver reference is `Work:P96Speed_org.txt`. The current validated
-solid-fill result is `Work:P96Speed_v011_final.txt`.
+The closed-driver reference is `Work:P96Speed_org.txt`. Version 0.12 produced a
+validated focused solid-fill result of 10688 operations/second.
 
 ## Current Gaps
 
 | Operation | Closed driver | Validated driver | Remaining gap |
 |---|---:|---:|---:|
-| RectFill | 11881 | 5067 | 2.3x |
+| RectFill | 11881 | 10688 | 1.11x |
 | RectFill Pattern | 11246 | 1387 | 8.1x |
 | WritePixel | 134097 | 129429 | 1.04x |
 | WriteChunkyPixels | 133 | 131 | 1.02x |
@@ -37,6 +37,40 @@ solid-fill result is `Work:P96Speed_v011_final.txt`.
 CPU-written operations are already within about eight percent of the closed
 driver. The remaining large gaps correspond to missing P96 callbacks or to
 per-operation MMIO setup, not basic PCI framebuffer bandwidth.
+
+## Version 0.12 RectFill Result
+
+The benchmarked card with CRC32 `85C2D325` (30,696 bytes) produced a focused
+RectFill sample of **10688 operations/second** at 640x480x16 for 13 seconds. It
+differs from the final v0.12 artifact only in the embedded version. It is
+preserved on the Amiga as
+`LIBS:Picasso96/Radeon9200.card.direct-fast-10688`.
+
+This candidate combines two independently measured changes:
+
+| Build | RectFill op/s | Time/op | Change |
+|---|---:|---:|---:|
+| Previous release-like baseline | 5167 | 193.54 us | - |
+| Direct volatile MMIO | ~6700 | ~149.25 us | +29.7% |
+| Direct MMIO plus 32-bit surface validation | 10688 | 93.56 us | +106.9% |
+
+Direct MMIO removes the `openpci.library` `pci_inl`/`pci_outl` call from every
+register access. Acceleration submission uses inlined unchecked loads and
+stores against the already-validated `MemoryIOBase`, matching the closed
+driver's endian-swapped `move.l` sequences. The solid-fill path no longer
+reserves FIFO entries before writing, and `WaitBlitter` now performs the same
+FIFO-empty and GUI-idle checks as the closed driver without a semaphore or an
+extra destination-cache/HDP sequence.
+
+The second gain came from replacing `ValidateSurface`'s per-call 64-bit bounds
+arithmetic with overflow-safe 32-bit subtraction checks. Hardware coordinates
+are capped at 8191 and pitch at 16320, which bounds the intermediate products.
+The normal 1 KiB-aligned surface path also avoids address-bias division.
+
+The result is 2.07x the 5167 baseline and within 10.1 percent of the closed
+driver's 11881 result. The complete CLUT8/RGB565PC/BGRA32 readback and guard
+sequence passed, including fill, invert, template, pattern, masks, overlap, and
+cross-surface copy tests, followed by a successful return to CLUT8.
 
 ## Accepted Changes
 
@@ -207,9 +241,10 @@ complete-copy, guard, and direct-color readback suite without a crash:
 | `Work:p96screen_v011_32.txt` | `2E80F380` | 4619 | 10 | 26 | 15 |
 | `Work:p96screen_v011_8return.txt` | `1E10C436` | 4675 | 4 | 34 | 6 |
 
-The final release mean remains 52.6 percent below the 10693 target. The cursor and MMIO
-changes remove the identified driver-side penalties, but the remaining gap is
-still dominated by rtg.library/graphics.library work outside the callbacks.
+The v0.11 release mean remained 52.6 percent below the 10693 target. At that
+stage, the cursor and MMIO changes had removed the identified driver-side
+penalties, but the remaining gap appeared dominated by
+rtg.library/graphics.library work outside the callbacks.
 Moving cursor state from a file-static singleton into per-board `CardData` did
 not regress the hot path; the final DEBUG build produced a 3629 op/s smoke
 sample after the complete readback sequence.
@@ -492,18 +527,51 @@ area as correctness-critical. The earlier broad barrier-removal experiment
 regressed, while the later paired retest accepted only the validated
 seven-write sequence described above.
 
-## Planned Follow-up Work
+## Remaining Performance and Callback Plan
 
-1. **DrawLine**: use the Radeon line engine and the now-proven direct-color pen
+The release driver still reaches about 5067 RectFill operations/second against
+the closed driver's 11881. Assembly versus C cannot explain that gap by itself:
+the measured callback and drain costs leave substantial time in
+graphics.library and rtg.library. Missing callbacks may improve the operations
+they implement, but installing one is not evidence that rtg.library will change
+its RectFill dispatch. Keep those two investigations separate and measure each
+change against the same release benchmark.
+
+1. **Compare BoardInfo presentation**: capture flags, format masks, sprite state,
+   callback addresses, and relevant bitmap attributes for this driver and the
+   closed driver. Change one advertised capability at a time; do not claim
+   unsupported hardware merely to select a faster generic path.
+2. **Measure the library-side interval**: retain a release-like timing build
+   that brackets the caller-visible operation, `RadeonFillRect`, and
+   `RadeonWaitBlitter`. This determines whether a callback or flag change
+   actually removes work above the driver.
+3. **InvertRect**: implemented with destination-only `ROP3_Dn`, the validated
+   rectangle surface checks, and the existing fallback boundary. The real
+   RV280 passes edge and guard tests in CLUT8/RGB565PC/BGRA32, CLUT8 partial
+   masks, and a final CLUT8 state-restoration pass. P96Speed has no dedicated
+   row for it.
+4. **BlitTemplate**: two real-hardware prototypes were rejected. A 13x8
+   host-data path delivered incorrect asserted bits and took 52 ticks per 4096
+   operations versus the software default's 26. An 8x8 monochrome-brush path
+   made JAM2 correct after LSB-first row packing, but JAM1 transparency failed
+   and the paired benchmark took 39 ticks versus software's 16. The callback is
+   therefore not advertised; future work requires a materially different
+   submission path, not another small register-sequence adjustment.
+5. **BlitPlanar2Chunky/Direct**: add only after defining a bounded upload path
+   and focused correctness tests. Until then, preserve the software defaults.
+6. **DrawLine**: use the Radeon line engine and the now-proven direct-color pen
    conversion. This targets Draw and may also improve circles and ellipses.
-2. **BlitTemplate**: implement bounded monochrome host-data expansion for text.
-   This targets PutText and CON output, but requires special care because P96's
-   `BIF_SYSTEM2SCREENBLITS` warning applies to classic bridges.
-3. **Copy hazard tracking**: batch copies only when pending destinations cannot
-   alias later sources. This targets scrolling and the remaining bitmap gap.
-4. **BlitPattern extension**: consider JAM1, complement, inverse-video, and true
-   16-pixel patterns without weakening the validated narrow fallback boundary.
-5. **Broader minterms and pitches**: extend `BlitRectNoMaskComplete` to all 16
-   ROPs and independently valid source/destination pitches.
-6. **InvertRect**: add destination-only `ROP3_Dn`; low risk, but no dedicated
-   P96Speed row makes it lower priority.
+7. **Reduce hot-path overhead after measurement**: inspect generated 68k code,
+   cache validated surface layout where ownership permits, account FIFO slots in
+   software, and shadow unchanged setup registers. Do not attribute PCI latency
+   to C call overhead without a paired measurement.
+8. **Copy and pattern extensions**: add copy hazard tracking, broader minterms
+   and pitches, and JAM1/complement/true 16-pixel patterns without weakening the
+   validated fallback boundary.
+
+`EnableSoftSprite` is also installed with the hardware-cursor callbacks. It
+requests software rendering only when cursor allocation is absent or the
+requested formats intersect `SoftSpriteFlags`; no mode-specific RV280 cursor
+restriction is currently known within the driver's advertised mode limits. The
+real machine completed the CLUT8/RGB565PC/BGRA32 screen cycle and full
+acceleration tests after installing it.

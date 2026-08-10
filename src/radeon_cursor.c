@@ -207,6 +207,14 @@ BOOL RadeonSetSprite(__REGA0(struct BoardInfo *bi),
                         RADEON_CRTC_CUR_EN, 0);
 }
 
+BOOL RadeonEnableSoftSprite(__REGA0(struct BoardInfo *bi),
+                            __REGD0(ULONG formatFlags),
+                            __REGA1(struct ModeInfo *mode))
+{
+    (void)mode;
+    return !GetCursor(bi) || (formatFlags & bi->SoftSpriteFlags) != 0;
+}
+
 void RadeonSetSpritePosition(__REGA0(struct BoardInfo *bi),
                              __REGD0(WORD x), __REGD1(WORD y),
                              __REGD7(RGBFTYPE format))

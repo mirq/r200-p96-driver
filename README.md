@@ -36,7 +36,7 @@ and opens Picasso96-managed screens. It implements:
   source row repeats the same eight horizontal pixels.
 
 `InitCard` returns success only after hardware initialization and startup
-screen setup have completed. Version 0.11 is validated from a cold boot on a
+screen setup have completed. Version 0.12 is validated from a cold boot on a
 real 68060 Amiga with a Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB
 COMBIOS board, and `rtg.library` 43.538. The tested configuration provides a
 64 MiB linear aperture and boots a `1024x768x8` Workbench on the Radeon. With
@@ -57,14 +57,15 @@ In an earlier hardware milestone on the validated `640x480x8` surface, 256
 full-screen fills dropped from 627 DOS ticks through the software path to 17-23
 ticks in hardware. The matching 256 half-screen copies dropped from 718 ticks
 to 16-22 ticks. These runs were approximately 27-37 times faster for fills and
-33-45 times faster for copies; the final v0.11 timings are recorded in
+33-45 times faster for copies; the final timings are recorded in
 [`performance.md`](performance.md).
 Cross-surface `BlitBitMap` and `BlitBitMapRastPort` improved from 242/237
 ops/s to 3483/2573 ops/s (roughly 14x and 11x) in P96Speed 640x480x16 tests.
 The validated monochrome pattern path improved `RectFill Pattern` from 37 to
-1387 ops/s (37.5x). The exact v0.11 direct-MMIO artifact averages 5066.7 ops/s,
-2.2 percent above v0.10; paired builds isolate a 3.65 percent improvement from
-its seven-write submission sequence.
+1387 ops/s (37.5x). Version 0.12 reaches 10688 RectFill ops/s, 2.07x the
+pre-optimization 5167 result and within 10.1 percent of the closed driver's
+11881 result. Direct volatile MMIO and overflow-safe 32-bit surface validation
+account for the gain.
 
 ## Build
 
@@ -200,9 +201,8 @@ initialization stage.
 - Pattern acceleration is limited to JAM2, heights up to eight rows, and
   16-pixel source rows whose two bytes are identical. Other patterns use P96
   software.
-- Template, line, invert, planar conversion, host-data, and cross-surface
-  operations with overlap, different pitch, or non-copy opcodes still use P96
-  software.
+- Line, planar conversion, unsupported templates, and cross-surface operations
+  with overlap, different pitch, or non-copy opcodes still use P96 software.
 - Linear scanout is limited to the lower 64 MiB aperture.
 - Horizontal panning is quantized to 8 pixels in CLUT8, 4 pixels in RGB565,
   and 2 pixels in BGRA32 because CRTC offsets have eight-byte granularity.

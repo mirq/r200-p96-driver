@@ -77,6 +77,13 @@ struct P96Mode {
 struct Library *P96Base;
 struct GfxBase *GfxBase;
 
+static UBYTE TemplateTestData[32] = {
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa
+};
+
 #define p96AllocModeListTagList(tags) \
     LP1(0x48, struct List *, p96AllocModeListTagList, \
         struct TagItem *, tags, a0, , P96Base)
@@ -175,6 +182,106 @@ static ULONG ExpectedColor(RGBFTYPE format, ULONG color)
     if (format == RGBFB_R5G6B5PC)
         return color & 0x00f8fcf8UL;
     return color;
+}
+
+static BOOL TestInvert(struct RastPort *rastPort, RGBFTYPE format)
+{
+    ULONG color = format == RGBFB_CLUT ? 0x5aUL : 0x00ff0000UL;
+    ULONG guard = format == RGBFB_CLUT ? 0xa5UL : 0x0000ffffUL;
+    ULONG before;
+    ULONG expected;
+    BOOL success = TRUE;
+
+    TestFill(rastPort, format, 279, 219, 300, 240, guard);
+    TestFill(rastPort, format, 280, 220, 299, 239, color);
+    WaitBlit();
+    before = p96ReadPixel(rastPort, 290, 230);
+    if (format == RGBFB_CLUT)
+        before &= 0xffUL;
+
+    SetWriteMask(rastPort, 0xff);
+    SetDrMd(rastPort, COMPLEMENT);
+    RectFill(rastPort, 280, 220, 299, 239);
+    WaitBlit();
+    SetDrMd(rastPort, JAM2);
+
+    if (format == RGBFB_CLUT)
+        expected = (~before) & 0xffUL;
+    else if (format == RGBFB_R5G6B5PC)
+        expected = (~before) & 0x00f8fcf8UL;
+    else
+        expected = ~before;
+    success &= CheckPixel(rastPort, 280, 220, expected, format,
+                          "invert-start");
+    success &= CheckPixel(rastPort, 299, 239, expected, format,
+                          "invert-end");
+    success &= CheckPixel(rastPort, 279, 230,
+                          ExpectedColor(format, guard), format,
+                          "invert-guard");
+    if (format == RGBFB_CLUT) {
+        TestFill(rastPort, format, 310, 220, 329, 239, 0xaaUL);
+        SetWriteMask(rastPort, 0x0f);
+        SetDrMd(rastPort, COMPLEMENT);
+        RectFill(rastPort, 310, 220, 329, 239);
+        WaitBlit();
+        SetDrMd(rastPort, JAM2);
+        SetWriteMask(rastPort, 0xff);
+        success &= CheckPixel(rastPort, 320, 230, 0xa5UL, format,
+                              "invert-mask");
+    }
+    return success;
+}
+
+static BOOL TestTemplate(struct RastPort *rastPort, RGBFTYPE format)
+{
+    ULONG foreground;
+    ULONG background;
+    ULONG guard;
+    BOOL success = TRUE;
+
+    SetWriteMask(rastPort, 0xff);
+    SetDrMd(rastPort, JAM2);
+    SetAPen(rastPort, 2);
+    RectFill(rastPort, 340, 210, 390, 250);
+    SetAPen(rastPort, 1);
+    RectFill(rastPort, 340, 210, 340, 210);
+    SetAPen(rastPort, 0);
+    RectFill(rastPort, 341, 210, 341, 210);
+    WaitBlit();
+    foreground = p96ReadPixel(rastPort, 340, 210);
+    background = p96ReadPixel(rastPort, 341, 210);
+    guard = p96ReadPixel(rastPort, 342, 210);
+    if (format == RGBFB_CLUT) {
+        foreground &= 0xffUL;
+        background &= 0xffUL;
+        guard &= 0xffUL;
+    }
+
+    SetAPen(rastPort, 1);
+    SetBPen(rastPort, 0);
+    BltTemplate(TemplateTestData, 3, 4, rastPort,
+                351, 221, 8, 8);
+    WaitBlit();
+    success &= CheckPixel(rastPort, 351, 221, background, format,
+                          "template-bg");
+    success &= CheckPixel(rastPort, 352, 221, foreground, format,
+                          "template-fg");
+    success &= CheckPixel(rastPort, 358, 228, foreground, format,
+                          "template-edge");
+    success &= CheckPixel(rastPort, 350, 224, guard, format,
+                          "template-guard");
+
+    SetDrMd(rastPort, JAM1);
+    SetAPen(rastPort, 1);
+    BltTemplate(TemplateTestData, 3, 4, rastPort,
+                371, 221, 8, 8);
+    WaitBlit();
+    SetDrMd(rastPort, JAM2);
+    success &= CheckPixel(rastPort, 371, 221, guard, format,
+                          "template-j1bg");
+    success &= CheckPixel(rastPort, 372, 221, foreground, format,
+                          "template-j1fg");
+    return success;
 }
 
 static BOOL TestPattern(struct RastPort *rastPort, RGBFTYPE format)
@@ -360,6 +467,8 @@ static BOOL RunAccelerationTests(struct Screen *screen, RGBFTYPE format)
                           "rebase-left");
     success &= CheckPixel(rastPort, 400, 54, expectedB, format,
                           "rebase-right");
+    success &= TestInvert(rastPort, format);
+    success &= TestTemplate(rastPort, format);
     success &= TestPattern(rastPort, format);
 
     TestFill(rastPort, format, 20, 80, 39, 99, colorA);
@@ -590,6 +699,22 @@ static BOOL BenchmarkScreen(struct Screen *screen, RGBFTYPE format)
                               format == RGBFB_CLUT ? 1UL :
                                   0x00ff0000UL),
                           format, "scatterfill");
+
+    SetWriteMask(rastPort, 0xff);
+    SetDrMd(rastPort, JAM2);
+    SetAPen(rastPort, 1);
+    SetBPen(rastPort, 0);
+    DateStamp(&start);
+    for (index = 0; index < 4096; ++index) {
+        UWORD x = (index & 1U) ? 400U : 420U;
+
+        BltTemplate(TemplateTestData, 3, 4, rastPort,
+                    x, 200, 8, 8);
+    }
+    WaitBlit();
+    DateStamp(&end);
+    elapsed = StampTicks(&end) - StampTicks(&start);
+    printf("BENCH template4096 ticks=%lu\n", (unsigned long)elapsed);
 
     TestFill(rastPort, format, 0, 0, screen->Width / 2U - 1,
              screen->Height - 1,

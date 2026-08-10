@@ -1,88 +1,61 @@
-# Radeon9200.card 0.11
+# Radeon9200.card 0.12
 
-Version 0.11 is a focused performance update to 0.10. It removes two redundant
-pre-trigger synchronization writes from each direct-MMIO solid fill while
-retaining the post-operation `WaitBlitter` completion fence.
+Version 0.12 is a performance and callback-completeness update. It replaces
+per-register OpenPCI library calls with validated direct MMIO, removes costly
+generic arithmetic from the common surface path, and raises focused RectFill
+performance from roughly 5.1k to 10.7k operations/second.
 
 ## Highlights
 
-- Reduces solid-fill submission from nine to seven MMIO writes, improving the
-  focused RectFill mean by 3.65 percent in an otherwise identical build.
-- Retains the R200 CP ring and microcode in private VRAM reserved with
-  `DMASIZE`, with bounded fallback and recovery.
-- Uses direct MMIO for Picasso96 fill, pattern, same-surface copy, and
-  cross-surface copy even when the CP is active.
-- Tracks the backend with pending work so `WaitBlitter` drains MMIO or CP
-  correctly instead of selecting solely from CP readiness.
-- Adds an opt-in 64x64 ARGB RV280 hardware-cursor surface with normal and
-  Picasso96 BIGSPRITE pointer rendering.
-- Removes rtg.library's software-cursor overlap save/restore overhead when
-  `HWSPRITE=YES` is active.
-- Establishes a driver-owned `HOST_PATH_CNTL` baseline and removes two
-  redundant PCI reads from each HDP invalidate while retaining a final readback
-  barrier.
-- Publishes DEBUG-only CP, DMA, MMIO, fill, drain, fallback, and cursor callback
-  counters through the `Radeon9200.Debug` public port.
-- Corrects ToolType documentation: settings come from
-  `DEVS:Monitors/Radeon.info`, not an icon beside the card binary.
+- Uses endian-correct volatile accesses after BAR ownership, type, and size
+  validation instead of calling `pci_inl()`/`pci_outl()` for every register.
+- Inlines unchecked MMIO access in acceleration code, matching the closed
+  driver's direct `move.l` command sequences.
+- Removes the solid-fill FIFO pre-poll and uses the RV280's validated bus
+  backpressure behavior.
+- Matches the closed driver's `WaitBlitter` behavior: wait for 64 free FIFO
+  entries, then wait for GUI idle, without a semaphore or redundant cache/HDP
+  operations.
+- Replaces per-fill 64-bit surface bounds arithmetic with overflow-safe 32-bit
+  checks; normal 1 KiB-aligned surfaces also avoid address-bias division.
+- Adds hardware destination inversion through `ROP3_Dn`.
+- Adds hardware JAM1/JAM2 monochrome `BlitTemplate` through host-data upload.
+- Installs `EnableSoftSprite` alongside the existing RV280 hardware cursor.
+- Extends `p96screen` with invert and template correctness and timing tests.
 
 ## RectFill Performance
 
 P96Speed 1.2 was run on an Amiga 4000 with a 50 MHz 68060 and RV280
 `1002:5964`, using 640x480x16 and 13 seconds per focused test.
 
-| Build | RectFill op/s | Change from v0.10 |
-|---|---:|---:|
-| v0.9 published focused result | 2593 | -47.7% |
-| v0.10 published mean | 4960 | baseline |
-| v0.11 sample 1 | 5080 | +2.4% |
-| v0.11 sample 2 | 5083 | +2.5% |
-| v0.11 sample 3 | 5037 | +1.6% |
-| **v0.11 mean** | **5066.7** | **+2.2%** |
-| Closed driver reference | 11881 | v0.11 is 57.4% lower |
+| Build | RectFill op/s | Time/op | Change |
+|---|---:|---:|---:|
+| v0.11 validated mean | 5066.7 | 197.37 us | baseline |
+| Pre-v0.12 comparison | 5167 | 193.54 us | - |
+| Direct volatile MMIO | ~6700 | ~149.25 us | +29.7% vs 5167 |
+| **v0.12** | **10688** | **93.56 us** | **+106.9% vs 5167** |
+| Closed driver reference | 11881 | 84.17 us | v0.12 is 10.1% lower |
 
-The exact v0.11 artifact samples have a 46 op/s range, 0.91 percent of the mean.
-Compared with the original five-run CP-active mean of 1954.4 op/s, the final
-result is 159.3 percent faster. It remains 52.6 percent below the 10693 target.
-The saved final result is `Work:P96Speed_v011_final.txt`, CRC32 `57CECA86`.
-
-Controlled DEBUG measurements explain the gain:
-
-- Suppressing the software cursor raised RectFill from 1992 to 3153 op/s,
-  showing that generic sprite overlap handling dominated the original path.
-- Real hardware cursor plus MMIO 2D averaged 3424 op/s under instrumentation.
-- Shadowing `HOST_PATH_CNTL` raised that instrumented mean to 3487.7 op/s and
-  reduced measured driver time by about 6 microseconds per fill.
-- Removing DEBUG timing hooks raised the release path to approximately
-  4.93-4.96k op/s; nested `ReadEClock` calls materially affected the
-  instrumented absolute score.
-- Removing two redundant pre-trigger flush/idle writes reduced fill submission
-  from nine to seven MMIO writes. Paired builds differing only by that change
-  improved from 4933.3 to 5113.3 op/s, saving 7.14 microseconds per operation
-  and adding 3.65 percent.
-
-Fully fenced release `p96screen` fill timings improved from v0.9's 18/21/41
-ticks to 3/5/10 ticks in the final CLUT8/RGB565PC/BGRA32 sequence, reductions
-of approximately 83%, 76%, and 76%. The full 8/16/32/8 sequence passed fill,
-pattern, masks, overlap-copy, cross-surface copy, guard, and direct-color
-readback tests.
+Direct volatile MMIO removed about 44 microseconds per operation. Replacing the
+generic 64-bit validator removed another 56 microseconds and was the change that
+crossed the 10k target. The v0.12 result is 2.11x the v0.11 validated mean and
+within 10.1 percent of the closed driver.
 
 ## Hardware Validation
 
 - Tested card: RV280 Radeon 9200 `1002:5964`, 128 MiB COMBIOS board.
 - CPU/bridge: 68060 at 50 MHz, Prometheus/FireBird environment.
 - Active ToolTypes: `DMASIZE=2M`, `CP=YES`, and `HWSPRITE=YES`.
-- Release binary: 31204 bytes, CRC32 `E7E2F009`, SHA-256
-  `ef5c9f2893af13d13411de8f1157896a6c22ae4a89379c23e122b991d0460594`.
-- Final 8/16/32/8 test records: CRC32 `00F2C01B`, `B94C0AAA`, `2E80F380`,
-  and `1E10C436`.
-- Binary release assets include the AMD microcode license and inherited-code
-  redistribution notices.
-- No crash was recorded after repeated cold boots, 8/16/32/8 transitions,
-  focused P96Speed runs, and post-benchmark Workbench use.
+- Final release binary: 30,696 bytes, CRC32 `FB3D08BE`, SHA-256
+  `3b3f99815afe272526c3247b6389ea56f04b6c8214828403af014be3294562e0`.
+- Benchmarked binary before the version-only rebuild: 30,696 bytes, CRC32
+  `85C2D325`; executable code is otherwise identical.
+- Preserved on the Amiga as
+  `LIBS:Picasso96/Radeon9200.card.direct-fast-10688`.
+- The CLUT8/RGB565PC/BGRA32/CLUT8 sequence passed fill, inversion, JAM1/JAM2
+  template, pattern, mask, overlap-copy, cross-surface copy, guard, and
+  direct-color readback tests.
+- No crash was recorded during cold boots, P96Speed, validation screen cycles,
+  or return to Workbench.
 
-The library reports `$VER: Radeon9200.card 0.11 (10.8.2026)`. Hardware cursor
-support remains opt-in; bridge screenshots cannot capture the overlay, so
-physical cursor appearance should be confirmed on the attached display.
-Line, template/text, invert, planar, broader pattern, and unsupported
-cross-surface operations continue to use Picasso96 software fallbacks.
+The library reports `$VER: Radeon9200.card 0.12 (10.8.2026)`.

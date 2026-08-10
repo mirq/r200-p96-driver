@@ -171,6 +171,11 @@
 #define RADEON_ISYNC_CPSCRATCH_IDLEGUI      (1UL << 5)
 #define RADEON_SCRATCH_REG0                 0x15e0UL
 #define RADEON_SCRATCH_REG1                 0x15e4UL
+#define RADEON_RBBM_GUICNTL                 0x172cUL
+#define RADEON_HOST_DATA_SWAP_NONE          0UL
+#define RADEON_HOST_DATA0                   0x17c0UL
+#define RADEON_HOST_DATA7                   0x17dcUL
+#define RADEON_HOST_DATA_LAST               0x17e0UL
 
 #define RADEON_CUR_OFFSET                   0x0260UL
 #define RADEON_CUR_HORZ_VERT_POSN           0x0264UL
@@ -209,6 +214,7 @@
 
 #define RADEON_GMC_SRC_PITCH_OFFSET_CNTL    (1UL << 0)
 #define RADEON_GMC_DST_PITCH_OFFSET_CNTL    (1UL << 1)
+#define RADEON_GMC_DST_CLIPPING             (1UL << 3)
 #define RADEON_GMC_BRUSH_8X8_MONO_FG_BG     (0UL << 4)
 #define RADEON_GMC_BRUSH_8X8_MONO_FG_LA     (1UL << 4)
 #define RADEON_GMC_BRUSH_SOLID_COLOR        (13UL << 4)
@@ -216,10 +222,16 @@
 #define RADEON_GMC_DST_8BPP_CI              (2UL << 8)
 #define RADEON_GMC_DST_16BPP                (4UL << 8)
 #define RADEON_GMC_DST_32BPP                (6UL << 8)
+#define RADEON_GMC_SRC_DATATYPE_MONO_FG_BG  (0UL << 12)
+#define RADEON_GMC_SRC_DATATYPE_MONO_FG_LA  (1UL << 12)
 #define RADEON_GMC_SRC_DATATYPE_COLOR       (3UL << 12)
+#define RADEON_GMC_BYTE_MSB_TO_LSB          (0UL << 14)
+#define RADEON_GMC_BYTE_LSB_TO_MSB          (1UL << 14)
+#define RADEON_ROP3_Dn                      0x00550000UL
 #define RADEON_ROP3_S                       0x00cc0000UL
 #define RADEON_ROP3_P                       0x00f00000UL
 #define RADEON_DP_SRC_SOURCE_MEMORY         (2UL << 24)
+#define RADEON_DP_SRC_SOURCE_HOST_DATA      (3UL << 24)
 #define RADEON_GMC_CLR_CMP_CNTL_DIS         (1UL << 28)
 
 #define RADEON_SCISSOR_MAX                  0x1fff1fffUL
