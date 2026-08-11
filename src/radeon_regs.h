@@ -133,6 +133,8 @@
 #define RADEON_RBBM_FIFOCNT_MASK            0x0000007fUL
 #define RADEON_CP_CMDSTRM_BUSY               (1UL << 16)
 #define RADEON_RBBM_ACTIVE                  (1UL << 31)
+#define RADEON_DST_OFFSET                   0x1404UL
+#define RADEON_DST_PITCH                    0x1408UL
 #define RADEON_SRC_PITCH_OFFSET             0x1428UL
 #define RADEON_DST_PITCH_OFFSET             0x142cUL
 #define RADEON_SRC_Y_X                      0x1434UL
@@ -173,6 +175,9 @@
 #define RADEON_SCRATCH_REG1                 0x15e4UL
 #define RADEON_RBBM_GUICNTL                 0x172cUL
 #define RADEON_HOST_DATA_SWAP_NONE          0UL
+#define RADEON_DST_LINE_START               0x1600UL
+#define RADEON_DST_LINE_END                 0x1604UL
+#define RADEON_DST_LINE_PATCOUNT            0x1608UL
 #define RADEON_HOST_DATA0                   0x17c0UL
 #define RADEON_HOST_DATA7                   0x17dcUL
 #define RADEON_HOST_DATA_LAST               0x17e0UL

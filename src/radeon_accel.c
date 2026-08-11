@@ -20,6 +20,7 @@
 static UBYTE FillLogged;
 static UBYTE CopyLogged;
 static UBYTE CompleteCopyLogged;
+static UBYTE LineLogged;
 #endif
 
 enum SurfaceResult {
@@ -35,6 +36,38 @@ struct AccelSurface {
     UWORD XBias;
     UWORD YBias;
 };
+
+struct LineSurfaceCache {
+    struct BoardInfo *Board;
+    APTR Memory;
+    WORD BytesPerRow;
+    RGBFTYPE Format;
+    ULONG PitchOffset;
+    ULONG Datatype;
+    ULONG BytesPerPixel;
+    ULONG MaxX;
+    ULONG MaxY;
+    UWORD XBias;
+    UWORD YBias;
+    BOOL Valid;
+};
+
+struct LineEngineCache {
+    struct BoardInfo *Board;
+    ULONG Master;
+    ULONG PitchOffset;
+    ULONG WriteMask;
+    ULONG Pen;
+    BOOL Valid;
+};
+
+static struct LineSurfaceCache LineSurface;
+static struct LineEngineCache LineEngine;
+
+static void InvalidateLineEngine(void)
+{
+    LineEngine.Valid = FALSE;
+}
 
 static __inline__ ULONG AccelRead32(struct BoardInfo *bi, ULONG reg)
 {
@@ -121,6 +154,7 @@ static BOOL ResetEngine(struct BoardInfo *bi)
 
 static BOOL RestoreEngineState(struct BoardInfo *bi)
 {
+    InvalidateLineEngine();
     /* All later HDP invalidates restore this driver-owned baseline. */
     return RadeonWrite32(bi, RADEON_HOST_PATH_CNTL, 0) &&
            RadeonWrite32(bi, RADEON_RB3D_CNTL, 0) &&
@@ -323,6 +357,110 @@ static enum SurfaceResult ValidateSurface(
     return SURFACE_HARDWARE;
 }
 
+static enum SurfaceResult ValidateLineSurface(
+    struct BoardInfo *bi, const struct RenderInfo *render,
+    LONG left, LONG top, LONG right, LONG bottom, RGBFTYPE format,
+    struct LineSurfaceCache **surface)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    ULONG memoryBase;
+    ULONG memoryAddress;
+    ULONG memoryLimit;
+    ULONG surfaceOffset;
+    ULONG gpuAddress;
+    ULONG alignedGpuAddress;
+    ULONG addressBias;
+    ULONG remaining;
+    ULONG rows;
+
+    if (!data || !render || !render->Memory || !surface)
+        return SURFACE_SOFTWARE;
+
+    if (!LineSurface.Valid || LineSurface.Board != bi ||
+        LineSurface.Memory != render->Memory ||
+        LineSurface.BytesPerRow != render->BytesPerRow ||
+        LineSurface.Format != format) {
+        LineSurface.Valid = FALSE;
+        LineSurface.Datatype = HardwareDatatype(
+            format, &LineSurface.BytesPerPixel);
+        if (!LineSurface.BytesPerPixel || render->BytesPerRow <= 0)
+            return SURFACE_SOFTWARE;
+
+        memoryBase = (ULONG)bi->MemoryBase;
+        memoryAddress = (ULONG)render->Memory;
+        if (memoryAddress < memoryBase ||
+            memoryAddress - memoryBase >= bi->MemorySpaceSize)
+            return SURFACE_SOFTWARE;
+        surfaceOffset = memoryAddress - memoryBase;
+
+        memoryLimit = bi->MemorySize;
+        if (data->InstalledVram < memoryLimit)
+            memoryLimit = data->InstalledVram;
+        if (bi->MemorySpaceSize < memoryLimit)
+            memoryLimit = bi->MemorySpaceSize;
+        if (surfaceOffset >= memoryLimit ||
+            data->FramebufferGpuBase > 0xffffffffUL - surfaceOffset)
+            return SURFACE_REJECT;
+
+        LineSurface.BytesPerRow = render->BytesPerRow;
+        if (((ULONG)(UWORD)LineSurface.BytesPerRow & 63UL) ||
+            (ULONG)(UWORD)LineSurface.BytesPerRow > ACCEL_MAX_PITCH)
+            return SURFACE_SOFTWARE;
+        LineSurface.MaxX = (ULONG)(UWORD)LineSurface.BytesPerRow /
+                           LineSurface.BytesPerPixel;
+        if (!LineSurface.MaxX)
+            return SURFACE_REJECT;
+        --LineSurface.MaxX;
+        if (LineSurface.MaxX > ACCEL_MAX_COORD)
+            LineSurface.MaxX = ACCEL_MAX_COORD;
+
+        remaining = memoryLimit - surfaceOffset;
+        rows = remaining / (ULONG)(UWORD)LineSurface.BytesPerRow;
+        if (!rows)
+            return SURFACE_REJECT;
+        LineSurface.MaxY = rows - 1UL;
+        if (LineSurface.MaxY > ACCEL_MAX_COORD)
+            LineSurface.MaxY = ACCEL_MAX_COORD;
+
+        gpuAddress = data->FramebufferGpuBase + surfaceOffset;
+        alignedGpuAddress = gpuAddress & ~1023UL;
+        if (alignedGpuAddress > 0xfffffc00UL)
+            return SURFACE_SOFTWARE;
+        addressBias = gpuAddress - alignedGpuAddress;
+        LineSurface.YBias = addressBias /
+                            (ULONG)(UWORD)LineSurface.BytesPerRow;
+        addressBias -= (ULONG)LineSurface.YBias *
+                       (ULONG)(UWORD)LineSurface.BytesPerRow;
+        if (addressBias % LineSurface.BytesPerPixel)
+            return SURFACE_SOFTWARE;
+        LineSurface.XBias = addressBias / LineSurface.BytesPerPixel;
+        if (LineSurface.XBias > ACCEL_MAX_COORD ||
+            LineSurface.YBias > ACCEL_MAX_COORD)
+            return SURFACE_SOFTWARE;
+        if (LineSurface.MaxX > ACCEL_MAX_COORD - LineSurface.XBias)
+            LineSurface.MaxX = ACCEL_MAX_COORD - LineSurface.XBias;
+        if (LineSurface.MaxY > ACCEL_MAX_COORD - LineSurface.YBias)
+            LineSurface.MaxY = ACCEL_MAX_COORD - LineSurface.YBias;
+
+        LineSurface.Board = bi;
+        LineSurface.Memory = render->Memory;
+        LineSurface.Format = format;
+        LineSurface.PitchOffset =
+            (((ULONG)(UWORD)LineSurface.BytesPerRow >> 6) << 22) |
+            (alignedGpuAddress >> 10);
+        LineSurface.Valid = TRUE;
+    }
+
+    if (left < 0 || top < 0 || right < left || bottom < top)
+        return SURFACE_SOFTWARE;
+    if ((ULONG)right > LineSurface.MaxX ||
+        (ULONG)bottom > LineSurface.MaxY)
+        return SURFACE_REJECT;
+
+    *surface = &LineSurface;
+    return SURFACE_HARDWARE;
+}
+
 static BOOL PrepareMonoPattern(struct BoardInfo *bi,
                                const struct Pattern *pattern,
                                ULONG *data0, ULONG *data1)
@@ -376,6 +514,7 @@ static BOOL SubmitSolidRect(struct BoardInfo *bi,
                      RADEON_GMC_SRC_DATATYPE_COLOR | rop |
                      RADEON_GMC_CLR_CMP_CNTL_DIS;
     (void)bytesPerPixel;
+    InvalidateLineEngine();
     pen = HardwarePen(pen, format);
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);
@@ -415,6 +554,7 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
     ULONG phaseY = ((pattern->YOffset & 7UL) + 8UL -
                     (destinationY & 7UL)) & 7UL;
     (void)bytesPerPixel;
+    InvalidateLineEngine();
     return WaitFifo(bi, 13) &&
            RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
            RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
@@ -505,6 +645,7 @@ static BOOL SubmitTemplate(struct BoardInfo *bi,
     UWORD row;
 
     (void)bytesPerPixel;
+    InvalidateLineEngine();
     if (!WaitFifo(bi, 13) ||
         !RadeonWrite32(bi, RADEON_RBBM_GUICNTL,
                        RADEON_HOST_DATA_SWAP_NONE) ||
@@ -593,6 +734,7 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     ULONG direction = 0;
     (void)bytesPerPixel;
+    InvalidateLineEngine();
     srcX = (WORD)(srcX + source->XBias);
     dstX = (WORD)(dstX + destination->XBias);
     srcY = (WORD)(srcY + source->YBias);
@@ -639,6 +781,8 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp)
 
     if (!data || !bi->MemoryBase || !bi->MemoryIOBase)
         return FALSE;
+    LineSurface.Valid = FALSE;
+    InvalidateLineEngine();
     data->AccelState = RADEON_ACCEL_OFF;
     data->AccelPending = RADEON_PENDING_NONE;
     data->AccelRecoveryTried = FALSE;
@@ -673,6 +817,8 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
     if (data->AccelPending)
         (void)SynchronizeEngine(bi);
     RadeonCpShutdown(bi);
+    LineSurface.Valid = FALSE;
+    InvalidateLineEngine();
     data->AccelPending = RADEON_PENDING_NONE;
     data->AccelState = RADEON_ACCEL_OFF;
     ReleaseSemaphore(&bi->BoardLock);
@@ -1041,4 +1187,204 @@ void RadeonBlitRectNoMaskComplete(
         bi->BlitRectNoMaskCompleteDefault(
             bi, sourceRender, destinationRender,
             srcX, srcY, dstX, dstY, width, height, opcode, format);
+}
+
+static BOOL SubmitLine(struct BoardInfo *bi,
+                       const struct LineSurfaceCache *surface,
+                       ULONG start, ULONG end, ULONG pen,
+                       ULONG writeMask, ULONG master)
+{
+    BOOL valid = LineEngine.Valid && LineEngine.Board == bi;
+    BOOL masterChanged = !valid || LineEngine.Master != master;
+    BOOL pitchOffsetChanged = !valid ||
+                              LineEngine.PitchOffset !=
+                                  surface->PitchOffset;
+    BOOL maskChanged = !valid || LineEngine.WriteMask != writeMask;
+    BOOL penChanged = !valid || LineEngine.Pen != pen;
+    ULONG entries = 2UL + masterChanged + pitchOffsetChanged +
+                    maskChanged + penChanged + (!valid ? 3UL : 0UL);
+
+    if (!WaitFifo(bi, entries) ||
+        (masterChanged &&
+         !RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master)) ||
+        (pitchOffsetChanged &&
+         !RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
+                        surface->PitchOffset)) ||
+        (maskChanged &&
+         !RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask)) ||
+        (penChanged &&
+         !RadeonWrite32(bi, RADEON_DP_BRUSH_FRGD_CLR, pen)) ||
+        (!valid &&
+         (!RadeonWrite32(bi, RADEON_DP_CNTL,
+                         RADEON_DST_X_LEFT_TO_RIGHT |
+                             RADEON_DST_Y_TOP_TO_BOTTOM) ||
+          !RadeonWrite32(bi, RADEON_SC_TOP_LEFT, 0) ||
+          !RadeonWrite32(bi, RADEON_SC_BOTTOM_RIGHT,
+                         RADEON_SCISSOR_MAX))) ||
+        !RadeonWrite32(bi, RADEON_DST_LINE_START, start) ||
+        !RadeonWrite32(bi, RADEON_DST_LINE_END, end))
+        return FALSE;
+
+    LineEngine.Board = bi;
+    LineEngine.Master = master;
+    LineEngine.PitchOffset = surface->PitchOffset;
+    LineEngine.WriteMask = writeMask;
+    LineEngine.Pen = pen;
+    LineEngine.Valid = TRUE;
+    return TRUE;
+}
+
+static BOOL SubmitSolidAxisRect(struct BoardInfo *bi,
+                                const struct LineSurfaceCache *surface,
+                                WORD x, WORD y, WORD width, WORD height,
+                                ULONG pen, ULONG writeMask)
+{
+    ULONG master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
+                   RADEON_GMC_BRUSH_SOLID_COLOR | surface->Datatype |
+                   RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
+                   RADEON_GMC_CLR_CMP_CNTL_DIS;
+    BOOL valid = LineEngine.Valid && LineEngine.Board == bi;
+
+    x = (WORD)(x + surface->XBias);
+    y = (WORD)(y + surface->YBias);
+    if ((!valid || LineEngine.Master != master) &&
+        !RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master))
+        return FALSE;
+    if ((!valid || LineEngine.PitchOffset != surface->PitchOffset) &&
+        !RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
+                       surface->PitchOffset))
+        return FALSE;
+    if ((!valid || LineEngine.WriteMask != writeMask) &&
+        !RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask))
+        return FALSE;
+    if ((!valid || LineEngine.Pen != pen) &&
+        !RadeonWrite32(bi, RADEON_DP_BRUSH_FRGD_CLR, pen))
+        return FALSE;
+    if (!valid &&
+        (!RadeonWrite32(bi, RADEON_DP_CNTL,
+                        RADEON_DST_X_LEFT_TO_RIGHT |
+                            RADEON_DST_Y_TOP_TO_BOTTOM) ||
+         !RadeonWrite32(bi, RADEON_SC_TOP_LEFT, 0) ||
+         !RadeonWrite32(bi, RADEON_SC_BOTTOM_RIGHT,
+                        RADEON_SCISSOR_MAX)))
+        return FALSE;
+    if (!RadeonWrite32(bi, RADEON_DST_Y_X,
+                       ((ULONG)(UWORD)y << 16) | (UWORD)x) ||
+        !RadeonWrite32(bi, RADEON_DST_WIDTH_HEIGHT,
+                       ((ULONG)(UWORD)width << 16) | (UWORD)height))
+        return FALSE;
+
+    LineEngine.Board = bi;
+    LineEngine.Master = master;
+    LineEngine.PitchOffset = surface->PitchOffset;
+    LineEngine.WriteMask = writeMask;
+    LineEngine.Pen = pen;
+    LineEngine.Valid = TRUE;
+    return TRUE;
+}
+
+void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
+                    __REGA1(struct RenderInfo *render),
+                    __REGA2(struct Line *line),
+                    __REGD0(UBYTE mask),
+                    __REGD7(RGBFTYPE format))
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct LineSurfaceCache *surface;
+    enum SurfaceResult result;
+    LONG startX, startY, endX, endY;
+    LONG left, top, right, bottom;
+    ULONG writeMask;
+    ULONG master;
+    ULONG pen;
+    BOOL solidAxis;
+    BOOL software = FALSE;
+
+    if (!SysBase || !data || !line)
+        return;
+    if (line->DrawMode & 0x02)
+        goto fallback;
+
+    startX = line->X;
+    startY = line->Y;
+    endX = startX + line->dX;
+    endY = startY + line->dY;
+    left = startX < endX ? startX : endX;
+    right = startX > endX ? startX : endX;
+    top = startY < endY ? startY : endY;
+    bottom = startY > endY ? startY : endY;
+
+    result = ValidateLineSurface(bi, render, left, top, right, bottom,
+                                 format, &surface);
+    if (result == SURFACE_REJECT)
+        return;
+
+    if (result == SURFACE_HARDWARE &&
+        data->AccelState == RADEON_ACCEL_READY) {
+        solidAxis = (line->dX == 0 || line->dY == 0) &&
+                    line->LinePtrn == 0xffffU &&
+                    !(line->DrawMode & 0x04);
+        if (solidAxis) {
+            writeMask = format == RGBFB_CLUT ? (ULONG)mask :
+                                                  0xffffffffUL;
+            pen = HardwarePen(line->FgPen, format);
+            if (SubmitSolidAxisRect(bi, surface,
+                                    (WORD)left, (WORD)top,
+                                    (WORD)(right - left + 1),
+                                    (WORD)(bottom - top + 1),
+                                    pen, writeMask)) {
+                data->AccelPending = RADEON_PENDING_MMIO;
+                goto complete;
+            }
+            ObtainSemaphore(&bi->BoardLock);
+            software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+            goto complete;
+        }
+
+        writeMask = format == RGBFB_CLUT ? (ULONG)mask : 0xffffffffUL;
+        pen = HardwarePen(line->FgPen, format);
+        master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
+                 RADEON_GMC_BRUSH_SOLID_COLOR | surface->Datatype |
+                 RADEON_GMC_SRC_DATATYPE_COLOR |
+                 ((line->DrawMode & 0x01) ? RADEON_ROP3_P :
+                                            0x007b0000UL) |
+                 RADEON_GMC_CLR_CMP_CNTL_DIS;
+
+#ifdef DEBUG
+        if (!LineLogged) {
+            RLOG("Radeon9200: HW DrawLine mem=%lx pitchoff=%lx "
+                 "start=%ld,%ld end=%ld,%ld fmt=%ld mask=%lx mode=%lx\n",
+                 (ULONG)render->Memory, surface->PitchOffset,
+                 (ULONG)startX, (ULONG)startY,
+                 (ULONG)endX, (ULONG)endY, (ULONG)format,
+                 (ULONG)mask, (ULONG)line->DrawMode);
+            LineLogged = TRUE;
+        }
+#endif
+        if (SubmitLine(bi, surface,
+                       ((ULONG)(startY + surface->YBias) << 16) |
+                           (UWORD)(startX + surface->XBias),
+                       ((ULONG)(endY + surface->YBias) << 16) |
+                           (UWORD)(endX + surface->XBias),
+                       pen, writeMask, master))
+            data->AccelPending = RADEON_PENDING_MMIO;
+        else {
+            ObtainSemaphore(&bi->BoardLock);
+            software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
+    } else {
+fallback:
+        ObtainSemaphore(&bi->BoardLock);
+        software = SynchronizeEngine(bi) &&
+                   data->AccelState != RADEON_ACCEL_UNSAFE;
+        ReleaseSemaphore(&bi->BoardLock);
+    }
+
+complete:
+    if (software && bi->DrawLineDefault &&
+        bi->DrawLineDefault != RadeonDrawLine)
+        bi->DrawLineDefault(bi, render, line, mask, format);
 }

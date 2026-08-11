@@ -97,6 +97,11 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                     __REGD2(WORD width), __REGD3(WORD height),
                     __REGD4(ULONG pen), __REGD5(UBYTE mask),
                     __REGD7(RGBFTYPE format));
+void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
+                    __REGA1(struct RenderInfo *render),
+                    __REGA2(struct Line *line),
+                    __REGD0(UBYTE mask),
+                    __REGD7(RGBFTYPE format));
 void RadeonInvertRect(__REGA0(struct BoardInfo *bi),
                       __REGA1(struct RenderInfo *render),
                       __REGD0(WORD x), __REGD1(WORD y),
