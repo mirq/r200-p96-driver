@@ -19,7 +19,8 @@
 #define CURSOR_HEIGHT 64U
 #define CURSOR_STRIDE (CURSOR_WIDTH * sizeof(ULONG))
 #define CURSOR_SIZE   (CURSOR_STRIDE * CURSOR_HEIGHT)
-#define SOURCE_WIDTH  16U
+#define NORMAL_SOURCE_WIDTH 16U
+#define HIRES_SOURCE_WIDTH  32U
 
 struct RadeonCursorState {
     APTR Memory;
@@ -45,6 +46,9 @@ static void UploadCursor(struct BoardInfo *bi)
     UWORD displayWidth = bi->MouseWidth;
     UWORD sourceHeight;
     UWORD sourceWidth;
+    UWORD sourceHeaderWords;
+    UWORD sourceRowWords;
+    BOOL hires;
     BOOL zoom;
     UWORD y;
 
@@ -55,30 +59,39 @@ static void UploadCursor(struct BoardInfo *bi)
         displayHeight = CURSOR_HEIGHT;
     if (displayWidth > CURSOR_WIDTH)
         displayWidth = CURSOR_WIDTH;
-    zoom = (bi->Flags & BIF_BIGSPRITE) != 0 ||
-           displayWidth > SOURCE_WIDTH;
+    hires = (bi->Flags & BIF_HIRESSPRITE) != 0;
+    zoom = !hires && (bi->Flags & BIF_BIGSPRITE) != 0;
     sourceHeight = zoom ? (displayHeight + 1U) / 2U : displayHeight;
     sourceWidth = zoom ? (displayWidth + 1U) / 2U : displayWidth;
-    if (sourceWidth > SOURCE_WIDTH)
-        sourceWidth = SOURCE_WIDTH;
+    if (sourceWidth > (hires ? HIRES_SOURCE_WIDTH : NORMAL_SOURCE_WIDTH))
+        sourceWidth = hires ? HIRES_SOURCE_WIDTH : NORMAL_SOURCE_WIDTH;
+    sourceHeaderWords = hires ? 4U : 2U;
+    sourceRowWords = hires ? 4U : 2U;
 
     for (y = 0; y < CURSOR_HEIGHT; ++y) {
-        UWORD plane0 = 0;
-        UWORD plane1 = 0;
+        ULONG plane0 = 0;
+        ULONG plane1 = 0;
         UWORD sourceY = zoom ? y / 2U : y;
         UWORD x;
 
         if (source && y < displayHeight && sourceY < sourceHeight) {
-            plane0 = source[2U + sourceY * 2U];
-            plane1 = source[3U + sourceY * 2U];
+            const UWORD *sourceRow = source + sourceHeaderWords +
+                                     sourceY * sourceRowWords;
+
+            plane0 = (ULONG)sourceRow[0] << 16;
+            plane1 = (ULONG)sourceRow[hires ? 2U : 1U] << 16;
+            if (hires) {
+                plane0 |= sourceRow[1];
+                plane1 |= sourceRow[3];
+            }
         }
         for (x = 0; x < CURSOR_WIDTH; ++x) {
             ULONG pixel = 0;
 
             if (x < displayWidth) {
                 UWORD sourceX = zoom ? x / 2U : x;
-                UWORD bit = sourceX < sourceWidth ?
-                                (UWORD)(0x8000U >> sourceX) : 0;
+                ULONG bit = sourceX < sourceWidth ?
+                                (0x80000000UL >> sourceX) : 0;
                 UWORD value = (plane0 & bit ? 1U : 0U) |
                               (plane1 & bit ? 2U : 0U);
 
