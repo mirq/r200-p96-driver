@@ -67,6 +67,36 @@ pre-optimization 5167 result and within 10.1 percent of the closed driver's
 11881 result. Direct volatile MMIO and overflow-safe 32-bit surface validation
 account for the gain.
 
+### P96Speed 0.13 Results
+
+The version 0.13 development driver produced the following P96Speed 1.2 result
+on an Amiga 4000 with a 50 MHz 68060. The test used `640x480x16` and a five
+second test length. The saved report was 1,889 bytes with CRC32 `17945E8D`.
+
+| Test | Operations/second |
+|---|---:|
+| `RectFill()` | 10145 |
+| `RectFill()` Pattern | 9409 |
+| `WritePixel()` | 132152 |
+| `WriteChunkyPixels()` | 133 |
+| `WritePixelArray8()` | 132 |
+| `WritePixelLine8()` | 9084 |
+| `DrawEllipse()` | 6514 |
+| `DrawCircle()` | 7565 |
+| `Draw()` | 17421 |
+| `Draw()` Hor/Ver | 18733 |
+| `ScrollRaster()` X | 1203 |
+| `ScrollRaster()` Y | 1255 |
+| `PutText()` | 6409 |
+| `BlitBitMap()` | 9761 |
+| `BlitBitMapRastPort()` | 5460 |
+| `BitMapScale()` | 57 |
+| `OpenWindow()` | 73 |
+| `MoveWindow()` | 379 |
+| `SizeWindow()` | 107 |
+| `CON-Output` | 534 |
+| `ScreenToFront()` | 16 |
+
 ## Build
 
 ```sh
