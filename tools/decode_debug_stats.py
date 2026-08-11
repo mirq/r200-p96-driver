@@ -35,6 +35,11 @@ FIELDS = [
     # Version 3
     "SpriteExperiment", "SetSpriteCalls", "SetSpritePositionCalls",
     "SetSpriteImageCalls", "SetSpriteColorCalls",
+    # Version 4
+    "TemplateCalls", "TemplateHardware", "TemplateSoftware",
+    "TemplateCacheHits", "TemplateJam1", "TemplateJam2",
+    "TemplateOtherMode", "TemplateWidthTotal", "TemplateUploadWords",
+    "TemplateMaxWidth", "TemplateMaxHeight",
 ]
 
 

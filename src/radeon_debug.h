@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 3UL
+#define RADEON_DEBUG_VERSION 4UL
 #define RADEON_DEBUG_PORT    "Radeon9200.Debug"
 
 /*
@@ -60,6 +60,18 @@ struct RadeonDebugStats {
     ULONG SetSpritePositionCalls;
     ULONG SetSpriteImageCalls;
     ULONG SetSpriteColorCalls;
+    /* Version 4: BlitTemplate path selection and workload shape. */
+    ULONG TemplateCalls;
+    ULONG TemplateHardware;
+    ULONG TemplateSoftware;
+    ULONG TemplateCacheHits;
+    ULONG TemplateJam1;
+    ULONG TemplateJam2;
+    ULONG TemplateOtherMode;
+    ULONG TemplateWidthTotal;
+    ULONG TemplateUploadWords;
+    ULONG TemplateMaxWidth;
+    ULONG TemplateMaxHeight;
 };
 
 struct RadeonDebugSample {
@@ -82,6 +94,9 @@ void RadeonDebugEndDrain(const struct RadeonDebugSample *sample);
 void RadeonDebugEndCall(const struct RadeonDebugSample *sample,
                         ULONG hardware);
 void RadeonDebugSpriteCall(ULONG function);
+void RadeonDebugTemplateCall(UWORD width, UWORD height, UBYTE drawMode);
+void RadeonDebugTemplateHardware(ULONG cacheHit, ULONG uploadWords);
+void RadeonDebugTemplateSoftware(void);
 
 #define RDEBUG_COUNT_READ()      (++RadeonDebugReads)
 #define RDEBUG_COUNT_WRITE()     (++RadeonDebugWrites)
@@ -98,6 +113,11 @@ void RadeonDebugSpriteCall(ULONG function);
 #define RDEBUG_MARK_HARDWARE()   (rdHardware = 1)
 #define RDEBUG_END_CALL()        RadeonDebugEndCall(&rdOuter, rdHardware)
 #define RDEBUG_SPRITE_CALL(fn)   RadeonDebugSpriteCall(fn)
+#define RDEBUG_TEMPLATE_CALL(w, h, mode) \
+    RadeonDebugTemplateCall((w), (h), (mode))
+#define RDEBUG_TEMPLATE_HARDWARE(hit, words) \
+    RadeonDebugTemplateHardware((hit), (words))
+#define RDEBUG_TEMPLATE_SOFTWARE() RadeonDebugTemplateSoftware()
 
 #else
 
@@ -114,6 +134,9 @@ void RadeonDebugSpriteCall(ULONG function);
 #define RDEBUG_MARK_HARDWARE()   ((void)0)
 #define RDEBUG_END_CALL()        ((void)0)
 #define RDEBUG_SPRITE_CALL(fn)   ((void)0)
+#define RDEBUG_TEMPLATE_CALL(w, h, mode) ((void)0)
+#define RDEBUG_TEMPLATE_HARDWARE(hit, words) ((void)0)
+#define RDEBUG_TEMPLATE_SOFTWARE() ((void)0)
 
 #endif
 

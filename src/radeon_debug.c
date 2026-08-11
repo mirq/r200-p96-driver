@@ -250,6 +250,42 @@ void RadeonDebugSpriteCall(ULONG function)
     }
 }
 
+void RadeonDebugTemplateCall(UWORD width, UWORD height, UBYTE drawMode)
+{
+    struct RadeonDebugStats *stats;
+
+    if (!DebugNode)
+        return;
+    stats = &DebugNode->Stats;
+    ++stats->TemplateCalls;
+    stats->TemplateWidthTotal += width;
+    if (width > stats->TemplateMaxWidth)
+        stats->TemplateMaxWidth = width;
+    if (height > stats->TemplateMaxHeight)
+        stats->TemplateMaxHeight = height;
+    if (drawMode == 0)
+        ++stats->TemplateJam1;
+    else if (drawMode == 1)
+        ++stats->TemplateJam2;
+    else
+        ++stats->TemplateOtherMode;
+}
+
+void RadeonDebugTemplateHardware(ULONG cacheHit, ULONG uploadWords)
+{
+    if (!DebugNode)
+        return;
+    ++DebugNode->Stats.TemplateHardware;
+    DebugNode->Stats.TemplateCacheHits += cacheHit != 0;
+    DebugNode->Stats.TemplateUploadWords += uploadWords;
+}
+
+void RadeonDebugTemplateSoftware(void)
+{
+    if (DebugNode)
+        ++DebugNode->Stats.TemplateSoftware;
+}
+
 #else
 
 extern int RadeonDebugTranslationUnitNotEmpty;

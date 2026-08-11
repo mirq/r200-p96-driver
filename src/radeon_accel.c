@@ -61,12 +61,28 @@ struct LineEngineCache {
     BOOL Valid;
 };
 
+struct TemplateEngineCache {
+    struct BoardInfo *Board;
+    ULONG Master;
+    ULONG PitchOffset;
+    ULONG WriteMask;
+    ULONG FgPen;
+    ULONG BgPen;
+    BOOL Valid;
+};
+
 static struct LineSurfaceCache LineSurface;
 static struct LineEngineCache LineEngine;
+static struct TemplateEngineCache TemplateEngine;
 
 static void InvalidateLineEngine(void)
 {
     LineEngine.Valid = FALSE;
+}
+
+static void InvalidateTemplateEngine(void)
+{
+    TemplateEngine.Valid = FALSE;
 }
 
 static __inline__ ULONG AccelRead32(struct BoardInfo *bi, ULONG reg)
@@ -82,6 +98,14 @@ static __inline__ BOOL AccelWrite32(struct BoardInfo *bi, ULONG reg,
     RDEBUG_COUNT_WRITE();
     *(volatile ULONG *)((UBYTE *)bi->MemoryIOBase + reg) =
         SWAPLONG(value);
+    return TRUE;
+}
+
+static __inline__ BOOL AccelWriteHostData(struct BoardInfo *bi, ULONG reg,
+                                          ULONG value)
+{
+    RDEBUG_COUNT_WRITE();
+    *(volatile ULONG *)((UBYTE *)bi->MemoryIOBase + reg) = value;
     return TRUE;
 }
 
@@ -155,6 +179,7 @@ static BOOL ResetEngine(struct BoardInfo *bi)
 static BOOL RestoreEngineState(struct BoardInfo *bi)
 {
     InvalidateLineEngine();
+    InvalidateTemplateEngine();
     /* All later HDP invalidates restore this driver-owned baseline. */
     return RadeonWrite32(bi, RADEON_HOST_PATH_CNTL, 0) &&
            RadeonWrite32(bi, RADEON_RB3D_CNTL, 0) &&
@@ -515,6 +540,7 @@ static BOOL SubmitSolidRect(struct BoardInfo *bi,
                      RADEON_GMC_CLR_CMP_CNTL_DIS;
     (void)bytesPerPixel;
     InvalidateLineEngine();
+    InvalidateTemplateEngine();
     pen = HardwarePen(pen, format);
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);
@@ -555,6 +581,7 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
                     (destinationY & 7UL)) & 7UL;
     (void)bytesPerPixel;
     InvalidateLineEngine();
+    InvalidateTemplateEngine();
     return WaitFifo(bi, 13) &&
            RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master) &&
            RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) &&
@@ -583,21 +610,32 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
                                (UWORD)width);
 }
 
-static ULONG TemplateWord(const struct Template *template, UWORD row,
-                          ULONG firstPixel, UWORD width)
+static __inline__ ULONG TemplateFullWord(const UBYTE **sourceAddress,
+                                         ULONG bitOffset)
 {
-    const UBYTE *source = (const UBYTE *)template->Memory +
-                          (ULONG)row * (UWORD)template->BytesPerRow;
-    ULONG word = 0;
-    ULONG pixel;
+    const UBYTE *source = *sourceAddress;
+    ULONG bits;
 
-    for (pixel = 0; pixel < 32 && firstPixel + pixel < width; ++pixel) {
-        ULONG sourceBit = template->XOffset + firstPixel + pixel;
+    __asm__ volatile ("bfextu (%1){%2:32},%0\n\t"
+                      "addq.l #4,%1"
+                      : "=d" (bits), "+a" (source)
+                      : "d" (bitOffset)
+                      : "cc");
+    *sourceAddress = source;
+    return bits;
+}
 
-        if (source[sourceBit >> 3] & (0x80U >> (sourceBit & 7UL)))
-            word |= 1UL << pixel;
-    }
-    return word;
+static __inline__ ULONG TemplatePartialWord(const UBYTE *source,
+                                            ULONG bitOffset,
+                                            ULONG fieldWidth)
+{
+    ULONG bits;
+
+    __asm__ volatile ("bfextu (%1){%2:%3},%0"
+                      : "=d" (bits)
+                      : "a" (source), "d" (bitOffset), "d" (fieldWidth)
+                      : "cc");
+    return bits << (32UL - fieldWidth);
 }
 
 static BOOL PrepareTemplate(struct BoardInfo *bi,
@@ -638,39 +676,61 @@ static BOOL SubmitTemplate(struct BoardInfo *bi,
         RADEON_GMC_SRC_DATATYPE_MONO_FG_LA;
     ULONG writeMask = format == RGBFB_CLUT ? (ULONG)mask :
                                                    0xffffffffUL;
+    ULONG fgPen = HardwarePen(template->FgPen, format);
+    ULONG bgPen = HardwarePen(template->BgPen, format);
     ULONG destinationX = (ULONG)(UWORD)(x + surface->XBias);
     ULONG destinationY = (ULONG)(UWORD)(y + surface->YBias);
     ULONG paddedWidth = ((ULONG)(UWORD)width + 31UL) & ~31UL;
+    ULONG master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
+                   RADEON_GMC_DST_CLIPPING |
+                   RADEON_GMC_BRUSH_NONE | datatype | sourceType |
+                   RADEON_GMC_BYTE_MSB_TO_LSB | RADEON_ROP3_S |
+                   RADEON_DP_SRC_SOURCE_HOST_DATA |
+                   RADEON_GMC_CLR_CMP_CNTL_DIS;
     ULONG words = paddedWidth >> 5;
+    ULONG tailWidth = (UWORD)width & 31UL;
+    ULONG uploadWords = words * (UWORD)height;
+    BOOL valid = TemplateEngine.Valid && TemplateEngine.Board == bi;
+    BOOL masterChanged = !valid || TemplateEngine.Master != master;
+    BOOL pitchChanged = !valid ||
+                        TemplateEngine.PitchOffset != surface->PitchOffset;
+    BOOL maskChanged = !valid || TemplateEngine.WriteMask != writeMask;
+    BOOL fgChanged = !valid || TemplateEngine.FgPen != fgPen;
+    BOOL bgChanged = !valid || TemplateEngine.BgPen != bgPen;
+    ULONG setupWrites = 4UL + masterChanged + pitchChanged + maskChanged +
+                        fgChanged + bgChanged + (!valid ? 4UL : 0UL);
+    BOOL uploadReserved = uploadWords <= 64UL - setupWrites;
+    const UBYTE *rowSource = (const UBYTE *)template->Memory +
+                             (template->XOffset >> 3);
     UWORD row;
 
     (void)bytesPerPixel;
     InvalidateLineEngine();
-    if (!WaitFifo(bi, 13) ||
-        !RadeonWrite32(bi, RADEON_RBBM_GUICNTL,
-                       RADEON_HOST_DATA_SWAP_NONE) ||
-        !RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL,
-                       RADEON_GMC_DST_PITCH_OFFSET_CNTL |
-                           RADEON_GMC_DST_CLIPPING |
-                           RADEON_GMC_BRUSH_NONE | datatype | sourceType |
-                           RADEON_GMC_BYTE_LSB_TO_MSB | RADEON_ROP3_S |
-                           RADEON_DP_SRC_SOURCE_HOST_DATA |
-                           RADEON_GMC_CLR_CMP_CNTL_DIS) ||
-        !RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask) ||
-        !RadeonWrite32(bi, RADEON_DP_SRC_FRGD_CLR,
-                       HardwarePen(template->FgPen, format)) ||
-        !RadeonWrite32(bi, RADEON_DP_SRC_BKGD_CLR,
-                       HardwarePen(template->BgPen, format)) ||
-        !RadeonWrite32(bi, RADEON_DP_CNTL,
-                       RADEON_DST_X_LEFT_TO_RIGHT |
-                           RADEON_DST_Y_TOP_TO_BOTTOM) ||
-        !RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                       RADEON_RB2D_DC_FLUSH_ALL) ||
-        !RadeonWrite32(bi, RADEON_WAIT_UNTIL,
-                       RADEON_WAIT_2D_IDLECLEAN |
-                           RADEON_WAIT_DMA_GUI_IDLE) ||
-        !RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
-                       surface->PitchOffset) ||
+    if (!WaitFifo(bi, setupWrites +
+                      (uploadReserved ? uploadWords : 0UL)) ||
+        (!valid &&
+         !RadeonWrite32(bi, RADEON_RBBM_GUICNTL,
+                        RADEON_HOST_DATA_SWAP_NONE)) ||
+        (masterChanged &&
+         !RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master)) ||
+        (maskChanged &&
+         !RadeonWrite32(bi, RADEON_DP_WRITE_MASK, writeMask)) ||
+        (fgChanged &&
+         !RadeonWrite32(bi, RADEON_DP_SRC_FRGD_CLR, fgPen)) ||
+        (bgChanged &&
+         !RadeonWrite32(bi, RADEON_DP_SRC_BKGD_CLR, bgPen)) ||
+        (!valid &&
+         (!RadeonWrite32(bi, RADEON_DP_CNTL,
+                         RADEON_DST_X_LEFT_TO_RIGHT |
+                             RADEON_DST_Y_TOP_TO_BOTTOM) ||
+          !RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
+                         RADEON_RB2D_DC_FLUSH_ALL) ||
+          !RadeonWrite32(bi, RADEON_WAIT_UNTIL,
+                         RADEON_WAIT_2D_IDLECLEAN |
+                             RADEON_WAIT_DMA_GUI_IDLE))) ||
+        (pitchChanged &&
+         !RadeonWrite32(bi, RADEON_DST_PITCH_OFFSET,
+                        surface->PitchOffset)) ||
         !RadeonWrite32(bi, RADEON_SC_TOP_LEFT,
                        (destinationY << 16) | destinationX) ||
         !RadeonWrite32(bi, RADEON_SC_BOTTOM_RIGHT,
@@ -683,11 +743,13 @@ static BOOL SubmitTemplate(struct BoardInfo *bi,
         return FALSE;
 
     for (row = 0; row < (UWORD)height; ++row) {
+        const UBYTE *source = rowSource;
+        ULONG bitOffset = template->XOffset & 7UL;
         ULONG left = words;
-        ULONG wordIndex = 0;
 
         while (left) {
             ULONG count = left > 8UL ? 8UL : left;
+            ULONG fullCount = count;
             ULONG reg;
             ULONG index;
 
@@ -698,20 +760,33 @@ static BOOL SubmitTemplate(struct BoardInfo *bi,
             else
                 reg = RADEON_HOST_DATA7 - (count - 1UL) * 4UL;
 
-            if (!WaitFifo(bi, count))
+            if (!uploadReserved && !WaitFifo(bi, count))
                 return FALSE;
-            for (index = 0; index < count; ++index) {
-                if (!RadeonWrite32(
-                        bi, reg + index * 4UL,
-                        TemplateWord(template, row,
-                                     (wordIndex + index) * 32UL,
-                                     (UWORD)width)))
-                    return FALSE;
+            if (left == count && tailWidth)
+                --fullCount;
+            for (index = 0; index < fullCount; ++index)
+                AccelWriteHostData(bi, reg + index * 4UL,
+                                   TemplateFullWord(&source, bitOffset));
+            if (fullCount != count &&
+                !AccelWriteHostData(
+                    bi, reg + fullCount * 4UL,
+                    TemplatePartialWord(source, bitOffset, tailWidth))) {
+                return FALSE;
             }
-            wordIndex += count;
             left -= count;
         }
+        rowSource += (UWORD)template->BytesPerRow;
     }
+    TemplateEngine.Board = bi;
+    TemplateEngine.Master = master;
+    TemplateEngine.PitchOffset = surface->PitchOffset;
+    TemplateEngine.WriteMask = writeMask;
+    TemplateEngine.FgPen = fgPen;
+    TemplateEngine.BgPen = bgPen;
+    TemplateEngine.Valid = TRUE;
+    RDEBUG_TEMPLATE_HARDWARE(valid && !masterChanged && !pitchChanged &&
+                             !maskChanged && !fgChanged && !bgChanged,
+                             uploadWords);
     return TRUE;
 }
 
@@ -735,6 +810,7 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
     ULONG direction = 0;
     (void)bytesPerPixel;
     InvalidateLineEngine();
+    InvalidateTemplateEngine();
     srcX = (WORD)(srcX + source->XBias);
     dstX = (WORD)(dstX + destination->XBias);
     srcY = (WORD)(srcY + source->YBias);
@@ -783,6 +859,7 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp)
         return FALSE;
     LineSurface.Valid = FALSE;
     InvalidateLineEngine();
+    InvalidateTemplateEngine();
     data->AccelState = RADEON_ACCEL_OFF;
     data->AccelPending = RADEON_PENDING_NONE;
     data->AccelRecoveryTried = FALSE;
@@ -819,6 +896,7 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
     RadeonCpShutdown(bi);
     LineSurface.Valid = FALSE;
     InvalidateLineEngine();
+    InvalidateTemplateEngine();
     data->AccelPending = RADEON_PENDING_NONE;
     data->AccelState = RADEON_ACCEL_OFF;
     ReleaseSemaphore(&bi->BoardLock);
@@ -1016,11 +1094,15 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
 
     if (!SysBase || !data)
         return;
+    RDEBUG_TEMPLATE_CALL((UWORD)width, (UWORD)height,
+                         template ? template->DrawMode : 0xffU);
     result = ValidateSurface(bi, render, x, y, width, height,
                              format, &surface);
     if (result == SURFACE_REJECT)
         return;
     hardware = PrepareTemplate(bi, template, width, height);
+    if (format == RGBFB_CLUT && mask != 0xffU)
+        hardware = FALSE;
     if (hardware && result == SURFACE_HARDWARE) {
         ULONG destinationX = (ULONG)(UWORD)(x + surface.XBias);
         ULONG paddedWidth = ((ULONG)(UWORD)width + 31UL) & ~31UL;
@@ -1031,9 +1113,9 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
     if (hardware && result == SURFACE_HARDWARE &&
         data->AccelState == RADEON_ACCEL_READY) {
         if (SubmitTemplate(bi, &surface, template, x, y, width, height,
-                           mask, format))
+                           mask, format)) {
             data->AccelPending = RADEON_PENDING_MMIO;
-        else {
+        } else {
             ObtainSemaphore(&bi->BoardLock);
             software = RecoverEngine(bi);
             ReleaseSemaphore(&bi->BoardLock);
@@ -1045,6 +1127,8 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
         ReleaseSemaphore(&bi->BoardLock);
     }
 
+    if (software)
+        RDEBUG_TEMPLATE_SOFTWARE();
     if (software && bi->BlitTemplateDefault &&
         bi->BlitTemplateDefault != RadeonBlitTemplate)
         bi->BlitTemplateDefault(bi, render, template, x, y,
@@ -1204,6 +1288,8 @@ static BOOL SubmitLine(struct BoardInfo *bi,
     ULONG entries = 2UL + masterChanged + pitchOffsetChanged +
                     maskChanged + penChanged + (!valid ? 3UL : 0UL);
 
+    InvalidateTemplateEngine();
+
     if (!WaitFifo(bi, entries) ||
         (masterChanged &&
          !RadeonWrite32(bi, RADEON_DP_GUI_MASTER_CNTL, master)) ||
@@ -1244,6 +1330,8 @@ static BOOL SubmitSolidAxisRect(struct BoardInfo *bi,
                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     BOOL valid = LineEngine.Valid && LineEngine.Board == bi;
+
+    InvalidateTemplateEngine();
 
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);

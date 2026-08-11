@@ -84,6 +84,17 @@ static UBYTE TemplateTestData[32] = {
     0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa
 };
 
+static UBYTE TemplateWideTestData[72] = {
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+    0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa
+};
+
 #define p96AllocModeListTagList(tags) \
     LP1(0x48, struct List *, p96AllocModeListTagList, \
         struct TagItem *, tags, a0, , P96Base)
@@ -715,6 +726,41 @@ static BOOL BenchmarkScreen(struct Screen *screen, RGBFTYPE format)
     DateStamp(&end);
     elapsed = StampTicks(&end) - StampTicks(&start);
     printf("BENCH template4096 ticks=%lu\n", (unsigned long)elapsed);
+
+    DateStamp(&start);
+    for (index = 0; index < 4096; ++index) {
+        UWORD x = (index & 1U) ? 360U : 440U;
+
+        BltTemplate(TemplateWideTestData, 3, 9, rastPort,
+                    x, 200, 64, 8);
+    }
+    WaitBlit();
+    DateStamp(&end);
+    elapsed = StampTicks(&end) - StampTicks(&start);
+    printf("BENCH template64-4096 ticks=%lu\n",
+           (unsigned long)elapsed);
+
+    SetDrMd(rastPort, JAM1);
+    DateStamp(&start);
+    for (index = 0; index < 4096; ++index) {
+        Move(rastPort, (index & 1U) ? 400 : 420, 200);
+        Text(rastPort, (CONST_STRPTR)"X", 1);
+    }
+    WaitBlit();
+    DateStamp(&end);
+    elapsed = StampTicks(&end) - StampTicks(&start);
+    printf("BENCH text1-4096 ticks=%lu\n", (unsigned long)elapsed);
+
+    DateStamp(&start);
+    for (index = 0; index < 4096; ++index) {
+        Move(rastPort, (index & 1U) ? 360 : 420, 200);
+        Text(rastPort, (CONST_STRPTR)"P96Speed", 8);
+    }
+    WaitBlit();
+    DateStamp(&end);
+    elapsed = StampTicks(&end) - StampTicks(&start);
+    printf("BENCH text8-4096 ticks=%lu\n", (unsigned long)elapsed);
+    SetDrMd(rastPort, JAM2);
 
     TestFill(rastPort, format, 0, 0, screen->Width / 2U - 1,
              screen->Height - 1,
