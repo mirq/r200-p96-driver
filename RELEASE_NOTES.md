@@ -1,6 +1,6 @@
-# Radeon9200.card 0.13
+# Radeon9200.card 0.14
 
-Version 0.13 is an early-development text-rendering performance update. It
+Version 0.14 is an early-development text-rendering performance update. It
 optimizes the hardware JAM1/JAM2 `BlitTemplate` upload path used by Picasso96
 `Text()` while retaining the direct-MMIO acceleration introduced in 0.12.
 
@@ -56,4 +56,4 @@ focused `p96screen` `Text("P96Speed")` benchmark improved from 40 to 30 ticks.
 This remains an early-development driver. The release candidate was tested on
 the target Amiga before tagging; no additional release-only test pass was run.
 
-The library reports `$VER: Radeon9200.card 0.13 (11.8.2026)`.
+The library reports `$VER: Radeon9200.card 0.14 (12.8.2026)`.
