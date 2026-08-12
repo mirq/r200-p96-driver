@@ -16,6 +16,8 @@ struct RadeonOptions {
     UBYTE DmaValid;
     UBYTE CpEnabled;
     UBYTE HwSpriteEnabled;
+    UBYTE HwTextEnabled;
+    UBYTE TextStageEnabled;
 };
 
 static void ClearBoardData(struct RadeonBoardData *data)
@@ -138,7 +140,15 @@ static void ParseOptions(char **toolTypes, struct RadeonOptions *options)
     options->DmaSpecified = FALSE;
     options->DmaValid = FALSE;
     options->CpEnabled = FALSE;
-    options->HwSpriteEnabled = FALSE;
+    options->HwSpriteEnabled = TRUE;
+    options->HwTextEnabled = TRUE;
+    /*
+     * Off by default: the VRAM-staged BlitTemplate expand wedges the 2D
+     * engine on the reference machine and is still being diagnosed. The
+     * capability itself is proven (see performance.md); only this submission
+     * path is suspect, so it stays opt-in until it passes on hardware.
+     */
+    options->TextStageEnabled = FALSE;
 
     if (!toolTypes)
         return;
@@ -167,6 +177,15 @@ static void ParseOptions(char **toolTypes, struct RadeonOptions *options)
                                        UpperAscii(value[1]) == 'E' &&
                                        UpperAscii(value[2]) == 'S' &&
                                        value[3] == '\0';
+        } else if (MatchOption(option, "TEXTSTAGE=", &value)) {
+            options->TextStageEnabled = !(UpperAscii(value[0]) == 'N' &&
+                                          UpperAscii(value[1]) == 'O' &&
+                                          value[2] == '\0');
+        } else if (MatchOption(option, "HWTEXT=", &value)) {
+            options->HwTextEnabled = UpperAscii(value[0]) == 'Y' &&
+                                     UpperAscii(value[1]) == 'E' &&
+                                     UpperAscii(value[2]) == 'S' &&
+                                     value[3] == '\0';
         }
     }
 }
@@ -446,10 +465,12 @@ BOOL InitCard(__REGA0(struct BoardInfo *bi),
         RLOG("Radeon9200: DMASIZE request could not be reserved\n");
     }
 
-    (void)RadeonInitializeAcceleration(bi, options.CpEnabled);
+    (void)RadeonInitializeAcceleration(bi, options.CpEnabled,
+                                       options.TextStageEnabled);
     RDEBUG_OPEN(bi, options.CpEnabled, options.DmaRequested,
                 options.HwSpriteEnabled);
-    RadeonInstallCallbacks(bi, options.HwSpriteEnabled);
+    RadeonInstallCallbacks(bi, options.HwSpriteEnabled,
+                           options.HwTextEnabled);
 
     RLOG("Radeon9200: VGA CRTC0 startup screen active\n");
     return TRUE;

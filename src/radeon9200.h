@@ -31,7 +31,10 @@ struct RadeonBoardData {
     ULONG DisplayEnabled : 1;
     ULONG AccelRecoveryTried : 1;
     ULONG AccelPending : 2;
-    ULONG ReservedFlags : 24;
+    /* A staging buffer was hidden above bi->MemorySize for VRAM-staged
+     * BlitTemplate expands; its offset is bi->MemorySize itself. */
+    ULONG TemplateStaging : 1;
+    ULONG ReservedFlags : 23;
     ULONG RefClockKHz;
     ULONG MinPllKHz;
     ULONG MaxPllKHz;
@@ -88,7 +91,8 @@ BOOL RadeonMaskPll(struct BoardInfo *bi, UBYTE index, ULONG andMask,
 void RadeonDelayUs(ULONG microseconds);
 
 BOOL RadeonInitializeHardware(struct BoardInfo *bi);
-BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp);
+BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
+                                  BOOL stageTemplates);
 void RadeonShutdownAcceleration(struct BoardInfo *bi);
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi));
 void RadeonFillRect(__REGA0(struct BoardInfo *bi),
@@ -136,7 +140,8 @@ void RadeonBlitRectNoMaskComplete(
     __REGD2(WORD dstX), __REGD3(WORD dstY),
     __REGD4(WORD width), __REGD5(WORD height),
     __REGD6(UBYTE opcode), __REGD7(RGBFTYPE format));
-void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite);
+void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
+                            BOOL hardwareText);
 BOOL RadeonInitializeCursor(struct BoardInfo *bi);
 void RadeonShutdownCursor(struct BoardInfo *bi);
 BOOL RadeonSetSprite(__REGA0(struct BoardInfo *bi),

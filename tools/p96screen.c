@@ -575,14 +575,20 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
     ULONG colorB = format == RGBFB_CLUT ? 4UL : 0x0000ffffUL;
     ULONG expectedA;
     ULONG expectedB;
+    ULONG expectedXor;
     struct DateStamp start;
     struct DateStamp end;
     unsigned long long elapsed;
+    UWORD sourceWidth = screen->Width / 2U;
     UWORD index;
     BOOL eligible;
     BOOL success = TRUE;
 
-    source = AllocBitMap(screen->Width, 64,
+    if (sourceWidth < 80U) {
+        printf("COMPLETECOPY screen too narrow\n");
+        return FALSE;
+    }
+    source = AllocBitMap(sourceWidth, 64,
                          (ULONG)p96GetBitMapAttr(destination,
                                                 P96BMA_DEPTH),
                          BMF_MINPLANES | BMF_CLEAR, destination);
@@ -602,11 +608,12 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
                                           P96BMA_BYTESPERROW),
            (unsigned int)p96GetBitMapAttr(source, P96BMA_ISONBOARD));
     eligible = p96GetBitMapAttr(source, P96BMA_ISONBOARD) != 0 &&
-               p96GetBitMapAttr(source, P96BMA_BYTESPERROW) ==
+               p96GetBitMapAttr(source, P96BMA_BYTESPERROW) !=
                    p96GetBitMapAttr(destination, P96BMA_BYTESPERROW);
     success &= eligible;
 
     TestFill(&sourcePort, format, 16, 8, 79, 39, colorA);
+    TestFill(destinationPort, format, 410, 310, 493, 361, colorB);
     TestFill(destinationPort, format, 490, 310, 573, 361, colorB);
     WaitBlit();
     expectedA = p96ReadPixel(&sourcePort, 20, 10);
@@ -615,6 +622,21 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
         expectedA &= 0xffUL;
         expectedB &= 0xffUL;
     }
+    expectedXor = ExpectedColor(format, colorA ^ colorB);
+    if (format == RGBFB_CLUT)
+        expectedXor &= 0xffUL;
+
+    BltBitMap(source, 16, 8, destination, 420, 320,
+              64, 32, 0x60, 0xff, NULL);
+    WaitBlit();
+    success &= CheckPixel(destinationPort, 420, 320, expectedXor,
+                          format, "complete-xor-start");
+    success &= CheckPixel(destinationPort, 483, 351, expectedXor,
+                          format, "complete-xor-end");
+    success &= CheckPixel(destinationPort, 419, 319, expectedB,
+                          format, "complete-xor-edge");
+    success &= CheckPixel(&sourcePort, 20, 10, expectedA,
+                          format, "complete-xor-source");
 
     BltBitMap(source, 16, 8, destination, 500, 320,
               64, 32, 0xc0, 0xff, NULL);

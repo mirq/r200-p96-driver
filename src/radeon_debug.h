@@ -18,8 +18,26 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 4UL
+#define RADEON_DEBUG_VERSION 11UL
+
+/* Result of the monochrome-source-from-memory capability probe. */
+#define RADEON_PROBE_NOTRUN  0UL
+#define RADEON_PROBE_OK      1UL
+#define RADEON_PROBE_WRONG   2UL
+#define RADEON_PROBE_FAILED  3UL
+#define RADEON_PROBE_SKIPPED 4UL
 #define RADEON_DEBUG_PORT    "Radeon9200.Debug"
+
+/* Index into the version 6 OpCalls/OpHardware/OpSoftware/OpTicks arrays. */
+#define RADEON_DEBUG_OP_FILL     0
+#define RADEON_DEBUG_OP_INVERT   1
+#define RADEON_DEBUG_OP_COPY     2
+#define RADEON_DEBUG_OP_PATTERN  3
+#define RADEON_DEBUG_OP_TEMPLATE 4
+#define RADEON_DEBUG_OP_COMPLETE 5
+#define RADEON_DEBUG_OP_LINE     6
+#define RADEON_DEBUG_OP_DRAIN    7
+#define RADEON_DEBUG_OP_COUNT    8
 
 /*
  * Laid out immediately after the struct MsgPort in one allocation. The host
@@ -72,7 +90,89 @@ struct RadeonDebugStats {
     ULONG TemplateUploadWords;
     ULONG TemplateMaxWidth;
     ULONG TemplateMaxHeight;
+    /* Version 5: cross-surface copy path, attributes, and rejection reasons. */
+    ULONG CompleteCalls;
+    ULONG CompleteHardware;
+    ULONG CompleteSoftware;
+    ULONG CompleteUnequalPitch;
+    ULONG CompleteOpcodeReject;
+    ULONG CompleteOverlapReject;
+    ULONG CompleteSurfaceSoftware;
+    ULONG CompleteSurfaceReject;
+    ULONG CompleteAccelUnavailable;
+    /*
+     * Version 6: whole-callback accounting for every 2D entry point.
+     *
+     * Versions 2-5 could only attribute time inside RectFill, which is what
+     * P96Speed measures. Interactive work - opening a window over another one -
+     * is a mix of every callback below, and nothing recorded how that mix is
+     * shaped. Reading these deltas around a single window open says directly
+     * which callback the time belongs to, and how much of it fell back to the
+     * CPU, without guessing from a benchmark that never issues that mix.
+     */
+    ULONG OpCalls[RADEON_DEBUG_OP_COUNT];
+    ULONG OpHardware[RADEON_DEBUG_OP_COUNT];
+    ULONG OpSoftware[RADEON_DEBUG_OP_COUNT];
+    ULONG OpTicks[RADEON_DEBUG_OP_COUNT];
+    /*
+     * Version 7: cost of writing consecutive longwords into the framebuffer
+     * aperture, for the same sample count as MmioWriteTicks. BlitTemplate
+     * currently streams every glyph row through a HOST_DATA register at
+     * MMIO cost; expanding from a VRAM staging buffer instead is only worth
+     * building if aperture writes are materially cheaper.
+     */
+    ULONG VramWriteTicks;
+    /*
+     * Version 8: can the 2D engine colour-expand a monochrome source read
+     * from VRAM instead of streamed through HOST_DATA? If it can, the
+     * template upload can move to the aperture, which measured 2.19x
+     * cheaper per longword than a register write.
+     */
+    ULONG MonoFromMemory;
+    /* First four expanded destination bytes, to tell a wrong expansion from
+     * a blit that never landed (the probe pre-fills the target with 0x55). */
+    ULONG MonoProbeSample;
+    /* Same four bytes with GMC_BYTE_LSB_TO_MSB, to identify which flag
+     * yields Amiga MSB-first ordering. */
+    ULONG MonoProbeSampleAlt;
+    /* Version 9: bounded-wait and recovery attribution for long UI stalls. */
+    ULONG FifoWaitCalls;
+    ULONG FifoWaitPolls;
+    ULONG FifoWaitMaxPolls;
+    ULONG FifoWaitFailures;
+    ULONG IdleWaitCalls;
+    ULONG IdleWaitPolls;
+    ULONG IdleWaitMaxPolls;
+    ULONG IdleWaitFailures;
+    ULONG RecoveryCalls;
+    ULONG RecoverySuccess;
+    ULONG RecoveryFailure;
+    ULONG CompleteSubmitCalls;
+    ULONG CompleteSubmitSuccess;
+    ULONG LastWaitStatus;
+    ULONG LastWaitKind;
+    ULONG LastWaitPending;
+    ULONG FinalAccelState;
+    /* Version 10: complete-copy minterms selected by layers.library. */
+    ULONG CompleteOpcode[16];
+    /* Version 11: direct phase timing inside complete-copy dispatch. */
+    ULONG CompleteValidateTicks;
+    ULONG CompleteSubmitTicks;
+    ULONG CompleteDefaultTicks;
+    ULONG CompleteValidateMaxTicks;
+    ULONG CompleteSubmitMaxTicks;
+    ULONG CompleteDefaultMaxTicks;
 };
+
+#define RADEON_DEBUG_WAIT_FIFO 1UL
+#define RADEON_DEBUG_WAIT_IDLE 2UL
+
+#define RDEBUG_COMPLETE_UNEQUAL_PITCH   (1UL << 0)
+#define RDEBUG_COMPLETE_OPCODE_REJECT   (1UL << 1)
+#define RDEBUG_COMPLETE_OVERLAP_REJECT  (1UL << 2)
+#define RDEBUG_COMPLETE_SURFACE_SOFTWARE (1UL << 3)
+#define RDEBUG_COMPLETE_SURFACE_REJECT  (1UL << 4)
+#define RDEBUG_COMPLETE_ACCEL_UNAVAILABLE (1UL << 5)
 
 struct RadeonDebugSample {
     ULONG Ticks;
@@ -84,6 +184,10 @@ struct RadeonDebugSample {
 
 extern ULONG RadeonDebugReads;
 extern ULONG RadeonDebugWrites;
+/* Set by the acceleration probe before RadeonDebugOpen() publishes the port. */
+extern ULONG RadeonMonoProbeResult;
+extern ULONG RadeonMonoProbeSample;
+extern ULONG RadeonMonoProbeSampleAlt;
 
 void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
                      ULONG dmaRequested, ULONG spriteExperiment);
@@ -97,6 +201,21 @@ void RadeonDebugSpriteCall(ULONG function);
 void RadeonDebugTemplateCall(UWORD width, UWORD height, UBYTE drawMode);
 void RadeonDebugTemplateHardware(ULONG cacheHit, ULONG uploadWords);
 void RadeonDebugTemplateSoftware(void);
+void RadeonDebugCompleteCall(ULONG flags, UBYTE opcode);
+void RadeonDebugCompleteHardware(void);
+void RadeonDebugCompleteSoftware(void);
+void RadeonDebugOpEnd(const struct RadeonDebugSample *sample, ULONG op,
+                      ULONG hardware);
+void RadeonDebugWait(ULONG kind, ULONG polls, ULONG success, ULONG status,
+                     ULONG pending);
+void RadeonDebugRecovery(ULONG success, ULONG accelState);
+void RadeonDebugCompleteSubmit(ULONG success);
+ULONG RadeonDebugPhaseBegin(void);
+void RadeonDebugCompletePhase(ULONG phase, ULONG start);
+
+#define RADEON_DEBUG_COMPLETE_VALIDATE 0UL
+#define RADEON_DEBUG_COMPLETE_SUBMIT   1UL
+#define RADEON_DEBUG_COMPLETE_DEFAULT  2UL
 
 #define RDEBUG_COUNT_READ()      (++RadeonDebugReads)
 #define RDEBUG_COUNT_WRITE()     (++RadeonDebugWrites)
@@ -118,6 +237,24 @@ void RadeonDebugTemplateSoftware(void);
 #define RDEBUG_TEMPLATE_HARDWARE(hit, words) \
     RadeonDebugTemplateHardware((hit), (words))
 #define RDEBUG_TEMPLATE_SOFTWARE() RadeonDebugTemplateSoftware()
+#define RDEBUG_COMPLETE_CALL(flags, opcode) \
+    RadeonDebugCompleteCall((flags), (opcode))
+#define RDEBUG_COMPLETE_HARDWARE() RadeonDebugCompleteHardware()
+#define RDEBUG_COMPLETE_SOFTWARE() RadeonDebugCompleteSoftware()
+#define RDEBUG_OP_SAMPLE         struct RadeonDebugSample rdOp; \
+                                 ULONG rdOpHardware = 0;
+#define RDEBUG_OP_BEGIN()        RadeonDebugBegin(&rdOp)
+#define RDEBUG_OP_HARDWARE()     (rdOpHardware = 1)
+#define RDEBUG_OP_END(op)        RadeonDebugOpEnd(&rdOp, (op), rdOpHardware)
+#define RDEBUG_WAIT(kind, polls, success, status, pending) \
+    RadeonDebugWait((kind), (polls), (success), (status), (pending))
+#define RDEBUG_RECOVERY(success, state) \
+    RadeonDebugRecovery((success), (state))
+#define RDEBUG_COMPLETE_SUBMIT(success) \
+    RadeonDebugCompleteSubmit((success))
+#define RDEBUG_PHASE_BEGIN() RadeonDebugPhaseBegin()
+#define RDEBUG_COMPLETE_PHASE(phase, start) \
+    RadeonDebugCompletePhase((phase), (start))
 
 #else
 
@@ -137,6 +274,19 @@ void RadeonDebugTemplateSoftware(void);
 #define RDEBUG_TEMPLATE_CALL(w, h, mode) ((void)0)
 #define RDEBUG_TEMPLATE_HARDWARE(hit, words) ((void)0)
 #define RDEBUG_TEMPLATE_SOFTWARE() ((void)0)
+#define RDEBUG_COMPLETE_CALL(flags, opcode) \
+    do { (void)(flags); (void)(opcode); } while (0)
+#define RDEBUG_COMPLETE_HARDWARE() ((void)0)
+#define RDEBUG_COMPLETE_SOFTWARE() ((void)0)
+#define RDEBUG_OP_SAMPLE
+#define RDEBUG_OP_BEGIN()        ((void)0)
+#define RDEBUG_OP_HARDWARE()     ((void)0)
+#define RDEBUG_OP_END(op)        ((void)0)
+#define RDEBUG_WAIT(kind, polls, success, status, pending) ((void)0)
+#define RDEBUG_RECOVERY(success, state) ((void)0)
+#define RDEBUG_COMPLETE_SUBMIT(success) ((void)0)
+#define RDEBUG_PHASE_BEGIN() 0UL
+#define RDEBUG_COMPLETE_PHASE(phase, start) ((void)0)
 
 #endif
 

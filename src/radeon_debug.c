@@ -20,6 +20,9 @@
 
 ULONG RadeonDebugReads;
 ULONG RadeonDebugWrites;
+ULONG RadeonMonoProbeResult;
+ULONG RadeonMonoProbeSample;
+ULONG RadeonMonoProbeSampleAlt;
 
 struct RadeonDebugNode {
     struct MsgPort Port;
@@ -121,6 +124,22 @@ static void MeasureMmio(struct BoardInfo *bi,
         (void)Clock();
     stats->ClockTicks = Clock() - start;
 
+    /*
+     * Consecutive longwords into the framebuffer aperture, modelling the
+     * upload a VRAM-staged BlitTemplate would perform. Uses the tail of the
+     * board pool, which Picasso96 has not begun allocating from at InitCard
+     * time, so it cannot disturb the startup screen.
+     */
+    if (bi->MemoryBase && bi->MemorySize > 32768UL) {
+        volatile ULONG *target = (volatile ULONG *)
+            ((UBYTE *)bi->MemoryBase + bi->MemorySize - 16384UL);
+
+        start = Clock();
+        for (index = 0; index < MMIO_SAMPLE_COUNT; ++index)
+            target[index & 2047UL] = 0;
+        stats->VramWriteTicks = Clock() - start;
+    }
+
     stats->MmioSamples = MMIO_SAMPLE_COUNT;
 }
 
@@ -149,6 +168,9 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     stats->DmaReserved = data->DmaArena != NULL;
     stats->BoardMemorySize = bi->MemorySize;
     stats->SpriteExperiment = spriteExperiment;
+    stats->MonoFromMemory = RadeonMonoProbeResult;
+    stats->MonoProbeSample = RadeonMonoProbeSample;
+    stats->MonoProbeSampleAlt = RadeonMonoProbeSampleAlt;
     stats->EClockRate = OpenTimer(SysBase) ? ReadEClock(&value) : 0;
 
     MeasureMmio(bi, stats);
@@ -200,16 +222,29 @@ void RadeonDebugEndCall(const struct RadeonDebugSample *sample,
                         ULONG hardware)
 {
     struct RadeonDebugStats *stats;
+    ULONG elapsed;
 
     if (!DebugNode)
         return;
+    elapsed = Clock() - sample->Ticks;
     stats = &DebugNode->Stats;
     ++stats->FillCalls;
-    stats->FillTotalTicks += Clock() - sample->Ticks;
+    stats->FillTotalTicks += elapsed;
     if (hardware)
         ++stats->FillHardware;
     else
         ++stats->FillSoftware;
+    /*
+     * Feed the version 6 table from the sample RectFill already takes, rather
+     * than bracketing the call a second time: a ReadEClock pair costs more
+     * than a hardware fill submission does.
+     */
+    ++stats->OpCalls[RADEON_DEBUG_OP_FILL];
+    stats->OpTicks[RADEON_DEBUG_OP_FILL] += elapsed;
+    if (hardware)
+        ++stats->OpHardware[RADEON_DEBUG_OP_FILL];
+    else
+        ++stats->OpSoftware[RADEON_DEBUG_OP_FILL];
 }
 
 void RadeonDebugEndDrain(const struct RadeonDebugSample *sample)
@@ -221,6 +256,9 @@ void RadeonDebugEndDrain(const struct RadeonDebugSample *sample)
     stats = &DebugNode->Stats;
     ++stats->DrainCount;
     stats->DrainTicks += Clock() - sample->Ticks;
+    /* No hardware/software split applies: WaitBlitter never falls back. */
+    ++stats->OpCalls[RADEON_DEBUG_OP_DRAIN];
+    stats->OpTicks[RADEON_DEBUG_OP_DRAIN] = stats->DrainTicks;
     stats->DrainReads += RadeonDebugReads - sample->Reads;
     stats->DrainWrites += RadeonDebugWrites - sample->Writes;
     stats->Reads = RadeonDebugReads;
@@ -284,6 +322,148 @@ void RadeonDebugTemplateSoftware(void)
 {
     if (DebugNode)
         ++DebugNode->Stats.TemplateSoftware;
+}
+
+void RadeonDebugCompleteCall(ULONG flags, UBYTE opcode)
+{
+    struct RadeonDebugStats *stats;
+
+    if (!DebugNode)
+        return;
+    stats = &DebugNode->Stats;
+    ++stats->CompleteCalls;
+    ++stats->CompleteOpcode[opcode & 0x0fU];
+    stats->CompleteUnequalPitch +=
+        (flags & RDEBUG_COMPLETE_UNEQUAL_PITCH) != 0;
+    stats->CompleteOpcodeReject +=
+        (flags & RDEBUG_COMPLETE_OPCODE_REJECT) != 0;
+    stats->CompleteOverlapReject +=
+        (flags & RDEBUG_COMPLETE_OVERLAP_REJECT) != 0;
+    stats->CompleteSurfaceSoftware +=
+        (flags & RDEBUG_COMPLETE_SURFACE_SOFTWARE) != 0;
+    stats->CompleteSurfaceReject +=
+        (flags & RDEBUG_COMPLETE_SURFACE_REJECT) != 0;
+    stats->CompleteAccelUnavailable +=
+        (flags & RDEBUG_COMPLETE_ACCEL_UNAVAILABLE) != 0;
+}
+
+void RadeonDebugCompleteHardware(void)
+{
+    if (DebugNode)
+        ++DebugNode->Stats.CompleteHardware;
+}
+
+void RadeonDebugCompleteSoftware(void)
+{
+    if (DebugNode)
+        ++DebugNode->Stats.CompleteSoftware;
+}
+
+/*
+ * One entry point for every 2D callback, so a single pair of host reads taken
+ * around an interactive action attributes it across the whole callback set
+ * rather than to RectFill alone.
+ */
+void RadeonDebugOpEnd(const struct RadeonDebugSample *sample, ULONG op,
+                      ULONG hardware)
+{
+    struct RadeonDebugStats *stats;
+
+    if (!DebugNode || op >= RADEON_DEBUG_OP_COUNT)
+        return;
+    stats = &DebugNode->Stats;
+    ++stats->OpCalls[op];
+    stats->OpTicks[op] += Clock() - sample->Ticks;
+    if (hardware)
+        ++stats->OpHardware[op];
+    else
+        ++stats->OpSoftware[op];
+}
+
+void RadeonDebugWait(ULONG kind, ULONG polls, ULONG success, ULONG status,
+                     ULONG pending)
+{
+    struct RadeonDebugStats *stats;
+    ULONG *calls;
+    ULONG *total;
+    ULONG *maximum;
+    ULONG *failures;
+
+    if (!DebugNode)
+        return;
+    stats = &DebugNode->Stats;
+    if (kind == RADEON_DEBUG_WAIT_FIFO) {
+        calls = &stats->FifoWaitCalls;
+        total = &stats->FifoWaitPolls;
+        maximum = &stats->FifoWaitMaxPolls;
+        failures = &stats->FifoWaitFailures;
+    } else {
+        calls = &stats->IdleWaitCalls;
+        total = &stats->IdleWaitPolls;
+        maximum = &stats->IdleWaitMaxPolls;
+        failures = &stats->IdleWaitFailures;
+    }
+    ++*calls;
+    *total += polls;
+    if (polls > *maximum)
+        *maximum = polls;
+    if (!success) {
+        ++*failures;
+        stats->LastWaitStatus = status;
+        stats->LastWaitKind = kind;
+        stats->LastWaitPending = pending;
+    }
+}
+
+void RadeonDebugRecovery(ULONG success, ULONG accelState)
+{
+    if (!DebugNode)
+        return;
+    ++DebugNode->Stats.RecoveryCalls;
+    if (success)
+        ++DebugNode->Stats.RecoverySuccess;
+    else
+        ++DebugNode->Stats.RecoveryFailure;
+    DebugNode->Stats.FinalAccelState = accelState;
+}
+
+void RadeonDebugCompleteSubmit(ULONG success)
+{
+    if (!DebugNode)
+        return;
+    ++DebugNode->Stats.CompleteSubmitCalls;
+    DebugNode->Stats.CompleteSubmitSuccess += success != 0;
+}
+
+ULONG RadeonDebugPhaseBegin(void)
+{
+    return Clock();
+}
+
+void RadeonDebugCompletePhase(ULONG phase, ULONG start)
+{
+    struct RadeonDebugStats *stats;
+    ULONG elapsed;
+    ULONG *total;
+    ULONG *maximum;
+
+    if (!DebugNode)
+        return;
+    elapsed = Clock() - start;
+    stats = &DebugNode->Stats;
+    if (phase == RADEON_DEBUG_COMPLETE_VALIDATE) {
+        total = &stats->CompleteValidateTicks;
+        maximum = &stats->CompleteValidateMaxTicks;
+    } else if (phase == RADEON_DEBUG_COMPLETE_SUBMIT) {
+        total = &stats->CompleteSubmitTicks;
+        maximum = &stats->CompleteSubmitMaxTicks;
+    } else {
+        total = &stats->CompleteDefaultTicks;
+        maximum = &stats->CompleteDefaultMaxTicks;
+    }
+    *total += elapsed;
+    if (elapsed > *maximum)
+        *maximum = elapsed;
 }
 
 #else

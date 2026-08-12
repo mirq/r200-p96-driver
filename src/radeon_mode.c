@@ -821,7 +821,8 @@ static void RadeonSetDPMSLevel(__REGA0(struct BoardInfo *bi),
     ApplyDisplayState(bi);
 }
 
-void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite)
+void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
+                            BOOL hardwareText)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     BOOL cursorReady = hardwareSprite && RadeonInitializeCursor(bi);
@@ -895,7 +896,20 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite)
         bi->InvertRect = RadeonInvertRect;
         bi->BlitRect = RadeonBlitRect;
         bi->BlitPattern = RadeonBlitPattern;
-        bi->BlitTemplate = RadeonBlitTemplate;
+        /*
+         * BlitTemplate is the most expensive callback this driver installs:
+         * it uploads ceil(width/32)*height longwords through one MMIO
+         * register, measured at 84.7 non-burstable PCI writes and over half
+         * of all driver time during interactive work. Streaming through
+         * HOST_DATA0 without mid-upload FIFO polls cuts isolated text time by
+         * about 10 percent. It still beats rtg.library's CPU default on real
+         * strings (4096x Text("P96Speed") at 16bpp: 60 ticks against 108, and a 64px
+         * template 32 against 123), so it stays on; single-character Text()
+         * is the one case software wins (33 against 47). HWTEXT=NO hands
+         * text back to the CPU for comparison.
+         */
+        if (hardwareText)
+            bi->BlitTemplate = RadeonBlitTemplate;
         bi->BlitRectNoMaskComplete = RadeonBlitRectNoMaskComplete;
         bi->DrawLine = RadeonDrawLine;
         bi->Flags |= BIF_BLITTER;

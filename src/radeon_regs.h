@@ -233,6 +233,7 @@
 #define RADEON_GMC_BYTE_MSB_TO_LSB          (0UL << 14)
 #define RADEON_GMC_BYTE_LSB_TO_MSB          (1UL << 14)
 #define RADEON_ROP3_Dn                      0x00550000UL
+#define RADEON_ROP3_S_XOR_D                 0x00660000UL
 #define RADEON_ROP3_S                       0x00cc0000UL
 #define RADEON_ROP3_P                       0x00f00000UL
 #define RADEON_DP_SRC_SOURCE_MEMORY         (2UL << 24)

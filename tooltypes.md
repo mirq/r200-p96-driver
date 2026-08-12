@@ -23,7 +23,9 @@ entry wrapped in parentheses is inert and can be used as an in-icon comment.
 |---|---|---|
 | `DMASIZE=<n>[K\|M]` | none | Hides a 4096-byte-aligned tail of VRAM from Picasso96 for private driver use. Required by the CP ring. A malformed value is rejected non-fatally. See [`dmasize.md`](dmasize.md). |
 | `CP=YES` | off | Initializes the R200 command processor for future clients. Picasso96 2D still uses direct MMIO. |
-| `HWSPRITE=YES` | off | Enables the 64x64 ARGB RV280 hardware cursor, with software-cursor fallback on failure. |
+| `HWSPRITE=<YES\|NO>` | on | Controls the 64x64 ARGB RV280 hardware cursor. `NO` disables it; allocation failure falls back to the software cursor. |
+| `HWTEXT=<YES\|NO>` | on | Controls the hardware `BlitTemplate` host-data upload used for text. `NO` leaves text to rtg.library's CPU default, which is faster only for single-character `Text()`. See [`performance.md`](performance.md). |
+| `TEXTSTAGE=<YES\|NO>` | **off** | Experimental: stages the glyph bitmap in VRAM and colour-expands it from memory instead of streaming it through `HOST_DATA`. **Known broken** - it wedges the 2D engine on the reference machine and leaves the Amiga unresponsive. Do not enable outside diagnosis. |
 | `OUTPUT=VGA` | VGA | Selects the VGA output path. |
 
 `OUTPUT=` is the one dangerous entry. `ParseOptions()` defaults `VgaOutput` to
@@ -39,14 +41,22 @@ The validated active entries are:
 
 ```text
 BOARDTYPE=Radeon9200
+SETTINGSFILE=SYS:Devs/Picasso96Settings.9200
 OUTPUT=VGA
 DMASIZE=2M
 CP=YES
 HWSPRITE=YES
 ```
 
+`BOARDTYPE` and `SETTINGSFILE` must be switched together. Selecting
+`Radeon9200` while leaving the other driver's settings file active can load
+`Radeon9200.card` successfully but leave Workbench on its native fallback
+screen because the expected Radeon9200 modes are unavailable.
+
 Back up the old icon before editing. Changes take effect after a cold reboot,
 because `InitCard()` normally runs once while Picasso96 loads the driver.
+`HWSPRITE=YES` remains in the validated list to make the desired state explicit,
+but it may be omitted because hardware cursor support is enabled by default.
 
 ## Verifying delivery
 

@@ -6,7 +6,7 @@ Finding the block from the host:
     1. read the longword at 0x00000004                  -> SysBase
     2. read 16 bytes at SysBase + 392                   -> exec PortList,
                                                            lh_Type must be 4
-    3. walk ln_Succ from lh_Head, reading 160 bytes per node, until the
+    3. walk ln_Succ from lh_Head, reading 240 bytes per node, until the
        magic 'R92D' appears at node + 34 (= sizeof(struct MsgPort))
 
 Then paste the dump here:
@@ -40,7 +40,45 @@ FIELDS = [
     "TemplateCacheHits", "TemplateJam1", "TemplateJam2",
     "TemplateOtherMode", "TemplateWidthTotal", "TemplateUploadWords",
     "TemplateMaxWidth", "TemplateMaxHeight",
+    # Version 5
+    "CompleteCalls", "CompleteHardware", "CompleteSoftware",
+    "CompleteUnequalPitch", "CompleteOpcodeReject",
+    "CompleteOverlapReject", "CompleteSurfaceSoftware",
+    "CompleteSurfaceReject", "CompleteAccelUnavailable",
 ]
+
+# Version 6: four parallel arrays indexed by OPS, appended in this order.
+OPS = ["Fill", "Invert", "Copy", "Pattern", "Template", "Complete",
+       "Line", "Drain"]
+for _array in ("OpCalls", "OpHardware", "OpSoftware", "OpTicks"):
+    FIELDS.extend("%s_%s" % (_array, _op) for _op in OPS)
+
+# Version 7 / 8
+FIELDS.extend(["VramWriteTicks", "MonoFromMemory", "MonoProbeSample",
+                "MonoProbeSampleAlt"])
+
+# Version 9
+FIELDS.extend([
+    "FifoWaitCalls", "FifoWaitPolls", "FifoWaitMaxPolls",
+    "FifoWaitFailures", "IdleWaitCalls", "IdleWaitPolls",
+    "IdleWaitMaxPolls", "IdleWaitFailures", "RecoveryCalls",
+    "RecoverySuccess", "RecoveryFailure", "CompleteSubmitCalls",
+    "CompleteSubmitSuccess", "LastWaitStatus", "LastWaitKind",
+    "LastWaitPending", "FinalAccelState",
+])
+
+# Version 10
+FIELDS.extend("CompleteOpcode_%X" % opcode for opcode in range(16))
+
+# Version 11
+FIELDS.extend([
+    "CompleteValidateTicks", "CompleteSubmitTicks", "CompleteDefaultTicks",
+    "CompleteValidateMaxTicks", "CompleteSubmitMaxTicks",
+    "CompleteDefaultMaxTicks",
+])
+
+PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
+         3: "submit failed", 4: "skipped"}
 
 
 def load(path):
@@ -90,6 +128,17 @@ def main():
     print("MMIO read          %7.2f us" % per(values["MmioReadTicks"], samples))
     print("MMIO write         %7.2f us" % per(values["MmioWriteTicks"], samples))
     print("ReadEClock         %7.2f us  (instrumentation cost)" % clock_us)
+    if "MonoFromMemory" in values:
+        print("\nmono-source-from-memory probe: %s  (first 4 dst bytes %08X)"
+              % (PROBE.get(values["MonoFromMemory"], "?"),
+                 values["MonoProbeSample"]))
+        print("  MSB_TO_LSB %08X   LSB_TO_MSB %08X   (0xFF00FF00 = Amiga order)"
+              % (values["MonoProbeSample"], values["MonoProbeSampleAlt"]))
+    if values.get("VramWriteTicks"):
+        vram = per(values["VramWriteTicks"], samples)
+        mmio = per(values["MmioWriteTicks"], samples)
+        print("VRAM write         %7.2f us  (%.1fx cheaper than an MMIO write)"
+              % (vram, mmio / vram if vram else 0.0))
 
     # Each sampled interval brackets the work with two ReadEClock calls and so
     # carries roughly one call's latency; subtract it before reporting.
@@ -116,6 +165,75 @@ def main():
               % (calls, net * us, gross * us, values["FillHardware"],
                  values["FillSoftware"],
                  100.0 * values["FillSoftware"] / float(calls)))
+
+    complete = values.get("CompleteCalls", 0)
+    if complete:
+        accounted = (values["CompleteHardware"] +
+                     values["CompleteSoftware"])
+        print("Complete n=%-6d hw=%d sw=%d dropped=%d  "
+              "unequal-pitch=%d opcode=%d overlap=%d surface-sw=%d "
+              "surface-reject=%d accel-off=%d"
+              % (complete, values["CompleteHardware"],
+                 values["CompleteSoftware"], complete - accounted,
+                 values["CompleteUnequalPitch"],
+                 values["CompleteOpcodeReject"],
+                 values["CompleteOverlapReject"],
+                 values["CompleteSurfaceSoftware"],
+                 values["CompleteSurfaceReject"],
+                 values["CompleteAccelUnavailable"]))
+
+    if "OpCalls_Fill" not in values:
+        return
+    print("\n--- per-callback (version 6) ---")
+    print("%-10s %8s %8s %8s %10s %10s" %
+          ("callback", "calls", "hw", "sw", "us/call", "total ms"))
+    total = 0.0
+    for op in OPS:
+        calls = values["OpCalls_%s" % op]
+        if not calls:
+            continue
+        gross = values["OpTicks_%s" % op] / float(calls)
+        # Two ReadEClock calls bracket each sample; charge one call's latency.
+        net = max(gross - clock_ticks, 0.0)
+        spent = net * calls * us / 1000.0
+        total += spent
+        print("%-10s %8d %8d %8d %10.2f %10.1f" %
+              (op, calls, values["OpHardware_%s" % op],
+               values["OpSoftware_%s" % op], net * us, spent))
+    print("%-10s %8s %8s %8s %10s %10.1f" %
+          ("TOTAL", "", "", "", "", total))
+    if "FifoWaitCalls" in values:
+        print("\n--- bounded waits (version 9) ---")
+        print("FIFO calls=%d polls=%d max=%d failures=%d" %
+              (values["FifoWaitCalls"], values["FifoWaitPolls"],
+               values["FifoWaitMaxPolls"], values["FifoWaitFailures"]))
+        print("idle calls=%d polls=%d max=%d failures=%d" %
+              (values["IdleWaitCalls"], values["IdleWaitPolls"],
+               values["IdleWaitMaxPolls"], values["IdleWaitFailures"]))
+        print("recovery calls=%d success=%d failure=%d final-state=%d" %
+              (values["RecoveryCalls"], values["RecoverySuccess"],
+               values["RecoveryFailure"], values["FinalAccelState"]))
+        print("complete submits=%d success=%d" %
+              (values["CompleteSubmitCalls"],
+               values["CompleteSubmitSuccess"]))
+        print("last failure kind=%d pending=%d RBBM_STATUS=%08X" %
+              (values["LastWaitKind"], values["LastWaitPending"],
+               values["LastWaitStatus"]))
+    if "CompleteOpcode_0" in values:
+        used = [(opcode, values["CompleteOpcode_%X" % opcode])
+                for opcode in range(16)
+                if values["CompleteOpcode_%X" % opcode]]
+        print("complete opcodes: %s" % " ".join(
+            "%X=%d" % pair for pair in used))
+    if "CompleteValidateTicks" in values:
+        print("complete phase ms: validate=%.3f submit=%.3f default=%.3f" %
+              (values["CompleteValidateTicks"] * us / 1000.0,
+               values["CompleteSubmitTicks"] * us / 1000.0,
+               values["CompleteDefaultTicks"] * us / 1000.0))
+        print("complete phase max us: validate=%.2f submit=%.2f default=%.2f" %
+              (values["CompleteValidateMaxTicks"] * us,
+               values["CompleteSubmitMaxTicks"] * us,
+               values["CompleteDefaultMaxTicks"] * us))
 
 
 if __name__ == "__main__":

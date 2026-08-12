@@ -1,5 +1,14 @@
 # Radeon9200.card Development Notes
 
+The reference test target is a physical Amiga, not an emulator. Never use
+emulator lifecycle, reset, pause, or state-management commands for it.
+
+Switching card drivers requires changing both active monitor ToolTypes before
+the cold reboot. `BOARDTYPE=Radeon9200` must be paired with
+`SETTINGSFILE=SYS:Devs/Picasso96Settings.9200`; changing only `BOARDTYPE`
+loads the card but leaves Workbench on the native fallback screen. Restore the
+matching Radeon settings-file ToolType when switching back to `Radeon.card`.
+
 ## Goal
 
 Build a small, pure-C Picasso96 card driver for desktop RV280 Radeon 9200
@@ -79,9 +88,12 @@ VRAM rendering through the wrappers.
 The validated hardware subset is `FillRect` and destination-only `InvertRect`
 in CLUT8/RGB565PC/BGRA32 (including CLUT8 partial masks), same-`RenderInfo`
 `BlitRect` in all three formats, and cross-surface
-`BlitRectNoMaskComplete` for opcode `$C` (source copy) between disjoint,
-same-pitch surfaces. Surface bases are rebased to a 1 KiB GPU address with
-checked X/Y bias so ordinary 16-byte P96 allocations remain usable.
+`BlitRectNoMaskComplete` for opcode `$C` (source copy) and `$6` (source XOR
+destination) between on-board surfaces with independently validated pitches.
+Overlapping surfaces select direction from their absolute VRAM ranges, matching
+the smart-refresh backing-store workload. Surface bases are rebased to a 1 KiB
+GPU address with checked X/Y bias so ordinary 16-byte P96 allocations remain
+usable.
 
 The validated subset also includes JAM1/JAM2 `BlitTemplate` and JAM2
 `BlitPattern` for 1/2/4/8-row patterns
@@ -90,9 +102,8 @@ the P96Speed pattern increase from 37 to 1387 operations/second; 8/16/32/8
 readback tests pass every accepted height, phase, edge, and overdraw guard.
 CLUT8 partial-mask patterns and synchronized software fallback for a rejected
 16-pixel pattern also pass.
-Line, planar, unsupported patterns, and any
-cross-surface operations with overlap, unequal pitch, or non-copy opcodes
-remain software fallbacks.
+Planar, unsupported patterns, and complete-copy opcodes other than `$6` and
+`$C` remain software fallbacks.
 
 ## Source Priorities
 

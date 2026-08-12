@@ -6,6 +6,8 @@ STRIP := $(CROSS)strip
 TARGET := Radeon9200.card
 BUILD_DIR := build
 P96_SCREEN_TEST := $(BUILD_DIR)/p96screen
+P96_OVERLAP_TEST := $(BUILD_DIR)/p96overlap
+P96_WINDOWMOVE_TEST := $(BUILD_DIR)/p96windowmove
 
 P96_DIR := Picasso96Develop
 OPENPCI_DIR := OpenPci2.1-SDK290208
@@ -69,9 +71,19 @@ endif
 
 all: $(TARGET)
 
-tools: $(P96_SCREEN_TEST)
+tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST)
 
 $(P96_SCREEN_TEST): tools/p96screen.c
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
+		-Iinclude $< -lamiga -o $@
+
+$(P96_OVERLAP_TEST): tools/p96overlap.c
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
+		-Iinclude $< -lamiga -o $@
+
+$(P96_WINDOWMOVE_TEST): tools/p96windowmove.c
 	mkdir -p $(dir $@)
 	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
 		-Iinclude $< -lamiga -o $@

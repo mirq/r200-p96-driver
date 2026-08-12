@@ -30,8 +30,8 @@ and opens Picasso96-managed screens. It implements:
   timeout fallback.
 - Hardware rectangle fills in all three formats, including CLUT8 partial write
   masks, overlap-safe same-surface rectangle copies, and cross-surface
-  source-copy (`opcode $C`) rectangle copies between disjoint, same-pitch
-  Picasso96 surfaces.
+  source-copy (`opcode $C`) rectangle copies between disjoint Picasso96
+  surfaces with independently validated pitches.
 - Hardware JAM2 monochrome patterns with 1, 2, 4, or 8 rows when each 16-bit
   source row repeats the same eight horizontal pixels.
 
@@ -46,11 +46,12 @@ outside its allocator.
 Picasso96 API tests repeatedly open and close `640x480` screens in all three
 advertised formats. Their measured pitches are 640, 1280, and 2560 bytes.
 Tests cover rectangle edges, direct-color fills, right/down overlapping copies,
-cross-surface disjoint copies, unaligned P96 surface addresses, and CLUT8
-partial masks. P96 pixel readback returns the expected RGB565-quantized colors
-and exact 32-bit `00RRGGBB` colors. No crash is recorded after an 8/16/32/8
-transition sequence. Pattern tests cover phase, rectangle edges, overdraw
-guards, complete row ordering for all four accepted heights, CLUT8 partial
+cross-surface disjoint copies with equal and unequal pitches, unaligned P96
+surface addresses, and CLUT8 partial masks. P96 pixel readback returns the
+expected RGB565-quantized colors and exact 32-bit `00RRGGBB` colors. No crash is
+recorded after an 8/16/32/8 transition sequence. Pattern tests cover phase,
+rectangle edges, overdraw guards, complete row ordering for all four accepted
+heights, CLUT8 partial
 masks, and synchronized fallback for unsupported 16-pixel patterns.
 
 In an earlier hardware milestone on the validated `640x480x8` surface, 256
@@ -170,7 +171,8 @@ must reserve at least 1 MiB; 2 MiB is the validated setting. `CP=YES` opts into
 CP initialization so the ring remains available for future 3D work. Picasso96
 2D fill, pattern, and copy callbacks use direct MMIO even while the CP is
 active. `HWSPRITE=YES` enables the RV280 64x64 ARGB hardware cursor; allocation
-or initialization failure leaves Picasso96's software cursor active.
+or initialization failure leaves Picasso96's software cursor active. Hardware
+cursor support is enabled by default; use `HWSPRITE=NO` to disable it explicitly.
 
 To create the icon, copy a valid Picasso96 monitor icon to
 `DEVS:Monitors/Radeon.info`, then use Workbench **Information** to preserve its
@@ -231,8 +233,8 @@ initialization stage.
 - Pattern acceleration is limited to JAM2, heights up to eight rows, and
   16-pixel source rows whose two bytes are identical. Other patterns use P96
   software.
-- Line, planar conversion, unsupported templates, and cross-surface operations
-  with overlap, different pitch, or non-copy opcodes still use P96 software.
+- Planar conversion, unsupported templates, and cross-surface operations with
+  overlap or non-copy opcodes still use P96 software.
 - Linear scanout is limited to the lower 64 MiB aperture.
 - Horizontal panning is quantized to 8 pixels in CLUT8, 4 pixels in RGB565,
   and 2 pixels in BGRA32 because CRTC offsets have eight-byte granularity.
