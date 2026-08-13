@@ -6,6 +6,8 @@ The AmigaBridge endpoint is `192.168.100.47:2345`.
 The alternate network card uses `192.168.100.50:2345`.
 A physical Amiga reboot takes approximately 100 seconds before the bridge is
 available again.
+Run AmigaBridge file transfers and filesystem copies sequentially. Concurrent
+copy requests can report or use the wrong destination path.
 
 Switching card drivers requires changing both active monitor ToolTypes before
 the cold reboot. `BOARDTYPE=Prometheus` must be paired with
