@@ -1,0 +1,4 @@
+[submodule "Prometheus"]
+	path = Prometheus
+	url = git@github.com:mirq/Prometheus.git
+	branch = main
