@@ -1,50 +1,48 @@
-# Radeon9200.card Development Notes
+# Radeon9200.chip Development Notes
 
 The reference test target is a physical Amiga, not an emulator. Never use
 emulator lifecycle, reset, pause, or state-management commands for it.
+The AmigaBridge endpoint is `192.168.100.47:2345`.
+The alternate network card uses `192.168.100.50:2345`.
+A physical Amiga reboot takes approximately 100 seconds before the bridge is
+available again.
 
 Switching card drivers requires changing both active monitor ToolTypes before
-the cold reboot. `BOARDTYPE=Radeon9200` must be paired with
+the cold reboot. `BOARDTYPE=Prometheus` must be paired with
 `SETTINGSFILE=SYS:Devs/Picasso96Settings.9200`; changing only `BOARDTYPE`
 loads the card but leaves Workbench on the native fallback screen. Restore the
 matching Radeon settings-file ToolType when switching back to `Radeon.card`.
 
 ## Goal
 
-Build a small, pure-C Picasso96 card driver for desktop RV280 Radeon 9200
-boards on classic Amiga PCI bridges. The first hardware target is a
+Build a small, pure-C Picasso96 chip driver for desktop RV280 Radeon 9200
+boards behind Prometheus.card. The first hardware target is a
 Prometheus or FireBird bridge and VGA output through CRTC0 and the primary
 DAC.
 
 ## Hard Constraints
 
-- Target the OpenPCI 2.1 API in `OpenPci2.1-SDK290208` only.
-- Do not use APIs, headers, assumptions, or compatibility shims from the
-  newer openpci.library. It is a different implementation and API.
+- Target `prometheus.library` version 2 or newer for PCI ownership,
+  configuration, address translation, interrupts, and DMA allocation.
 - Use Picasso96 CardDevelop 3.6 structures and callback ABI.
 - Keep the driver in C. Small 68k entry stubs are acceptable only if an ABI
   cannot be expressed safely in C.
 - Initial PCI IDs are ATI `1002:5960`, `1002:5961`, and `1002:5964`.
 - Initial display output is VGA only. DVI, TMDS, CRTC1, TV output, overlays,
   and interrupts are later milestones. The current hardware-cursor subset is a
-  64x64 ARGB RV280 cursor backed by the private DMA arena.
+  64x64 ARGB RV280 cursor backed by the Prometheus DMA arena.
 - Do not inspect or copy code from
   `/home/mirek/warp3d-r9200/Prometheus/PrometheusCard`; it is not a valid
   reference for this driver.
 - Test on real hardware. Do not add mocked or simulated hardware tests.
 
-## OpenPCI 2.1 Rules
+## Prometheus Rules
 
-- Open `openpci.library` with `MIN_OPENPCI_VERSION`.
-- Enumerate with `pci_find_device()` and pass the previous returned device as
-  the continuation cursor.
-- Treat every `struct pci_dev` returned by OpenPCI as read-only.
-- Claim a device with `pci_obtain_card()` before changing configuration or
-  touching registers, and pair it with `pci_release_card()`.
-- Preserve and restore the original PCI command word on failure or unload.
+- `Prometheus.card` owns enumeration, board claiming, interrupt registration,
+  and the shared DMA arena. `Radeon9200.chip` must not enumerate independently.
 - Use BAR0 for the framebuffer aperture and BAR2 for RV280 MMIO only after
   validating their type, address, and size.
-- Use OpenPCI for discovery, ownership, configuration space, and bridge setup.
+- Use Prometheus for discovery, ownership, configuration space, and bridge setup.
   After BAR type, size, and ownership validation, mapped Radeon framebuffer and
   MMIO apertures may use endian-correct volatile CPU accesses. This is required
   for the validated hot path; per-register `pci_in*()`/`pci_out*()` library
@@ -69,12 +67,10 @@ DAC.
 
 ## DMA Policy
 
-Version 0.5 implements `DMASIZE` as a page-aligned private region at the high
-end of VRAM and excludes it from Picasso96 framebuffer allocation. OpenPCI 2.1
-defines `pci_allocdma_mem(size, MEM_PCI)` for graphics-board memory, but the
-local SDK has no driver-side API for publishing this Radeon-specific range. Do
-not use newer openpci memory-provider calls or describe the private arena as an
-OpenPCI provider. Publication and real inter-card transfers remain unresolved.
+`DMASIZE` is a page-aligned region at the high end of VRAM, excluded from
+Picasso96 and all Radeon graphics operations, then published through the
+existing Prometheus DMA vectors for peer PCI bus masters such as RTL8139.
+Radeon-private resources must be reserved separately below this shared region.
 
 ## Acceleration Policy
 

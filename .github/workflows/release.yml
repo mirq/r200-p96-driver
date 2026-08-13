@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Mark git directory as safe
         run: git config --global --add safe.directory '*'
@@ -32,28 +33,14 @@ jobs:
             echo "Invalid release tag: $GITHUB_REF_NAME" >&2
             exit 1
           fi
-          card_version=$(printf '%s\n' "$version" | cut -d. -f1,2)
-          grep -Fx "# Radeon9200.card $card_version" RELEASE_NOTES.md
-          grep -F "Radeon9200.card $card_version (" src/library.c
+          grep -Fx "# Radeon9200 Prometheus integration $version" RELEASE_NOTES.md
+          grep -F 'Radeon9200.chip 1.0 (' src/library.c
+          grep -F 'Prometheus.card 7.602 ' Prometheus/PrometheusCard/vbcc_libinit.c
 
       - name: Verify toolchain
         run: |
           m68k-amigaos-gcc --version | head -1
           m68k-amigaos-strip --version | head -1
-
-      - name: Reproduce validated libnix runtime
-        run: |
-          set -eu
-          archive=/opt/amiga/m68k-amigaos/libnix/lib/libm020/libnix.a
-          patch_dir=$(mktemp -d)
-          base64 -d toolchain/libnix-runtime/__bufsiz.o.b64 > "$patch_dir/__bufsiz.o"
-          base64 -d toolchain/libnix-runtime/fopen.o.b64 > "$patch_dir/fopen.o"
-          base64 -d toolchain/libnix-runtime/setbuf.o.b64 > "$patch_dir/setbuf.o"
-          printf '%s  %s\n' 2dde8a53c6ad3f8e9de847786153389f9d66fbd22fd3e870e8c1c0325dccbb77 "$patch_dir/__bufsiz.o" | sha256sum -c -
-          printf '%s  %s\n' 234e9f820cbc7c43a9477b210198f3611eb833e2db54c0788775fdaa4fa7fa06 "$patch_dir/fopen.o" | sha256sum -c -
-          printf '%s  %s\n' 90ddc33ea625eda3c42e1f244ec855db006f8e9a9da7a35ad285753f1259d611 "$patch_dir/setbuf.o" | sha256sum -c -
-          m68k-amigaos-ar rcs "$archive" "$patch_dir/__bufsiz.o" "$patch_dir/fopen.o" "$patch_dir/setbuf.o"
-          printf '%s  %s\n' 1ffa3b50cb5d81b3022aa20f0543d4632d3705e49d298dc743c8469796fdce1d "$archive" | sha256sum -c -
 
       - name: Build release driver
         run: make clean && make
@@ -63,34 +50,8 @@ jobs:
       - name: Stage release artifact
         run: |
           mkdir -p dist
-          cp Radeon9200.card dist/Radeon9200.card
-          cp R200_MICROCODE_LICENSE.txt dist/R200_MICROCODE_LICENSE.txt
-          cp THIRD_PARTY_NOTICES.txt dist/THIRD_PARTY_NOTICES.txt
-
-      - name: Build debug driver
-        run: make clean && make DEBUG=1
-        env:
-          CROSS: m68k-amigaos-
-
-      - name: Stage debug artifact
-        run: cp Radeon9200.card dist/Radeon9200-debug.card
-
-      - name: Build tools
-        run: make clean && make tools
-        env:
-          CROSS: m68k-amigaos-
-
-      - name: Stage tools
-        run: cp build/p96screen dist/p96screen
-
-      - name: Verify validated artifacts
-        if: ${{ false }}
-        run: |
-          printf '%s  %s\n' ef5c9f2893af13d13411de8f1157896a6c22ae4a89379c23e122b991d0460594 dist/Radeon9200.card | sha256sum -c -
-          printf '%s  %s\n' f600445ef33dedf0aed2b0f29f59d29cf1ae2b4275ee77987d2a6075e678e85e dist/Radeon9200-debug.card | sha256sum -c -
-          printf '%s  %s\n' 5bf98c4b96a38f1be374412cb4a635b6e3bc673e72f0fbb8bd946fa323786298 dist/p96screen | sha256sum -c -
-          printf '%s  %s\n' 43c0f5d180789677303c49fb87909fcc256d69feefc48260c2873bbe877f6c65 dist/R200_MICROCODE_LICENSE.txt | sha256sum -c -
-          printf '%s  %s\n' 98900dbe52f47acfffb9ea4647aacce95963de60335b6acfd5fc4050315d75ed dist/THIRD_PARTY_NOTICES.txt | sha256sum -c -
+          cp Radeon9200.chip dist/Radeon9200.chip
+          cp Prometheus.card dist/Prometheus.card
 
       - name: List artifacts
         run: ls -la dist
@@ -100,11 +61,8 @@ jobs:
         with:
           name: release-artifacts
           path: |
-            dist/Radeon9200.card
-            dist/Radeon9200-debug.card
-            dist/p96screen
-            dist/R200_MICROCODE_LICENSE.txt
-            dist/THIRD_PARTY_NOTICES.txt
+            dist/Radeon9200.chip
+            dist/Prometheus.card
           if-no-files-found: error
 
   release:
@@ -130,8 +88,5 @@ jobs:
           draft: ${{ !startsWith(github.ref_name, 'v') }}
           body_path: RELEASE_NOTES.md
           files: |
-            artifacts/Radeon9200.card
-            artifacts/Radeon9200-debug.card
-            artifacts/p96screen
-            artifacts/R200_MICROCODE_LICENSE.txt
-            artifacts/THIRD_PARTY_NOTICES.txt
+            artifacts/Radeon9200.chip
+            artifacts/Prometheus.card

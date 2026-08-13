@@ -1,11 +1,11 @@
 #include <exec/memory.h>
 #include <hardware/byteswap.h>
 #include <proto/exec.h>
-#include <proto/openpci.h>
 
 #include "r200_microcode.h"
 #include "radeon9200.h"
 #include "radeon_regs.h"
+#include "prometheus_api.h"
 
 #define CP_RING_SIZE          (1024UL * 1024UL)
 #define CP_RING_DWORDS        (CP_RING_SIZE / sizeof(ULONG))
@@ -136,6 +136,7 @@ static BOOL CpCommit(struct BoardInfo *bi, struct RadeonCpState *state,
     ULONG lastIndex;
     ULONG expectedLast;
     ULONG index;
+    volatile ULONG *ring;
 
     if (!state || !state->Ready || !commands || !commandCount ||
         commandCount > CP_MAX_COMMAND_DWORDS)
@@ -158,21 +159,19 @@ static BOOL CpCommit(struct BoardInfo *bi, struct RadeonCpState *state,
     firstCount = CP_RING_DWORDS - state->WritePointer;
     if (firstCount > paddedCount)
         firstCount = paddedCount;
-    host_to_pcicpy(staging,
-                   (UBYTE *)state->RingMemory +
-                       state->WritePointer * sizeof(ULONG),
-                   firstCount * sizeof(ULONG));
+    ring = (volatile ULONG *)state->RingMemory;
+    for (index = 0; index < firstCount; ++index)
+        ring[state->WritePointer + index] = staging[index];
     remainingCount = paddedCount - firstCount;
-    if (remainingCount)
-        host_to_pcicpy(staging + firstCount, state->RingMemory,
-                       remainingCount * sizeof(ULONG));
+    for (index = 0; index < remainingCount; ++index)
+        ring[index] = staging[firstCount + index];
 
     lastIndex = (state->WritePointer + paddedCount - 1UL) & CP_RING_MASK;
     expectedLast = paddedCount == commandCount
                        ? commands[commandCount - 1UL]
                        : RADEON_CP_PACKET2;
-    if (SWAPLONG(pci_inl((ULONG)state->RingMemory +
-                         lastIndex * sizeof(ULONG))) != expectedLast)
+    if (SWAPLONG(*(volatile ULONG *)((UBYTE *)state->RingMemory +
+                                    lastIndex * sizeof(ULONG))) != expectedLast)
         return FALSE;
 
     newWritePointer = (state->WritePointer + paddedCount) & CP_RING_MASK;
@@ -292,15 +291,15 @@ static void CpDisable(struct BoardInfo *bi,
 }
 
 static void CpRestoreBus(struct BoardInfo *bi,
-                         struct RadeonCpState *state)
+                          struct RadeonCpState *state)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
 
     if (!data || !state || !state->BusConfigured)
         return;
     (void)RadeonWrite32(bi, RADEON_BUS_CNTL, state->SavedBusCntl);
-    pci_write_config_word(PCI_COMMAND, state->SavedCommand,
-                          data->Device);
+    PromWriteConfigWord(data->Device, state->SavedCommand,
+                        PROM_PCI_COMMAND);
     state->BusConfigured = FALSE;
 }
 
@@ -313,15 +312,15 @@ BOOL RadeonCpInitialize(struct BoardInfo *bi)
     ULONG ringAddress;
     ULONG ringOffset;
 
-    if (!SysBase || !data || data->CpState || !data->DmaArena ||
-        !data->Device || !bi->MemoryBase || !bi->MemoryIOBase)
+    if (!SysBase || !data || data->CpState || !data->Device ||
+        !bi->MemoryBase || !bi->MemoryIOBase)
         return FALSE;
 
     state = AllocMem(sizeof(*state), MEMF_PUBLIC | MEMF_CLEAR);
     if (!state)
         return FALSE;
     data->CpState = state;
-    state->RingMemory = RadeonAllocateDmaMemory(bi, CP_RING_SIZE);
+    state->RingMemory = RadeonAllocatePrivateVram(bi, CP_RING_SIZE);
     if (!state->RingMemory)
         goto fail;
 
@@ -340,13 +339,15 @@ BOOL RadeonCpInitialize(struct BoardInfo *bi)
     if (state->RingGpuAddress & 4095UL)
         goto fail;
 
-    state->SavedCommand = pci_read_config_word(PCI_COMMAND,
-                                                 data->Device);
+    state->SavedCommand = PromReadConfigWord(data->Device,
+                                              PROM_PCI_COMMAND);
     state->SavedBusCntl = RadeonRead32(bi, RADEON_BUS_CNTL);
     state->BusConfigured = TRUE;
-    if (!pci_set_master(data->Device) ||
-        !(pci_read_config_word(PCI_COMMAND, data->Device) &
-          PCI_COMMAND_MASTER) ||
+    PromWriteConfigWord(data->Device,
+                        state->SavedCommand | PROM_PCI_COMMAND_MASTER,
+                        PROM_PCI_COMMAND);
+    if (!(PromReadConfigWord(data->Device, PROM_PCI_COMMAND) &
+          PROM_PCI_COMMAND_MASTER) ||
         !RadeonWrite32(bi, RADEON_BUS_CNTL,
                        state->SavedBusCntl & ~RADEON_BUS_MASTER_DIS) ||
         !CpReset(bi) || !CpLoadMicrocode(bi) ||
@@ -389,8 +390,8 @@ void RadeonCpShutdown(struct BoardInfo *bi)
     CpDisable(bi, state, TRUE);
     CpRestoreBus(bi, state);
     if (state->RingMemory)
-        (void)RadeonFreeDmaMemory(bi, state->RingMemory,
-                                  CP_RING_SIZE);
+        (void)RadeonFreePrivateVram(bi, state->RingMemory,
+                                    CP_RING_SIZE);
     data->CpState = NULL;
     FreeMem(state, sizeof(*state));
 }

@@ -1,24 +1,12 @@
 #include <hardware/cia.h>
 #include <hardware/byteswap.h>
 #include <proto/exec.h>
-#include <proto/openpci.h>
 
 #include "radeon9200.h"
 #include "radeon_debug.h"
 #include "radeon_regs.h"
-
-static const char RadeonBoardName[] = "Radeon9200";
-
-struct RadeonOptions {
-    ULONG DmaRequested;
-    UBYTE VgaOutput;
-    UBYTE DmaSpecified;
-    UBYTE DmaValid;
-    UBYTE CpEnabled;
-    UBYTE HwSpriteEnabled;
-    UBYTE HwTextEnabled;
-    UBYTE TextStageEnabled;
-};
+#include "prometheus_api.h"
+#include "prometheus_radeon.h"
 
 static void ClearBoardData(struct RadeonBoardData *data)
 {
@@ -27,167 +15,6 @@ static void ClearBoardData(struct RadeonBoardData *data)
 
     while (count--)
         *byte++ = 0;
-}
-
-static BOOL IsSupportedDevice(UWORD device)
-{
-    return device == RADEON_DEVICE_RV280_5960 ||
-           device == RADEON_DEVICE_RV280_5961 ||
-           device == RADEON_DEVICE_RV280_5964;
-}
-
-static ULONG BarSize(const struct pci_dev *device, UWORD bar)
-{
-    ULONG mask;
-    ULONG size;
-
-    if (!device || bar >= 6)
-        return 0;
-
-    mask = device->base_size[bar];
-    if (!mask)
-        return 0;
-
-    if (mask & PCI_BASE_ADDRESS_SPACE_IO)
-        size = ~(mask & PCI_BASE_ADDRESS_IO_MASK) + 1UL;
-    else
-        size = ~(mask & PCI_BASE_ADDRESS_MEM_MASK) + 1UL;
-
-    if (!size || (size & (size - 1UL)))
-        return 0;
-
-    return size;
-}
-
-static BOOL IsMemoryBar(const struct pci_dev *device, UWORD bar)
-{
-    ULONG mask;
-
-    if (!device || bar >= 6)
-        return FALSE;
-
-    mask = device->base_size[bar];
-    return mask != 0 && !(mask & PCI_BASE_ADDRESS_SPACE_IO) &&
-           (mask & PCI_BASE_ADDRESS_MEM_TYPE_MASK) ==
-               PCI_BASE_ADDRESS_MEM_TYPE_32;
-}
-
-static char UpperAscii(char value)
-{
-    if (value >= 'a' && value <= 'z')
-        return value - ('a' - 'A');
-    return value;
-}
-
-static BOOL MatchOption(const char *option, const char *key,
-                        const char **value)
-{
-    if (!option || !key || !value)
-        return FALSE;
-
-    while (*key) {
-        if (!*option || UpperAscii(*option) != UpperAscii(*key))
-            return FALSE;
-        ++option;
-        ++key;
-    }
-    *value = option;
-    return TRUE;
-}
-
-static BOOL ParseDmaSize(const char *text, ULONG *result)
-{
-    ULONG value = 0;
-    ULONG multiplier = 1;
-    BOOL haveDigit = FALSE;
-
-    if (!text || !result)
-        return FALSE;
-
-    while (*text >= '0' && *text <= '9') {
-        ULONG digit = (ULONG)(*text - '0');
-
-        haveDigit = TRUE;
-        if (value > (~0UL - digit) / 10UL)
-            return FALSE;
-        value = value * 10UL + digit;
-        ++text;
-    }
-    if (!haveDigit)
-        return FALSE;
-
-    if (*text) {
-        if ((text[0] == 'K' || text[0] == 'k') && text[1] == '\0')
-            multiplier = 1024UL;
-        else if ((text[0] == 'M' || text[0] == 'm') &&
-                 text[1] == '\0')
-            multiplier = 1024UL * 1024UL;
-        else
-            return FALSE;
-    }
-    if (value > ~0UL / multiplier)
-        return FALSE;
-    *result = value * multiplier;
-    return TRUE;
-}
-
-static void ParseOptions(char **toolTypes, struct RadeonOptions *options)
-{
-    const char *value;
-
-    options->DmaRequested = 0;
-    options->VgaOutput = TRUE;
-    options->DmaSpecified = FALSE;
-    options->DmaValid = FALSE;
-    options->CpEnabled = FALSE;
-    options->HwSpriteEnabled = TRUE;
-    options->HwTextEnabled = TRUE;
-    /*
-     * Off by default: the VRAM-staged BlitTemplate expand wedges the 2D
-     * engine on the reference machine and is still being diagnosed. The
-     * capability itself is proven (see performance.md); only this submission
-     * path is suspect, so it stays opt-in until it passes on hardware.
-     */
-    options->TextStageEnabled = FALSE;
-
-    if (!toolTypes)
-        return;
-
-    while (*toolTypes) {
-        const char *option = *toolTypes++;
-
-        if (MatchOption(option, "OUTPUT=", &value)) {
-            options->VgaOutput = UpperAscii(value[0]) == 'V' &&
-                                 UpperAscii(value[1]) == 'G' &&
-                                 UpperAscii(value[2]) == 'A' &&
-                                 value[3] == '\0';
-        } else if (MatchOption(option, "DMASIZE=", &value)) {
-            options->DmaSpecified = TRUE;
-            options->DmaValid = ParseDmaSize(value,
-                                              &options->DmaRequested);
-            if (!options->DmaValid)
-                options->DmaRequested = 0;
-        } else if (MatchOption(option, "CP=", &value)) {
-            options->CpEnabled = UpperAscii(value[0]) == 'Y' &&
-                                 UpperAscii(value[1]) == 'E' &&
-                                 UpperAscii(value[2]) == 'S' &&
-                                 value[3] == '\0';
-        } else if (MatchOption(option, "HWSPRITE=", &value)) {
-            options->HwSpriteEnabled = UpperAscii(value[0]) == 'Y' &&
-                                       UpperAscii(value[1]) == 'E' &&
-                                       UpperAscii(value[2]) == 'S' &&
-                                       value[3] == '\0';
-        } else if (MatchOption(option, "TEXTSTAGE=", &value)) {
-            options->TextStageEnabled = !(UpperAscii(value[0]) == 'N' &&
-                                          UpperAscii(value[1]) == 'O' &&
-                                          value[2] == '\0');
-        } else if (MatchOption(option, "HWTEXT=", &value)) {
-            options->HwTextEnabled = UpperAscii(value[0]) == 'Y' &&
-                                     UpperAscii(value[1]) == 'E' &&
-                                     UpperAscii(value[2]) == 'S' &&
-                                     value[3] == '\0';
-        }
-    }
 }
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg)
@@ -291,15 +118,15 @@ void RadeonDelayUs(ULONG microseconds)
     }
 }
 
-void RadeonReleaseBoard(struct RadeonCardBase *base)
+void RadeonReleaseBoard(struct RadeonChipBase *base)
 {
     struct BoardInfo *bi;
     struct RadeonBoardData *data;
 
-    if (!base || !base->BoardInfo || !base->OpenPciBase)
+    if (!base || !base->BoardInfo)
         return;
 
-    OpenPciBase = base->OpenPciBase;
+    PrometheusBase = base->PrometheusBase;
     bi = base->BoardInfo;
     data = RadeonGetBoardData(bi);
     RDEBUG_CLOSE(bi);
@@ -307,7 +134,11 @@ void RadeonReleaseBoard(struct RadeonCardBase *base)
     if (data) {
         RadeonShutdownCursor(bi);
         RadeonShutdownAcceleration(bi);
-        RadeonDestroyDmaMemory(bi);
+        if (data->Initialized)
+            RadeonMask32(bi, RADEON_CRTC_EXT_CNTL, 0,
+                         RADEON_CRTC_DISPLAY_DIS |
+                             RADEON_CRTC_HSYNC_DIS |
+                             RADEON_CRTC_VSYNC_DIS);
     }
 
     if (data && data->StartupMode) {
@@ -319,132 +150,44 @@ void RadeonReleaseBoard(struct RadeonCardBase *base)
         data->StartupMode = NULL;
     }
 
-    if (data && data->Device) {
-        if (data->Initialized)
-            RadeonMask32(bi, RADEON_CRTC_EXT_CNTL, 0,
-                         RADEON_CRTC_DISPLAY_DIS |
-                             RADEON_CRTC_HSYNC_DIS |
-                             RADEON_CRTC_VSYNC_DIS);
-        if (data->CommandSaved)
-            pci_write_config_word(PCI_COMMAND, data->SavedCommand,
-                                  data->Device);
-        if (data->Obtained)
-            pci_release_card(data->Device);
-    }
-
-    bi->RegisterBase = NULL;
-    bi->MemoryBase = NULL;
-    bi->MemoryIOBase = NULL;
-    bi->MemorySize = 0;
-    bi->MemorySpaceBase = NULL;
-    bi->MemorySpaceSize = 0;
-    bi->RGBFormats = 0;
-    if (bi->BoardName == RadeonBoardName)
-        bi->BoardName = NULL;
-    bi->BoardType = BT_NoBoard;
-    bi->GraphicsControllerType = GCT_Unknown;
-    bi->PaletteChipType = PCT_Unknown;
-
     if (data)
         ClearBoardData(data);
     base->BoardInfo = NULL;
 }
 
-BOOL FindCard(__REGA0(struct BoardInfo *bi),
-              __REGA6(struct RadeonCardBase *base))
+BOOL InitChip(__REGA0(struct BoardInfo *bi),
+              __REGA6(struct RadeonChipBase *base))
 {
-    struct pci_dev *device = NULL;
-
-    if (!bi || !base || !base->OpenPciBase || base->BoardInfo)
-        return FALSE;
-
-    OpenPciBase = base->OpenPciBase;
-
-    while ((device = pci_find_device(0xffffU, 0xffffU, device)) != NULL) {
-        struct RadeonBoardData *data;
-        ULONG framebufferSize;
-        ULONG mmioSize;
-
-        if (device->vendor != RADEON_VENDOR_ATI)
-            continue;
-        if (!IsSupportedDevice(device->device))
-            continue;
-        if ((device->devclass >> 16) != PCI_BASE_CLASS_DISPLAY)
-            continue;
-        if (!pci_obtain_card(device))
-            continue;
-
-        framebufferSize = BarSize(device, RADEON_BAR_FRAMEBUFFER);
-        mmioSize = BarSize(device, RADEON_BAR_MMIO);
-        if (!IsMemoryBar(device, RADEON_BAR_FRAMEBUFFER) ||
-            !IsMemoryBar(device, RADEON_BAR_MMIO) ||
-            !device->base_address[RADEON_BAR_FRAMEBUFFER] ||
-            !device->base_address[RADEON_BAR_MMIO] ||
-            framebufferSize < RADEON_FRAMEBUFFER_MIN_SIZE ||
-            mmioSize < RADEON_MMIO_MIN_SIZE) {
-            pci_release_card(device);
-            continue;
-        }
-
-        data = RadeonGetBoardData(bi);
-        ClearBoardData(data);
-        data->Device = device;
-        data->DeviceId = device->device;
-        data->MmioSize = mmioSize;
-        data->Obtained = TRUE;
-
-        bi->MemoryBase =
-            (UBYTE *)device->base_address[RADEON_BAR_FRAMEBUFFER];
-        bi->RegisterBase = NULL;
-        bi->MemoryIOBase =
-            (UBYTE *)device->base_address[RADEON_BAR_MMIO];
-        bi->MemorySize = framebufferSize;
-        bi->MemorySpaceBase = bi->MemoryBase;
-        bi->MemorySpaceSize = framebufferSize;
-        bi->BoardName = (char *)RadeonBoardName;
-        bi->BoardType = BT_Radeon;
-        bi->GraphicsControllerType = GCT_Radeon;
-        bi->PaletteChipType = PCT_Radeon;
-
-        base->BoardInfo = bi;
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
-BOOL InitCard(__REGA0(struct BoardInfo *bi),
-              __REGA1(char **toolTypes),
-              __REGA6(struct RadeonCardBase *base))
-{
+    struct PrometheusRadeonHandoff handoff;
     struct RadeonBoardData *data;
-    struct RadeonOptions options;
-    UWORD command;
+    UBYTE *source;
+    UBYTE *destination;
+    ULONG count;
 
-    if (!bi || !base || base->BoardInfo != bi ||
-        !base->OpenPciBase)
+    if (!bi || !base || !base->PrometheusBase || base->BoardInfo)
+        return FALSE;
+    source = (UBYTE *)bi->CardData;
+    destination = (UBYTE *)&handoff;
+    for (count = 0; count < sizeof(handoff); ++count)
+        *destination++ = *source++;
+    if (handoff.Magic != PROM_RADEON_HANDOFF_MAGIC || !handoff.Board ||
+        !bi->MemoryBase || !bi->MemoryIOBase ||
+        handoff.FramebufferSize < RADEON_FRAMEBUFFER_MIN_SIZE ||
+        handoff.MmioSize < RADEON_MMIO_MIN_SIZE)
         return FALSE;
 
     data = RadeonGetBoardData(bi);
-    if (!data || !data->Device || !data->Obtained)
-        return FALSE;
-
-    ParseOptions(toolTypes, &options);
-    if (!options.VgaOutput) {
-        RadeonReleaseBoard(base);
-        return FALSE;
-    }
-
-    OpenPciBase = base->OpenPciBase;
-    data->SavedCommand = pci_read_config_word(PCI_COMMAND, data->Device);
-    data->CommandSaved = TRUE;
-    command = data->SavedCommand | PCI_COMMAND_MEMORY;
-    pci_write_config_word(PCI_COMMAND, command, data->Device);
-    if ((pci_read_config_word(PCI_COMMAND, data->Device) &
-         PCI_COMMAND_MEMORY) == 0) {
-        RadeonReleaseBoard(base);
-        return FALSE;
-    }
+    ClearBoardData(data);
+    data->Device = handoff.Board;
+    data->DeviceId = handoff.DeviceId;
+    data->MmioSize = handoff.MmioSize;
+    PrometheusBase = base->PrometheusBase;
+    base->BoardInfo = bi;
+    bi->GraphicsControllerType = GCT_Radeon;
+    bi->PaletteChipType = PCT_Radeon;
+    bi->MemorySize = handoff.FramebufferSize;
+    bi->MemorySpaceBase = bi->MemoryBase;
+    bi->MemorySpaceSize = handoff.FramebufferSize;
 
     RLOG("Radeon9200: initializing device %lx\n", (ULONG)data->DeviceId);
     if (!RadeonInitializeHardware(bi)) {
@@ -458,20 +201,25 @@ BOOL InitCard(__REGA0(struct BoardInfo *bi),
         RadeonReleaseBoard(base);
         return FALSE;
     }
-    if (options.DmaSpecified && !options.DmaValid) {
-        RLOG("Radeon9200: ignoring invalid DMASIZE ToolType\n");
-    } else if (options.DmaRequested &&
-               !RadeonReserveDmaMemory(bi, options.DmaRequested)) {
-        RLOG("Radeon9200: DMASIZE request could not be reserved\n");
-    }
-
-    (void)RadeonInitializeAcceleration(bi, options.CpEnabled,
-                                       options.TextStageEnabled);
-    RDEBUG_OPEN(bi, options.CpEnabled, options.DmaRequested,
-                options.HwSpriteEnabled);
-    RadeonInstallCallbacks(bi, options.HwSpriteEnabled,
-                           options.HwTextEnabled);
-
     RLOG("Radeon9200: VGA CRTC0 startup screen active\n");
+    return TRUE;
+}
+
+BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
+                        __REGD0(ULONG features),
+                        __REGA6(struct RadeonChipBase *base))
+{
+    if (!bi || !base || base->BoardInfo != bi)
+        return FALSE;
+    PrometheusBase = base->PrometheusBase;
+    (void)RadeonInitializeAcceleration(
+        bi, (features & PROM_RADEON_FEATURE_CP) != 0,
+        (features & PROM_RADEON_FEATURE_TEXTSTAGE) != 0);
+    RDEBUG_OPEN(bi, (features & PROM_RADEON_FEATURE_CP) != 0,
+                bi->MemorySpaceSize - bi->MemorySize,
+                (features & PROM_RADEON_FEATURE_HWSPRITE) != 0);
+    RadeonInstallCallbacks(
+        bi, (features & PROM_RADEON_FEATURE_HWSPRITE) != 0,
+        (features & PROM_RADEON_FEATURE_HWTEXT) != 0);
     return TRUE;
 }

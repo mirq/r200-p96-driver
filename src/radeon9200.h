@@ -2,7 +2,7 @@
 #define RADEON9200_H
 
 #include <exec/types.h>
-#include <libraries/openpci.h>
+#include <prometheus.h>
 
 #include <boardinfo.h>
 
@@ -17,15 +17,11 @@ struct RadeonCpState;
 struct RadeonCursorState;
 
 struct RadeonBoardData {
-    struct pci_dev *Device;
+    PCIBoard *Device;
     ULONG MmioSize;
     ULONG InstalledVram;
-    struct RadeonDmaArena *DmaArena;
     struct ModeInfo *StartupMode;
     UWORD DeviceId;
-    UWORD SavedCommand;
-    ULONG Obtained : 1;
-    ULONG CommandSaved : 1;
     ULONG Initialized : 1;
     ULONG ModeValid : 1;
     ULONG DisplayEnabled : 1;
@@ -34,7 +30,7 @@ struct RadeonBoardData {
     /* A staging buffer was hidden above bi->MemorySize for VRAM-staged
      * BlitTemplate expands; its offset is bi->MemorySize itself. */
     ULONG TemplateStaging : 1;
-    ULONG ReservedFlags : 23;
+    ULONG ReservedFlags : 25;
     ULONG RefClockKHz;
     ULONG MinPllKHz;
     ULONG MaxPllKHz;
@@ -59,23 +55,25 @@ struct RadeonBoardData {
 #define RADEON_PENDING_MMIO 1U
 #define RADEON_PENDING_CP   2U
 
-struct RadeonCardBase {
-    struct CardBase Card;
-    struct Library *OpenPciBase;
+struct RadeonChipBase {
+    struct Library Library;
+    struct ExecBase *ExecBase;
+    APTR SegList;
+    struct Library *PrometheusBase;
     struct BoardInfo *BoardInfo;
 };
 
-typedef char RadeonBoardDataFitsCardData[
-    sizeof(struct RadeonBoardData) <= sizeof(((struct BoardInfo *)0)->CardData)
+typedef char RadeonBoardDataFitsChipData[
+    sizeof(struct RadeonBoardData) <= sizeof(((struct BoardInfo *)0)->ChipData)
         ? 1
         : -1];
 
 static __inline__ struct RadeonBoardData *RadeonGetBoardData(
     struct BoardInfo *bi)
 {
-    return bi ? (struct RadeonBoardData *)bi->CardData : NULL;
+    return bi ? (struct RadeonBoardData *)bi->ChipData : NULL;
 }
-void RadeonReleaseBoard(struct RadeonCardBase *base);
+void RadeonReleaseBoard(struct RadeonChipBase *base);
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg);
 BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value);
@@ -162,11 +160,9 @@ void RadeonSetSpriteColor(__REGA0(struct BoardInfo *bi),
                           __REGD3(UBYTE blue),
                           __REGD7(RGBFTYPE format));
 BOOL RadeonShowStartupScreen(struct BoardInfo *bi);
-BOOL RadeonReserveDmaMemory(struct BoardInfo *bi, ULONG requestedSize);
-APTR RadeonAllocateDmaMemory(struct BoardInfo *bi, ULONG requestedSize);
-BOOL RadeonFreeDmaMemory(struct BoardInfo *bi, APTR memory,
-                         ULONG requestedSize);
-void RadeonDestroyDmaMemory(struct BoardInfo *bi);
+APTR RadeonAllocatePrivateVram(struct BoardInfo *bi, ULONG requestedSize);
+BOOL RadeonFreePrivateVram(struct BoardInfo *bi, APTR memory,
+                           ULONG requestedSize);
 BOOL RadeonCpInitialize(struct BoardInfo *bi);
 void RadeonCpShutdown(struct BoardInfo *bi);
 void RadeonCpAbort(struct BoardInfo *bi);
@@ -183,10 +179,10 @@ BOOL RadeonCpWait(struct BoardInfo *bi);
 #define RLOG(...) ((void)0)
 #endif
 
-BOOL FindCard(__REGA0(struct BoardInfo *bi),
-              __REGA6(struct RadeonCardBase *base));
-BOOL InitCard(__REGA0(struct BoardInfo *bi),
-              __REGA1(char **toolTypes),
-              __REGA6(struct RadeonCardBase *base));
+BOOL InitChip(__REGA0(struct BoardInfo *bi),
+              __REGA6(struct RadeonChipBase *base));
+BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
+                        __REGD0(ULONG features),
+                        __REGA6(struct RadeonChipBase *base));
 
 #endif

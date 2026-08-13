@@ -25,10 +25,11 @@
 
 #include <exec/memory.h>
 #include <proto/exec.h>
-#include <proto/openpci.h>
 
 #include "radeon9200.h"
 #include "radeon_regs.h"
+#include "prometheus_api.h"
+#include "prometheus_radeon.h"
 
 #define BIOS_MAX_SIZE       0x00100000UL
 #define BIOS_MIN_TABLE      0x00000060UL
@@ -108,22 +109,32 @@ static BOOL RomSignatureValid(const UBYTE *rom, ULONG size)
     return rom && size >= 2 && rom[0] == 0x55 && rom[1] == 0xaa;
 }
 
-static ULONG RomSize(const struct pci_dev *device)
+static struct PrometheusRadeonHandoff *RadeonHandoff(struct BoardInfo *bi)
 {
-    ULONG size;
+    struct PrometheusRadeonHandoff *handoff;
 
-    if (!device || !device->rom_size)
+    if (!bi)
+        return NULL;
+    handoff = (struct PrometheusRadeonHandoff *)bi->CardData;
+    return handoff->Magic == PROM_RADEON_HANDOFF_MAGIC ? handoff : NULL;
+}
+
+static ULONG RomSize(struct BoardInfo *bi)
+{
+    struct PrometheusRadeonHandoff *handoff = RadeonHandoff(bi);
+
+    if (!handoff || handoff->RomSize < 512 ||
+        handoff->RomSize > BIOS_MAX_SIZE ||
+        (handoff->RomSize & (handoff->RomSize - 1UL)))
         return 0;
-    size = ~(device->rom_size & PCI_ROM_ADDRESS_MASK) + 1UL;
-    if (size < 512 || size > BIOS_MAX_SIZE || (size & (size - 1UL)))
-        return 0;
-    return size;
+    return handoff->RomSize;
 }
 
 static BOOL CopyDisabledRom(struct BoardInfo *bi, UBYTE *destination,
                             ULONG size)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct PrometheusRadeonHandoff *handoff = RadeonHandoff(bi);
     ULONG seprom;
     ULONG viph;
     ULONG bus;
@@ -131,7 +142,7 @@ static BOOL CopyDisabledRom(struct BoardInfo *bi, UBYTE *destination,
     ULONG crtc2;
     ULONG ext;
 
-    if (!data || !destination)
+    if (!data || !handoff || !destination)
         return FALSE;
 
     seprom = RadeonRead32(bi, RADEON_SEPROM_CNTL1);
@@ -158,7 +169,13 @@ static BOOL CopyDisabledRom(struct BoardInfo *bi, UBYTE *destination,
                       RADEON_CRTC_SYNC_TRISTAT |
                       RADEON_CRTC_DISPLAY_DIS);
 
-    pci_to_hostcpy((APTR)data->Device->rom_address, destination, size);
+    {
+        volatile UBYTE *source = (volatile UBYTE *)handoff->RomBase;
+        ULONG index;
+
+        for (index = 0; index < size; ++index)
+            destination[index] = source[index];
+    }
 
     RadeonWrite32(bi, RADEON_CRTC_EXT_CNTL, ext);
     RadeonWrite32(bi, RADEON_CRTC2_GEN_CNTL, crtc2);
@@ -172,16 +189,17 @@ static BOOL CopyDisabledRom(struct BoardInfo *bi, UBYTE *destination,
 static BOOL LoadRom(struct BoardInfo *bi, struct RadeonBios *bios)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct PrometheusRadeonHandoff *handoff = RadeonHandoff(bi);
     struct ExecBase *SysBase = bi->ExecBase;
     ULONG size;
     ULONG savedRom;
     ULONG enabledRom;
     APTR physicalRom;
 
-    if (!data || !data->Device || !bios || !data->Device->rom_address)
+    if (!data || !handoff || !data->Device || !bios || !handoff->RomBase)
         return FALSE;
 
-    size = RomSize(data->Device);
+    size = RomSize(bi);
     if (!size)
         return FALSE;
 
@@ -190,27 +208,32 @@ static BOOL LoadRom(struct BoardInfo *bi, struct RadeonBios *bios)
         return FALSE;
     bios->AllocationSize = size;
 
-    savedRom = pci_read_config_long(PCI_ROM_ADDRESS, data->Device);
-    enabledRom = savedRom | PCI_ROM_ADDRESS_ENABLE;
-    if (!(enabledRom & PCI_ROM_ADDRESS_MASK)) {
-        physicalRom = pci_logic_to_physic_addr(
-            (APTR)data->Device->rom_address, data->Device);
+    savedRom = PromReadConfigLong(data->Device, PROM_PCI_ROM_ADDRESS);
+    enabledRom = savedRom | PROM_PCI_ROM_ENABLE;
+    if (!(enabledRom & PROM_PCI_ROM_MASK)) {
+        physicalRom = PromPhysicalAddress(handoff->RomBase);
         if (!physicalRom) {
             FreeMem(bios->Allocation, bios->AllocationSize);
             bios->Allocation = NULL;
             bios->AllocationSize = 0;
             return FALSE;
         }
-        enabledRom = ((ULONG)physicalRom & PCI_ROM_ADDRESS_MASK) |
-                     PCI_ROM_ADDRESS_ENABLE;
+        enabledRom = ((ULONG)physicalRom & PROM_PCI_ROM_MASK) |
+                     PROM_PCI_ROM_ENABLE;
     }
-    pci_write_config_long(PCI_ROM_ADDRESS, enabledRom, data->Device);
-    pci_to_hostcpy((APTR)data->Device->rom_address, bios->Allocation, size);
+    PromWriteConfigLong(data->Device, enabledRom, PROM_PCI_ROM_ADDRESS);
+    {
+        volatile UBYTE *source = (volatile UBYTE *)handoff->RomBase;
+        ULONG index;
+
+        for (index = 0; index < size; ++index)
+            bios->Allocation[index] = source[index];
+    }
 
     if (!RomSignatureValid(bios->Allocation, size))
         CopyDisabledRom(bi, bios->Allocation, size);
 
-    pci_write_config_long(PCI_ROM_ADDRESS, savedRom, data->Device);
+    PromWriteConfigLong(data->Device, savedRom, PROM_PCI_ROM_ADDRESS);
     return RomSignatureValid(bios->Allocation, size);
 }
 
@@ -683,6 +706,7 @@ static BOOL SetFramebufferLocation(struct BoardInfo *bi, ULONG apertureSize)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     APTR physical;
+    APTR physicalEnd;
     ULONG start;
     ULONG end;
     ULONG location;
@@ -696,7 +720,15 @@ static BOOL SetFramebufferLocation(struct BoardInfo *bi, ULONG apertureSize)
     ULONG newAgp;
     ULONG count;
 
-    physical = pci_logic_to_physic_addr(bi->MemorySpaceBase, data->Device);
+    if (!bi->MemorySpaceBase || !apertureSize ||
+        apertureSize - 1UL > ~0UL - (ULONG)bi->MemorySpaceBase)
+        return FALSE;
+    physical = PromPhysicalAddress(bi->MemorySpaceBase);
+    physicalEnd = PromPhysicalAddress(
+        (APTR)((ULONG)bi->MemorySpaceBase + apertureSize - 1UL));
+    if (!physicalEnd ||
+        (ULONG)physicalEnd != (ULONG)physical + apertureSize - 1UL)
+        return FALSE;
     /* PCI address zero is a valid framebuffer BAR on Prometheus. */
     start = (ULONG)physical;
     if ((start & 0xffffUL) || !apertureSize ||

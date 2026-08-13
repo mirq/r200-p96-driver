@@ -3,7 +3,11 @@ build/
 build-debug/
 Radeon9200.card
 Radeon9200-debug.card
+Radeon9200.chip
+Prometheus.card
 a.out
+__pycache__/
+*.pyc
 
 # Local reference trees (upstream sources, not part of this project)
 mesa/
