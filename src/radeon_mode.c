@@ -820,6 +820,18 @@ static void RadeonSetDPMSLevel(__REGA0(struct BoardInfo *bi),
     ApplyDisplayState(bi);
 }
 
+static BOOL RadeonFreeCardMem(__REGA0(struct BoardInfo *bi),
+                              __REGA1(APTR memory))
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!data || !data->FreeCardMemDefault ||
+        data->FreeCardMemDefault == RadeonFreeCardMem)
+        return FALSE;
+    RadeonWaitBlitter(bi);
+    return data->FreeCardMemDefault(bi, memory);
+}
+
 void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
                             BOOL hardwareText)
 {
@@ -878,6 +890,11 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
     bi->GetVSyncState = RadeonGetVSyncState;
     bi->GetVBeamPos = RadeonGetVBeamPos;
     bi->SetDPMSLevel = RadeonSetDPMSLevel;
+
+    if (data && bi->FreeCardMem && bi->FreeCardMem != RadeonFreeCardMem) {
+        data->FreeCardMemDefault = bi->FreeCardMem;
+        bi->FreeCardMem = RadeonFreeCardMem;
+    }
 
     if (cursorReady) {
         bi->SetSprite = RadeonSetSprite;

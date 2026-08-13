@@ -44,6 +44,8 @@ struct RadeonBoardData {
     UBYTE AccelState;
     ULONG FramebufferGpuBase;
     struct RadeonCursorState *CursorState;
+    BOOL ASM (*FreeCardMemDefault)(__REGA0(struct BoardInfo *bi),
+                                   __REGA1(APTR memory));
 };
 
 #define RADEON_ACCEL_OFF      0U

@@ -166,6 +166,7 @@ static ULONG FindMode(UWORD depth, RGBFTYPE format)
         if (mode->Width == SCREEN_WIDTH && mode->Height == SCREEN_HEIGHT &&
             mode->Depth == depth && board &&
             (strcmp(board, "Radeon9200") == 0 ||
+             strcmp(board, "Prometheus") == 0 ||
              strcmp(board, "Radeon") == 0 ||
              strcmp(board, "RV280-PrmPCI") == 0)) {
             result = mode->DisplayID;

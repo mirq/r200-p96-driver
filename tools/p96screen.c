@@ -889,7 +889,8 @@ int main(int argc, char **argv)
                mode->Description);
         if (mode->Width == 640 && mode->Height == 480 &&
             mode->Depth == depth && board &&
-            strcmp(board, "Radeon9200") == 0)
+            (strcmp(board, "Radeon9200") == 0 ||
+             strcmp(board, "Prometheus") == 0))
             displayId = mode->DisplayID;
     }
     p96FreeModeList(modes);

@@ -2,8 +2,8 @@
 
 The reference test target is a physical Amiga, not an emulator. Never use
 emulator lifecycle, reset, pause, or state-management commands for it.
-The AmigaBridge endpoint is `192.168.100.47:2345`.
-The alternate network card uses `192.168.100.50:2345`.
+The AmigaBridge endpoint is `192.168.100.50:2345`. The old
+`192.168.100.47:2345` endpoint is no longer accessible.
 A physical Amiga reboot takes approximately 100 seconds before the bridge is
 available again.
 Run AmigaBridge file transfers and filesystem copies sequentially. Concurrent

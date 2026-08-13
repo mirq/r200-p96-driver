@@ -197,7 +197,23 @@ static BOOL WaitIdleAndFlush(struct BoardInfo *bi)
         return FALSE;
     for (count = 0; count < ACCEL_TIMEOUT_POLLS; ++count) {
         status = RadeonRead32(bi, RADEON_RBBM_STATUS);
-        if (!(status & RADEON_RBBM_ACTIVE)) {
+        if (!(status & RADEON_RBBM_ACTIVE))
+            break;
+        if (count >= ACCEL_SPIN_POLLS)
+            RadeonDelayUs(1);
+    }
+    if (count == ACCEL_TIMEOUT_POLLS) {
+        RDEBUG_WAIT(RADEON_DEBUG_WAIT_IDLE, count, FALSE, status,
+                    data ? data->AccelPending : RADEON_PENDING_NONE);
+        return FALSE;
+    }
+
+    if (!RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
+                       RADEON_RB2D_DC_FLUSH_ALL))
+        return FALSE;
+    for (count = 0; count < ACCEL_TIMEOUT_POLLS; ++count) {
+        status = RadeonRead32(bi, RADEON_DSTCACHE_CTLSTAT);
+        if (!(status & RADEON_RB2D_DC_BUSY)) {
             RDEBUG_WAIT(RADEON_DEBUG_WAIT_IDLE, count + 1UL, TRUE, status,
                         data ? data->AccelPending : RADEON_PENDING_NONE);
             return TRUE;
@@ -1608,7 +1624,9 @@ void RadeonBlitRectNoMaskComplete(
                (source.EndOffset <= destination.StartOffset ||
                 destination.EndOffset <= source.StartOffset);
     copySafe = srcResult == SURFACE_HARDWARE &&
-               dstResult == SURFACE_HARDWARE;
+               dstResult == SURFACE_HARDWARE &&
+               (disjoint || sourceRender->BytesPerRow ==
+                                destinationRender->BytesPerRow);
 #ifdef DEBUG
     if (opcode != 0x06U && opcode != 0x0cU)
         debugFlags |= RDEBUG_COMPLETE_OPCODE_REJECT;
