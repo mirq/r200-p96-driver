@@ -1,0 +1,13 @@
+==id $Id: prometheus_card_lib.sfd $
+==base _CardBase
+==basetype struct Library*
+==libname prometheus.card
+==bias 30
+==public
+==include "boardinfo.h"
+==version 7
+BOOL FindCard(struct BoardInfo *bi) (a0)
+BOOL InitCard(struct BoardInfo *bi, STRPTR* tooltypes) (a0,a1)
+APTR AllocDMAMem(ULONG size) (d0)
+VOID FreeDMAMem(APTR mem, ULONG size) (a0,d0)
+==end

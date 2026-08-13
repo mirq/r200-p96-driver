@@ -34,7 +34,8 @@ jobs:
       - name: Stage release artifact
         run: |
           mkdir -p dist
-          cp Radeon9200.card dist/Radeon9200.card
+          cp Radeon9200.chip dist/Radeon9200.chip
+          cp Prometheus.card dist/Prometheus.card
           cp R200_MICROCODE_LICENSE.txt dist/R200_MICROCODE_LICENSE.txt
           cp THIRD_PARTY_NOTICES.txt dist/THIRD_PARTY_NOTICES.txt
 
@@ -44,7 +45,7 @@ jobs:
           CROSS: m68k-amigaos-
 
       - name: Stage debug artifact
-        run: cp Radeon9200.card dist/Radeon9200-debug.card
+        run: cp Radeon9200.chip dist/Radeon9200-debug.chip
 
       - name: Build tools
         run: make clean && make tools
@@ -62,8 +63,9 @@ jobs:
         with:
           name: radeon9200-build-artifacts
           path: |
-            dist/Radeon9200.card
-            dist/Radeon9200-debug.card
+            dist/Radeon9200.chip
+            dist/Prometheus.card
+            dist/Radeon9200-debug.chip
             dist/p96screen
             dist/R200_MICROCODE_LICENSE.txt
             dist/THIRD_PARTY_NOTICES.txt

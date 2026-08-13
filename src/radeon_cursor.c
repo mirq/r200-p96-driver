@@ -9,7 +9,6 @@
 #include <exec/memory.h>
 #include <hardware/byteswap.h>
 #include <proto/exec.h>
-#include <proto/openpci.h>
 
 #include "radeon9200.h"
 #include "radeon_debug.h"
@@ -100,13 +99,19 @@ static void UploadCursor(struct BoardInfo *bi)
             }
             row[x] = SWAPLONG(pixel);
         }
-        host_to_pcicpy(row,
-                       (UBYTE *)cursor->Memory + (ULONG)y * CURSOR_STRIDE,
-                       CURSOR_STRIDE);
+        {
+            volatile ULONG *destination =
+                (volatile ULONG *)((UBYTE *)cursor->Memory +
+                                   (ULONG)y * CURSOR_STRIDE);
+
+            for (x = 0; x < CURSOR_WIDTH; ++x)
+                destination[x] = row[x];
+        }
     }
 
     /* Flush aperture writes before the display engine reads the image. */
-    (void)pci_inl((ULONG)cursor->Memory + CURSOR_SIZE - sizeof(ULONG));
+    (void)*(volatile ULONG *)((UBYTE *)cursor->Memory + CURSOR_SIZE -
+                             sizeof(ULONG));
 }
 
 static void UpdateCursorPosition(struct BoardInfo *bi)
@@ -153,7 +158,7 @@ BOOL RadeonInitializeCursor(struct BoardInfo *bi)
     cursor = AllocMem(sizeof(*cursor), MEMF_PUBLIC | MEMF_CLEAR);
     if (!cursor)
         return FALSE;
-    cursor->Memory = RadeonAllocateDmaMemory(bi, CURSOR_SIZE);
+    cursor->Memory = RadeonAllocatePrivateVram(bi, CURSOR_SIZE);
     if (!cursor->Memory) {
         FreeMem(cursor, sizeof(*cursor));
         return FALSE;
@@ -163,7 +168,7 @@ BOOL RadeonInitializeCursor(struct BoardInfo *bi)
     cursorAddress = (ULONG)cursor->Memory;
     if (bi->MemorySpaceSize < CURSOR_SIZE || cursorAddress < memoryBase ||
         cursorAddress - memoryBase > bi->MemorySpaceSize - CURSOR_SIZE) {
-        (void)RadeonFreeDmaMemory(bi, cursor->Memory, CURSOR_SIZE);
+        (void)RadeonFreePrivateVram(bi, cursor->Memory, CURSOR_SIZE);
         FreeMem(cursor, sizeof(*cursor));
         return FALSE;
     }
@@ -191,7 +196,7 @@ void RadeonShutdownCursor(struct BoardInfo *bi)
         return;
     (void)RadeonMask32(bi, RADEON_CRTC_GEN_CNTL,
                        RADEON_CRTC_CUR_EN | RADEON_CRTC_CUR_MODE_MASK, 0);
-    (void)RadeonFreeDmaMemory(bi, cursor->Memory, CURSOR_SIZE);
+    (void)RadeonFreePrivateVram(bi, cursor->Memory, CURSOR_SIZE);
     data->CursorState = NULL;
     FreeMem(cursor, sizeof(*cursor));
 }

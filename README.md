@@ -1,18 +1,18 @@
-# Radeon9200.card
+# Radeon9200.chip for Prometheus.card
 
-Experimental pure-C Picasso96 card driver for desktop RV280 Radeon 9200 PCI
-boards.
+Experimental pure-C Picasso96 chip driver for desktop RV280 Radeon 9200 PCI
+boards behind `Prometheus.card`.
 
 ## Current Status
 
-The current milestone builds a resident card library, produces VGA output,
+The current milestone builds a resident chip library, produces VGA output,
 and opens Picasso96-managed screens. It implements:
 
 - Picasso96 CardDevelop 3.6 library and callback ABI.
-- OpenPCI 2.1 discovery and ownership for ATI `1002:5960`, `1002:5961`, and
+- Prometheus discovery and ownership for ATI `1002:5960`, `1002:5961`, and
   `1002:5964` display devices.
-- BAR0 framebuffer and BAR2 MMIO validation, PCI command preservation, and
-  endian-safe OpenPCI register access.
+- BAR0 framebuffer and BAR2 MMIO validation, Prometheus configuration access,
+  and endian-safe mapped MMIO access.
 - Bounded PCI option-ROM loading and selection of a checksummed x86 image.
 - Legacy COMBIOS parsing and cold-card ASIC, PLL, SDRAM, and memory-controller
   initialization.
@@ -24,8 +24,8 @@ and opens Picasso96-managed screens. It implements:
 - Picasso96 callbacks for modesetting, format-aware pitch and panning,
   indexed and identity-LUT palette updates, display blanking, vertical sync,
   and DPMS.
-- Strict `DMASIZE` ToolType parsing and a transactional, 4 KiB-aligned private
-  arena reserved from the high end of usable VRAM.
+- Strict `DMASIZE` parsing and a transactional, 4 KiB-aligned shared
+  Prometheus DMA arena reserved from the high end of usable VRAM.
 - Bounded direct-MMIO 2D engine initialization, synchronization, reset, and
   timeout fallback.
 - Hardware rectangle fills in all three formats, including CLUT8 partial write
@@ -40,8 +40,8 @@ screen setup have completed. Version 0.12 is validated from a cold boot on a
 real 68060 Amiga with a Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB
 COMBIOS board, and `rtg.library` 43.538. The tested configuration provides a
 64 MiB linear aperture and boots a `1024x768x8` Workbench on the Radeon. With
-`DMASIZE=2048k`, Picasso96 receives 62 MiB and the private high 2 MiB remains
-outside its allocator.
+`DMASIZE=2048k`, Picasso96 receives 62 MiB and the shared high 2 MiB remains
+outside its allocator and Radeon graphics operations.
 
 Picasso96 API tests repeatedly open and close `640x480` screens in all three
 advertised formats. Their measured pitches are 640, 1280, and 2560 bytes.
@@ -104,8 +104,9 @@ second test length. The saved report was 1,889 bytes with CRC32 `17945E8D`.
 make clean && make
 ```
 
-The default cross-compiler prefix is `/opt/amiga/bin/m68k-amigaos-`. The
-release artifact is `Radeon9200.card` in the project root.
+The default cross-compiler prefix is `/opt/amiga/bin/m68k-amigaos-`. A default
+build produces the matched `Radeon9200.chip` and `Prometheus.card` artifacts in
+the project root.
 
 For serial/debug logging through `KPrintF`:
 
@@ -143,22 +144,22 @@ work.
 
 ## Picasso96 Configuration
 
-The monitor icon must use `BOARDTYPE=Radeon9200`. The corresponding entry in
-`DEVS:Picasso96Settings` must use board type `BT_Radeon` and board name
-`Radeon9200`. Load `DEVS:Monitors/Radeon` before `IPrefs` if the system startup
+The monitor icon must use `BOARDTYPE=Prometheus`. The corresponding entry in
+`DEVS:Picasso96Settings` must select the Prometheus board while retaining the
+Radeon mode definitions. Load `DEVS:Monitors/Radeon` before `IPrefs` if startup
 does not run `LoadMonDrvs`.
 
 ### Monitor Icon ToolTypes
 
 `InitCard` receives its ToolTypes from the active monitor icon
 `DEVS:Monitors/Radeon.info`, not from an icon beside
-`LIBS:Picasso96/Radeon9200.card`. The `.info` file is a binary Amiga
+`LIBS:Picasso96/Radeon9200.chip`. The `.info` file is a binary Amiga
 `DiskObject`; do not create or edit it as a text file.
 
 The validated ToolTypes are:
 
 ```text
-BOARDTYPE=Radeon9200
+BOARDTYPE=Prometheus
 OUTPUT=VGA
 DMASIZE=2M
 CP=YES
@@ -196,13 +197,12 @@ DMASIZE=64K
 DMASIZE=2M
 ```
 
-The final `DMASIZE` occurrence wins. Invalid, overflowing, or oversized values
-disable the reservation without preventing display initialization. Positive
-requests round up to 4096 bytes and must leave at least 4 MiB for Picasso96.
-
-Version 0.5 keeps the arena private to the Radeon driver. Its page-map
-allocator is initialized and self-tested before `MemorySize` is reduced. No
-public allocation vectors are exposed yet.
+The final `DMASIZE` occurrence wins. Invalid, zero, overflowing, unavailable,
+or oversized values prevent Radeon card initialization. Positive requests
+round up to 4096 bytes and must leave at least 4 MiB for Picasso96. The reserved
+tail is published by `Prometheus.card` through its DMA allocation vectors for
+peer PCI devices; Radeon-private cursor and CP storage is allocated separately
+below it.
 
 ## First Hardware Test
 
@@ -211,7 +211,7 @@ way to disable the driver on the next boot. Connect a VGA monitor that accepts
 `640x480@60`. `OUTPUT=VGA` is the only accepted output ToolType; omitting it
 also selects VGA.
 
-The validated Amiga needs approximately 90 seconds after a reboot before the
+The validated Amiga needs approximately 100 seconds after a reboot before the
 AmigaBridge TCP service is reachable. Wait the full interval before treating a
 failed reconnect as a boot failure.
 
@@ -243,16 +243,13 @@ initialization stage.
 - Failure and unload restore PCI command ownership state and leave output
   blank, but do not restore every pre-existing Radeon register.
 
-The private `DMASIZE` reservation is not an OpenPCI 2.1 `MEM_PCI` provider.
-OpenPCI publication, address translation for a cooperating client, and real
-inter-card DMA transfers remain separate, unimplemented work. Newer openpci
-memory-provider APIs are deliberately out of scope.
+The `DMASIZE` reservation is exposed through the established
+`prometheus.library` DMA API rather than as an OpenPCI memory provider.
 
 ## Licensing
 
 The R200 command-processor microcode is distributed under the notice in
-[`R200_MICROCODE_LICENSE.txt`](R200_MICROCODE_LICENSE.txt). Release archives
-and GitHub release assets include that notice beside the driver binaries.
-Additional inherited-code attribution and binary redistribution terms are in
-[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt), which is also included
-with release assets.
+[`R200_MICROCODE_LICENSE.txt`](R200_MICROCODE_LICENSE.txt). Additional
+inherited-code attribution and binary redistribution terms are in
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt). Both notices remain in
+the tagged source archive generated by GitHub.

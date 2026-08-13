@@ -7,27 +7,26 @@
 
 #include "radeon9200.h"
 
-#define LIB_VERSION 0
-#define LIB_REVISION 14
+#define LIB_VERSION 1
+#define LIB_REVISION 0
 
 #define USED __attribute__((used))
 
-static const char LibName[] = "Radeon9200.card";
-static const char CardName[] = "Radeon9200";
+static const char LibName[] = "Radeon9200.chip";
 static const char LibIdString[] =
-    "Radeon9200.card 0.14 (12.8.2026)\r\n";
+    "Radeon9200.chip 1.0 (12.8.2026)\r\n";
 static const char VerTag[] USED =
-    "\0$VER: Radeon9200.card 0.14 (12.8.2026)";
+    "\0$VER: Radeon9200.chip 1.0 (12.8.2026)";
 
-struct Library *OpenPciBase;
+struct Library *PrometheusBase;
 
-static struct RadeonCardBase *LibOpen(
-    __REGA6(struct RadeonCardBase *base));
-static LONG LibClose(__REGA6(struct RadeonCardBase *base));
-static APTR LibExpunge(__REGA6(struct RadeonCardBase *base));
+static struct RadeonChipBase *LibOpen(
+    __REGA6(struct RadeonChipBase *base));
+static LONG LibClose(__REGA6(struct RadeonChipBase *base));
+static APTR LibExpunge(__REGA6(struct RadeonChipBase *base));
 static LONG LibReserved(void);
-static struct RadeonCardBase *LibInit(
-    __REGD0(struct RadeonCardBase *base),
+static struct RadeonChipBase *LibInit(
+    __REGD0(struct RadeonChipBase *base),
     __REGA0(APTR segList),
     __REGA6(struct ExecBase *sysBase));
 
@@ -36,8 +35,8 @@ static APTR FunctionTable[] USED = {
     (APTR)LibClose,
     (APTR)LibExpunge,
     (APTR)LibReserved,
-    (APTR)FindCard,
-    (APTR)InitCard,
+    (APTR)InitChip,
+    (APTR)InitRadeonFeatures,
     (APTR)-1
 };
 
@@ -49,7 +48,7 @@ struct RadeonInitTable {
 };
 
 static const struct RadeonInitTable InitTable USED = {
-    sizeof(struct RadeonCardBase),
+    sizeof(struct RadeonChipBase),
     FunctionTable,
     NULL,
     (APTR)LibInit
@@ -68,100 +67,99 @@ static const struct Resident RomTag USED = {
     (APTR)&InitTable
 };
 
-static struct RadeonCardBase *LibInit(
-    __REGD0(struct RadeonCardBase *base),
+static struct RadeonChipBase *LibInit(
+    __REGD0(struct RadeonChipBase *base),
     __REGA0(APTR segList),
     __REGA6(struct ExecBase *sysBase))
 {
     struct ExecBase *SysBase = sysBase;
 
     if (!(SysBase->AttnFlags & AFF_68020)) {
-        FreeMem((UBYTE *)base - base->Card.LibBase.lib_NegSize,
-                (ULONG)base->Card.LibBase.lib_NegSize +
-                    (ULONG)base->Card.LibBase.lib_PosSize);
+        FreeMem((UBYTE *)base - base->Library.lib_NegSize,
+                (ULONG)base->Library.lib_NegSize +
+                    (ULONG)base->Library.lib_PosSize);
         return NULL;
     }
 
-    base->Card.LibBase.lib_Node.ln_Type = NT_LIBRARY;
-    base->Card.LibBase.lib_Node.ln_Pri = -50;
-    base->Card.LibBase.lib_Node.ln_Name = (char *)LibName;
-    base->Card.LibBase.lib_Flags = LIBF_CHANGED | LIBF_SUMUSED;
-    base->Card.LibBase.lib_Version = LIB_VERSION;
-    base->Card.LibBase.lib_Revision = LIB_REVISION;
-    base->Card.LibBase.lib_IdString = (char *)LibIdString;
-    base->Card.ExecBase = SysBase;
-    base->Card.SegList = segList;
-    base->Card.Name = (char *)CardName;
-    base->OpenPciBase = NULL;
+    base->Library.lib_Node.ln_Type = NT_LIBRARY;
+    base->Library.lib_Node.ln_Pri = -50;
+    base->Library.lib_Node.ln_Name = (char *)LibName;
+    base->Library.lib_Flags = LIBF_CHANGED | LIBF_SUMUSED;
+    base->Library.lib_Version = LIB_VERSION;
+    base->Library.lib_Revision = LIB_REVISION;
+    base->Library.lib_IdString = (char *)LibIdString;
+    base->ExecBase = SysBase;
+    base->SegList = segList;
+    base->PrometheusBase = NULL;
     base->BoardInfo = NULL;
-    OpenPciBase = NULL;
+    PrometheusBase = NULL;
 
     return base;
 }
 
-static struct RadeonCardBase *LibOpen(
-    __REGA6(struct RadeonCardBase *base))
+static struct RadeonChipBase *LibOpen(
+    __REGA6(struct RadeonChipBase *base))
 {
-    struct ExecBase *SysBase = base->Card.ExecBase;
+    struct ExecBase *SysBase = base->ExecBase;
 
-    if (base->Card.LibBase.lib_OpenCnt == 0) {
-        base->OpenPciBase = OpenLibrary((CONST_STRPTR)"openpci.library",
-                                       MIN_OPENPCI_VERSION);
-        if (!base->OpenPciBase)
+    if (base->Library.lib_OpenCnt == 0) {
+        base->PrometheusBase = OpenLibrary(
+            (CONST_STRPTR)"prometheus.library", 2);
+        if (!base->PrometheusBase)
             return NULL;
-        OpenPciBase = base->OpenPciBase;
+        PrometheusBase = base->PrometheusBase;
     }
 
-    ++base->Card.LibBase.lib_OpenCnt;
-    base->Card.LibBase.lib_Flags &= (UBYTE)~LIBF_DELEXP;
+    ++base->Library.lib_OpenCnt;
+    base->Library.lib_Flags &= (UBYTE)~LIBF_DELEXP;
     return base;
 }
 
-static LONG LibClose(__REGA6(struct RadeonCardBase *base))
+static LONG LibClose(__REGA6(struct RadeonChipBase *base))
 {
-    struct ExecBase *SysBase = base->Card.ExecBase;
+    struct ExecBase *SysBase = base->ExecBase;
 
-    if (base->Card.LibBase.lib_OpenCnt == 0)
+    if (base->Library.lib_OpenCnt == 0)
         return 0;
 
-    if (--base->Card.LibBase.lib_OpenCnt == 0) {
+    if (--base->Library.lib_OpenCnt == 0) {
         RadeonReleaseBoard(base);
-        if (base->OpenPciBase) {
-            CloseLibrary(base->OpenPciBase);
-            base->OpenPciBase = NULL;
-            OpenPciBase = NULL;
+        if (base->PrometheusBase) {
+            CloseLibrary(base->PrometheusBase);
+            base->PrometheusBase = NULL;
+            PrometheusBase = NULL;
         }
 
-        if (base->Card.LibBase.lib_Flags & LIBF_DELEXP)
+        if (base->Library.lib_Flags & LIBF_DELEXP)
             return (LONG)LibExpunge(base);
     }
 
     return 0;
 }
 
-static APTR LibExpunge(__REGA6(struct RadeonCardBase *base))
+static APTR LibExpunge(__REGA6(struct RadeonChipBase *base))
 {
-    struct ExecBase *SysBase = base->Card.ExecBase;
+    struct ExecBase *SysBase = base->ExecBase;
     APTR segList;
     ULONG size;
 
-    if (base->Card.LibBase.lib_OpenCnt) {
-        base->Card.LibBase.lib_Flags |= LIBF_DELEXP;
+    if (base->Library.lib_OpenCnt) {
+        base->Library.lib_Flags |= LIBF_DELEXP;
         return NULL;
     }
 
     RadeonReleaseBoard(base);
-    if (base->OpenPciBase) {
-        CloseLibrary(base->OpenPciBase);
-        base->OpenPciBase = NULL;
-        OpenPciBase = NULL;
+    if (base->PrometheusBase) {
+        CloseLibrary(base->PrometheusBase);
+        base->PrometheusBase = NULL;
+        PrometheusBase = NULL;
     }
 
-    segList = base->Card.SegList;
-    size = (ULONG)base->Card.LibBase.lib_NegSize +
-           (ULONG)base->Card.LibBase.lib_PosSize;
+    segList = base->SegList;
+    size = (ULONG)base->Library.lib_NegSize +
+           (ULONG)base->Library.lib_PosSize;
     Remove((struct Node *)base);
-    FreeMem((UBYTE *)base - base->Card.LibBase.lib_NegSize, size);
+    FreeMem((UBYTE *)base - base->Library.lib_NegSize, size);
     return segList;
 }
 

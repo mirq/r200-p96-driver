@@ -24,7 +24,6 @@
 
 #include <exec/memory.h>
 #include <proto/exec.h>
-#include <proto/openpci.h>
 
 #include "radeon9200.h"
 #include "radeon_debug.h"
@@ -985,10 +984,15 @@ BOOL RadeonShowStartupScreen(struct BoardInfo *bi)
         goto failed;
     for (x = 0; x < STARTUP_WIDTH; ++x)
         line[x] = (UBYTE)(x / (STARTUP_WIDTH / 8U));
-    for (y = 0; y < STARTUP_HEIGHT; ++y)
-        host_to_pcicpy(line, (UBYTE *)bi->MemoryBase +
-                                 (ULONG)y * STARTUP_PITCH,
-                       STARTUP_PITCH);
+    for (y = 0; y < STARTUP_HEIGHT; ++y) {
+        volatile ULONG *destination =
+            (volatile ULONG *)((UBYTE *)bi->MemoryBase +
+                               (ULONG)y * STARTUP_PITCH);
+        ULONG *source = (ULONG *)line;
+
+        for (x = 0; x < STARTUP_PITCH / sizeof(ULONG); ++x)
+            destination[x] = source[x];
+    }
     FreeMem(line, STARTUP_PITCH);
 
     data->DisplayEnabled = TRUE;

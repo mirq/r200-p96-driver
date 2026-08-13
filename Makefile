@@ -3,14 +3,16 @@ DEBUG ?= 0
 CC := $(CROSS)gcc
 STRIP := $(CROSS)strip
 
-TARGET := Radeon9200.card
+TARGET := Radeon9200.chip
+CARD_TARGET := Prometheus.card
 BUILD_DIR := build
+CARD_BUILD_DIR := $(BUILD_DIR)/prometheus-card
 P96_SCREEN_TEST := $(BUILD_DIR)/p96screen
 P96_OVERLAP_TEST := $(BUILD_DIR)/p96overlap
 P96_WINDOWMOVE_TEST := $(BUILD_DIR)/p96windowmove
 
 P96_DIR := Picasso96Develop
-OPENPCI_DIR := OpenPci2.1-SDK290208
+BYTESWAP_DIR := OpenPci2.1-SDK290208/Include
 
 SOURCES := \
 	src/startup.c \
@@ -26,12 +28,22 @@ SOURCES := \
 	src/radeon_mode.c
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
+CARD_DIR := Prometheus/PrometheusCard
+CARD_SOURCES := \
+	$(CARD_DIR)/vbcc_libinit.c \
+	$(CARD_DIR)/dma.c \
+	$(CARD_DIR)/card_radeon9200.c \
+	$(CARD_DIR)/card_s3virge.c \
+	$(CARD_DIR)/card_3dlabspermedia2.c \
+	$(CARD_DIR)/card_3dfxvoodoo.c \
+	$(CARD_DIR)/card.c
+CARD_OBJECTS := $(patsubst $(CARD_DIR)/%.c,$(CARD_BUILD_DIR)/%.o,$(CARD_SOURCES))
+
 CPPFLAGS := \
-	-DOPENPCI_SWAP \
 	-Iinclude \
+	-IPrometheus/PromLib \
 	-I$(P96_DIR)/PrivateInclude \
-	-I$(OPENPCI_DIR)/Include/gcc \
-	-I$(OPENPCI_DIR)/Include
+	-I$(BYTESWAP_DIR)
 
 ifeq ($(DEBUG),1)
 CPPFLAGS += -DDEBUG
@@ -63,13 +75,37 @@ LDFLAGS := \
 
 LDLIBS := -lamiga -lgcc
 
+CARD_CPPFLAGS := \
+	-I$(CARD_DIR) \
+	-IPrometheus/PromLib \
+	-IPrometheus/PromLib/include \
+	-I$(CARD_DIR)/proto \
+	-I$(CARD_DIR)/clib \
+	-I$(CARD_DIR)/inline
+CARD_CFLAGS := \
+	-std=gnu99 \
+	-O2 \
+	-Wall \
+	-m68020-60 \
+	-mregparm=4 \
+	-noixemul \
+	-ffreestanding \
+	-fno-builtin
+CARD_LDFLAGS := \
+	-m68020-60 \
+	-mregparm=4 \
+	-noixemul \
+	-ramiga-lib \
+	-nostartfiles \
+	-nodefaultlibs
+
 ifeq ($(DEBUG),1)
 LDLIBS := -ldebug -lc $(LDLIBS)
 endif
 
 .PHONY: all clean tools
 
-all: $(TARGET)
+all: $(TARGET) $(CARD_TARGET)
 
 tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST)
 
@@ -92,11 +128,19 @@ $(TARGET): $(OBJECTS)
 	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $(BUILD_DIR)/$@
 	$(STRIP) --strip-unneeded $(BUILD_DIR)/$@ -o $@
 
+$(CARD_TARGET): $(CARD_OBJECTS)
+	$(CC) $(CARD_LDFLAGS) $^ -lamiga -lgcc -o $(CARD_BUILD_DIR)/$@
+	$(STRIP) --strip-unneeded $(CARD_BUILD_DIR)/$@ -o $@
+
 $(BUILD_DIR)/%.o: src/%.c
 	mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
--include $(OBJECTS:.o=.d)
+$(CARD_BUILD_DIR)/%.o: $(CARD_DIR)/%.c
+	mkdir -p $(dir $@)
+	$(CC) $(CARD_CPPFLAGS) $(CARD_CFLAGS) -MMD -MP -c $< -o $@
+
+-include $(OBJECTS:.o=.d) $(CARD_OBJECTS:.o=.d)
 
 clean:
-	rm -rf build build-debug $(TARGET)
+	rm -rf build build-debug $(TARGET) $(CARD_TARGET)

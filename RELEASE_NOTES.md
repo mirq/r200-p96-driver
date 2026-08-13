@@ -1,11 +1,20 @@
-# Radeon9200.card 0.14
+# Radeon9200 Prometheus integration 0.20
 
-Version 0.14 is an early-development text-rendering performance update. It
-optimizes the hardware JAM1/JAM2 `BlitTemplate` upload path used by Picasso96
-`Text()` while retaining the direct-MMIO acceleration introduced in 0.12.
+Version 0.20 moves Radeon board ownership and shared DMA publication into
+`Prometheus.card`, with `Radeon9200.chip` handling RV280 initialization and
+Picasso96 graphics operations.
 
 ## Highlights
 
+- Ships the matched `Prometheus.card` and `Radeon9200.chip` runtime pair.
+- Reserves `DMASIZE` at the high end of VRAM and excludes it from Picasso96 and
+  Radeon graphics operations.
+- Publishes the reserved pages through the existing Prometheus DMA vectors for
+  peer PCI bus-master devices such as RTL8139.
+- Keeps Radeon cursor and optional CP resources in separate private VRAM below
+  the shared DMA aperture.
+- Requires a valid positive `DMASIZE` reservation before Radeon card
+  initialization succeeds.
 - Extracts complete monochrome template words with one 68020 `bfextu`.
 - Uses an endian-correct raw host-data store with Radeon MSB-first consumption,
   removing software bit reversal from the upload loop.
@@ -56,4 +65,5 @@ focused `p96screen` `Text("P96Speed")` benchmark improved from 40 to 30 ticks.
 This remains an early-development driver. The release candidate was tested on
 the target Amiga before tagging; no additional release-only test pass was run.
 
-The library reports `$VER: Radeon9200.card 0.14 (12.8.2026)`.
+The library reports `$VER: Radeon9200.chip 1.0 (12.8.2026)`. Version 1.0 is
+loaded by `Prometheus.card`; monitor icons use `BOARDTYPE=Prometheus`.

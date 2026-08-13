@@ -165,7 +165,7 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     stats->CpRequested = cpRequested;
     stats->CpActive = RadeonCpIsReady(bi);
     stats->DmaRequested = dmaRequested;
-    stats->DmaReserved = data->DmaArena != NULL;
+    stats->DmaReserved = bi->MemorySize < bi->MemorySpaceSize;
     stats->BoardMemorySize = bi->MemorySize;
     stats->SpriteExperiment = spriteExperiment;
     stats->MonoFromMemory = RadeonMonoProbeResult;

@@ -8,16 +8,15 @@ DEVS:Monitors/Radeon
 DEVS:Monitors/Radeon.info    <- ToolTypes live here
 ```
 
-An icon beside `LIBS:Picasso96/Radeon9200.card` is not the active source on this
+An icon beside `LIBS:Picasso96/Radeon9200.chip` is not the active source on this
 setup. Editing it does not configure this driver. If the monitor icon is
 missing or its entries are inactive, `InitCard()` receives defaults without an
 explicit ToolType error.
 
 ## Recognised ToolTypes
 
-Parsed by `ParseOptions()` in `src/radeon9200.c:130`. Matching is a
-case-insensitive prefix compare (`MatchOption()`, `src/radeon9200.c:78`), so an
-entry wrapped in parentheses is inert and can be used as an in-icon comment.
+Parsed by `Prometheus.card` before it loads `Radeon9200.chip`. Matching is
+case-insensitive, and an entry wrapped in parentheses remains inert.
 
 | ToolType | Default | Effect |
 |---|---|---|
@@ -28,10 +27,8 @@ entry wrapped in parentheses is inert and can be used as an in-icon comment.
 | `TEXTSTAGE=<YES\|NO>` | **off** | Experimental: stages the glyph bitmap in VRAM and colour-expands it from memory instead of streaming it through `HOST_DATA`. **Known broken** - it wedges the 2D engine on the reference machine and leaves the Amiga unresponsive. Do not enable outside diagnosis. |
 | `OUTPUT=VGA` | VGA | Selects the VGA output path. |
 
-`OUTPUT=` is the one dangerous entry. `ParseOptions()` defaults `VgaOutput` to
-TRUE, but if the ToolType is *present* with any value other than exactly `VGA`,
-`InitCard()` releases the board and returns FALSE — the card does not come up at
-all. Prefer omitting it over risking a typo; the default is already correct.
+`OUTPUT=VGA` is retained as a documented no-op for existing monitor icons; VGA
+remains the only supported output.
 
 ## Editing the icon
 
@@ -40,7 +37,7 @@ with Workbench Information so its binary `DiskObject` structure is preserved.
 The validated active entries are:
 
 ```text
-BOARDTYPE=Radeon9200
+BOARDTYPE=Prometheus
 SETTINGSFILE=SYS:Devs/Picasso96Settings.9200
 OUTPUT=VGA
 DMASIZE=2M
@@ -49,8 +46,8 @@ HWSPRITE=YES
 ```
 
 `BOARDTYPE` and `SETTINGSFILE` must be switched together. Selecting
-`Radeon9200` while leaving the other driver's settings file active can load
-`Radeon9200.card` successfully but leave Workbench on its native fallback
+`Prometheus` while leaving the other driver's settings file active can load
+`Radeon9200.chip` successfully but leave Workbench on its native fallback
 screen because the expected Radeon9200 modes are unavailable.
 
 Back up the old icon before editing. Changes take effect after a cold reboot,
