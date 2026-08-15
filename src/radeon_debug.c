@@ -17,6 +17,9 @@
  * access turns out to cost tens of microseconds.
  */
 #define MMIO_SAMPLE_COUNT 2000UL
+#define VRAM_SMALL_BYTES  (8UL * 1024UL)
+#define VRAM_BURST_BYTES  (64UL * 1024UL)
+#define CP_PROBE_DWORDS    4096UL
 
 ULONG RadeonDebugReads;
 ULONG RadeonDebugWrites;
@@ -101,7 +104,7 @@ static ULONG Clock(void)
  * SCRATCH_REG0.
  */
 static void MeasureMmio(struct BoardInfo *bi,
-                        struct RadeonDebugStats *stats)
+                         struct RadeonDebugStats *stats)
 {
     ULONG index;
     ULONG start;
@@ -124,23 +127,90 @@ static void MeasureMmio(struct BoardInfo *bi,
         (void)Clock();
     stats->ClockTicks = Clock() - start;
 
-    /*
-     * Consecutive longwords into the framebuffer aperture, modelling the
-     * upload a VRAM-staged BlitTemplate would perform. Uses the tail of the
-     * board pool, which Picasso96 has not begun allocating from at InitCard
-     * time, so it cannot disturb the startup screen.
-     */
-    if (bi->MemoryBase && bi->MemorySize > 32768UL) {
-        volatile ULONG *target = (volatile ULONG *)
-            ((UBYTE *)bi->MemoryBase + bi->MemorySize - 16384UL);
+    /* Reserve the measured range so no later private allocation can alias it. */
+    if (bi->MemoryBase) {
+        APTR scratch = RadeonAllocatePrivateVram(bi, VRAM_BURST_BYTES);
+        volatile ULONG *target = (volatile ULONG *)scratch;
+        ULONG words;
+        ULONG drain = 0;
 
-        start = Clock();
-        for (index = 0; index < MMIO_SAMPLE_COUNT; ++index)
-            target[index & 2047UL] = 0;
-        stats->VramWriteTicks = Clock() - start;
+        if (target) {
+            start = Clock();
+            for (index = 0; index < MMIO_SAMPLE_COUNT; ++index)
+                target[index & 2047UL] = 0;
+            drain = target[2047UL];
+            stats->VramWriteTicks = Clock() - start;
+
+            words = VRAM_SMALL_BYTES / sizeof(ULONG);
+            start = Clock();
+            for (index = 0; index < words; ++index)
+                target[index] = index;
+            drain = target[words - 1UL];
+            stats->VramSmallTicks = Clock() - start;
+            stats->VramSmallBytes = VRAM_SMALL_BYTES;
+
+            words = VRAM_BURST_BYTES / sizeof(ULONG);
+            start = Clock();
+            for (index = 0; index < words; ++index)
+                target[index] = index;
+            drain = target[words - 1UL];
+            stats->VramBurstTicks = Clock() - start;
+            stats->VramBurstBytes = VRAM_BURST_BYTES;
+            stats->VramDrainValue = drain;
+
+            if (!RadeonFreePrivateVram(bi, scratch, VRAM_BURST_BYTES))
+                RLOG("Radeon9200: debug VRAM probe reservation leaked\n");
+        }
     }
 
     stats->MmioSamples = MMIO_SAMPLE_COUNT;
+}
+
+static void MeasureCpBatch(struct BoardInfo *bi,
+                            struct RadeonDebugStats *stats)
+{
+    ULONG start;
+
+    if (!TimerBase || !RadeonCpIsReady(bi))
+        return;
+
+    stats->CpProbeDwords = CP_PROBE_DWORDS;
+    /* Warm both complete paths before recording either result. */
+    if (!RadeonCpDebugSubmitNoops(bi, CP_PROBE_DWORDS, FALSE) ||
+        !RadeonCpDebugSubmitNoops(bi, CP_PROBE_DWORDS, TRUE))
+        return;
+
+    start = Clock();
+    stats->CpBufferedSuccess =
+        RadeonCpDebugSubmitNoops(bi, CP_PROBE_DWORDS, FALSE);
+    stats->CpBufferedTicks = Clock() - start;
+    if (!stats->CpBufferedSuccess)
+        return;
+
+    start = Clock();
+    stats->CpDirectSuccess =
+        RadeonCpDebugSubmitNoops(bi, CP_PROBE_DWORDS, TRUE);
+    stats->CpDirectTicks = Clock() - start;
+}
+
+static void TestCpFunction(struct BoardInfo *bi,
+                           struct RadeonDebugStats *stats)
+{
+    struct RadeonCpDebugResult result;
+    UBYTE *byte = (UBYTE *)&result;
+    ULONG count = sizeof(result);
+
+    while (count--)
+        *byte++ = 0;
+    (void)RadeonCpDebugRunTests(bi, &result);
+    stats->CpWrapBefore = result.WrapBefore;
+    stats->CpWrapAfter = result.WrapAfter;
+    stats->CpWrapSuccess = result.WrapSuccess;
+    stats->CpNearFullSuccess = result.NearFullSuccess;
+    stats->CpReserveTimeoutSuccess = result.ReserveTimeoutSuccess;
+    stats->CpFirstFence = result.FirstFence;
+    stats->CpSecondFence = result.SecondFence;
+    stats->CpFenceOrderSuccess = result.FenceOrderSuccess;
 }
 
 void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
@@ -174,6 +244,9 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     stats->EClockRate = OpenTimer(SysBase) ? ReadEClock(&value) : 0;
 
     MeasureMmio(bi, stats);
+    MeasureCpBatch(bi, stats);
+    TestCpFunction(bi, stats);
+    stats->CpActive = RadeonCpIsReady(bi);
 
     /* Counting starts clean so the first RectFill run is not polluted. */
     RadeonDebugReads = 0;
@@ -182,6 +255,21 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     AddPort(&DebugNode->Port);
     RLOG("Radeon9200: debug port at %lx stats at %lx\n",
          (ULONG)&DebugNode->Port, (ULONG)stats);
+}
+
+void RadeonDebugBoardLock(struct BoardInfo *bi)
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct Task *task;
+
+    if (!DebugNode || !SysBase)
+        return;
+    task = FindTask(NULL);
+    ++DebugNode->Stats.BoardLockChecks;
+    if (bi->BoardLock.ss_Owner == task)
+        ++DebugNode->Stats.BoardLockOwned;
+    else if (bi->BoardLock.ss_Owner)
+        ++DebugNode->Stats.BoardLockOwnedByOther;
 }
 
 void RadeonDebugClose(struct BoardInfo *bi)

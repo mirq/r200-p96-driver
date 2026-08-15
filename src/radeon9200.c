@@ -118,16 +118,13 @@ void RadeonDelayUs(ULONG microseconds)
     }
 }
 
-void RadeonReleaseBoard(struct RadeonChipBase *base)
+static void RadeonFinishBoardRelease(struct RadeonChipBase *base,
+                                     struct BoardInfo *bi)
 {
-    struct BoardInfo *bi;
+    struct ExecBase *SysBase = base->ExecBase;
     struct RadeonBoardData *data;
 
-    if (!base || !base->BoardInfo)
-        return;
-
     PrometheusBase = base->PrometheusBase;
-    bi = base->BoardInfo;
     data = RadeonGetBoardData(bi);
     RDEBUG_CLOSE(bi);
 
@@ -142,8 +139,6 @@ void RadeonReleaseBoard(struct RadeonChipBase *base)
     }
 
     if (data && data->StartupMode) {
-        struct ExecBase *SysBase = bi->ExecBase;
-
         if (bi->ModeInfo == data->StartupMode)
             bi->ModeInfo = NULL;
         FreeMem(data->StartupMode, sizeof(*data->StartupMode));
@@ -152,19 +147,56 @@ void RadeonReleaseBoard(struct RadeonChipBase *base)
 
     if (data)
         ClearBoardData(data);
+    ObtainSemaphore(&base->ServiceLock);
+    base->ServiceState = RADEON3D_SERVICE_EMPTY;
+    ReleaseSemaphore(&base->ServiceLock);
+}
+
+BOOL RadeonReleaseBoard(struct RadeonChipBase *base,
+                        struct BoardInfo *expectedBoard,
+                        BOOL allowInitializing)
+{
+    struct ExecBase *SysBase;
+    struct BoardInfo *bi;
+
+    if (!base)
+        return FALSE;
+
+    SysBase = base->ExecBase;
+    bi = expectedBoard ? expectedBoard : base->BoardInfo;
+    if (!bi)
+        return FALSE;
+    ObtainSemaphore(&bi->BoardLock);
+    ObtainSemaphore(&base->ServiceLock);
+    if (base->BoardInfo != bi ||
+        base->ServiceState == RADEON3D_SERVICE_DETACHING ||
+        (base->ServiceState == RADEON3D_SERVICE_INITIALIZING &&
+         !allowInitializing)) {
+        ReleaseSemaphore(&base->ServiceLock);
+        ReleaseSemaphore(&bi->BoardLock);
+        return FALSE;
+    }
+    base->ServiceState = RADEON3D_SERVICE_DETACHING;
     base->BoardInfo = NULL;
+    Radeon3DAdvanceGeneration(base);
+    ReleaseSemaphore(&base->ServiceLock);
+
+    RadeonFinishBoardRelease(base, bi);
+    ReleaseSemaphore(&bi->BoardLock);
+    return TRUE;
 }
 
 BOOL InitChip(__REGA0(struct BoardInfo *bi),
               __REGA6(struct RadeonChipBase *base))
 {
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
     struct PrometheusRadeonHandoff handoff;
     struct RadeonBoardData *data;
     UBYTE *source;
     UBYTE *destination;
     ULONG count;
 
-    if (!bi || !base || !base->PrometheusBase || base->BoardInfo)
+    if (!bi || !base || !SysBase || !base->PrometheusBase)
         return FALSE;
     source = (UBYTE *)bi->CardData;
     destination = (UBYTE *)&handoff;
@@ -176,13 +208,21 @@ BOOL InitChip(__REGA0(struct BoardInfo *bi),
         handoff.MmioSize < RADEON_MMIO_MIN_SIZE)
         return FALSE;
 
+    ObtainSemaphore(&base->ServiceLock);
+    if (base->ServiceState != RADEON3D_SERVICE_EMPTY || base->BoardInfo) {
+        ReleaseSemaphore(&base->ServiceLock);
+        return FALSE;
+    }
+    base->ServiceState = RADEON3D_SERVICE_INITIALIZING;
+    base->BoardInfo = bi;
+    ReleaseSemaphore(&base->ServiceLock);
+
     data = RadeonGetBoardData(bi);
     ClearBoardData(data);
     data->Device = handoff.Board;
     data->DeviceId = handoff.DeviceId;
     data->MmioSize = handoff.MmioSize;
     PrometheusBase = base->PrometheusBase;
-    base->BoardInfo = bi;
     bi->GraphicsControllerType = GCT_Radeon;
     bi->PaletteChipType = PCT_Radeon;
     bi->MemorySize = handoff.FramebufferSize;
@@ -191,16 +231,25 @@ BOOL InitChip(__REGA0(struct BoardInfo *bi),
 
     RLOG("Radeon9200: initializing device %lx\n", (ULONG)data->DeviceId);
     if (!RadeonInitializeHardware(bi)) {
-        RadeonReleaseBoard(base);
+        (void)RadeonReleaseBoard(base, bi, TRUE);
         return FALSE;
     }
 
     data->Initialized = TRUE;
     if (!RadeonShowStartupScreen(bi)) {
         RLOG("Radeon9200: startup VGA mode failed\n");
-        RadeonReleaseBoard(base);
+        (void)RadeonReleaseBoard(base, bi, TRUE);
         return FALSE;
     }
+    ObtainSemaphore(&base->ServiceLock);
+    if (base->BoardInfo != bi ||
+        base->ServiceState != RADEON3D_SERVICE_INITIALIZING) {
+        ReleaseSemaphore(&base->ServiceLock);
+        (void)RadeonReleaseBoard(base, bi, TRUE);
+        return FALSE;
+    }
+    base->ServiceState = RADEON3D_SERVICE_ATTACHED;
+    ReleaseSemaphore(&base->ServiceLock);
     RLOG("Radeon9200: VGA CRTC0 startup screen active\n");
     return TRUE;
 }
@@ -209,8 +258,16 @@ BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
                         __REGD0(ULONG features),
                         __REGA6(struct RadeonChipBase *base))
 {
-    if (!bi || !base || base->BoardInfo != bi)
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+
+    if (!bi || !base || !SysBase)
         return FALSE;
+    ObtainSemaphore(&base->ServiceLock);
+    if (base->BoardInfo != bi ||
+        base->ServiceState != RADEON3D_SERVICE_ATTACHED) {
+        ReleaseSemaphore(&base->ServiceLock);
+        return FALSE;
+    }
     PrometheusBase = base->PrometheusBase;
     (void)RadeonInitializeAcceleration(
         bi, (features & PROM_RADEON_FEATURE_CP) != 0,
@@ -221,5 +278,10 @@ BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
     RadeonInstallCallbacks(
         bi, (features & PROM_RADEON_FEATURE_HWSPRITE) != 0,
         (features & PROM_RADEON_FEATURE_HWTEXT) != 0);
+    if (RadeonCpIsReady(bi)) {
+        Radeon3DAdvanceGeneration(base);
+        base->ServiceState = RADEON3D_SERVICE_READY;
+    }
+    ReleaseSemaphore(&base->ServiceLock);
     return TRUE;
 }

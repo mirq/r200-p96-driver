@@ -2,8 +2,9 @@
 
 The reference test target is a physical Amiga, not an emulator. Never use
 emulator lifecycle, reset, pause, or state-management commands for it.
-The AmigaBridge endpoint is `192.168.100.50:2345`. The old
-`192.168.100.47:2345` endpoint is no longer accessible.
+The primary AmigaBridge endpoint is `192.168.1.21:2345`. Try it first. The old
+`192.168.100.50:2345` and `192.168.100.47:2345` endpoints are no longer
+accessible.
 A physical Amiga reboot takes approximately 100 seconds before the bridge is
 available again.
 Run AmigaBridge file transfers and filesystem copies sequentially. Concurrent
@@ -21,6 +22,12 @@ Build a small, pure-C Picasso96 chip driver for desktop RV280 Radeon 9200
 boards behind Prometheus.card. The first hardware target is a
 Prometheus or FireBird bridge and VGA output through CRTC0 and the primary
 DAC.
+
+R200 3D service, standalone `r200test`, and independent `MiniGL_R200` work must
+follow the authoritative roadmap at
+`/home/mirek/r200_minigl/MINIGL_R200_PLAN.md`. Consult that plan before changing
+the 3D service ABI or starting MiniGL work. Current implementation and physical
+hardware results are tracked in `R200_3D_PROGRESS.md`.
 
 ## Hard Constraints
 
@@ -79,9 +86,10 @@ Radeon-private resources must be reserved separately below this shared region.
 The CP ring may remain initialized for future 3D work, but all current
 Picasso96 2D operations use direct MMIO. Explicit FIFO and idle polls are
 bounded; solid fills follow the validated hardware-backpressure path and do not
-pre-poll the FIFO. One timeout recovery reset is allowed; successful recovery
-permanently routes the session to software, and failed recovery blocks further
-VRAM rendering through the wrappers.
+pre-poll the FIFO. Timeout recovery invalidates current 3D sessions, resets the
+engine, reloads and self-tests the CP, then re-arms hardware acceleration. A
+failed recovery routes the session to software or blocks unsafe VRAM rendering
+through the wrappers.
 
 The validated hardware subset is `FillRect` and destination-only `InvertRect`
 in CLUT8/RGB565PC/BGRA32 (including CLUT8 partial masks), same-`RenderInfo`

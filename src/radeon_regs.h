@@ -165,6 +165,7 @@
 #define RADEON_WAIT_UNTIL                   0x1720UL
 #define RADEON_WAIT_DMA_GUI_IDLE            (1UL << 9)
 #define RADEON_WAIT_2D_IDLECLEAN            (1UL << 16)
+#define RADEON_WAIT_3D_IDLECLEAN            (1UL << 17)
 #define RADEON_WAIT_HOST_IDLECLEAN          (1UL << 18)
 #define RADEON_ISYNC_CNTL                   0x1724UL
 #define RADEON_ISYNC_ANY2D_IDLE3D           (1UL << 0)
@@ -189,6 +190,155 @@
 #define RADEON_CUR_CLR1                     0x0270UL
 #define RADEON_CUR_LOCK                     (1UL << 31)
 #define RADEON_RB3D_CNTL                    0x1c3cUL
+#define R200_PP_CNTL                        0x1c38UL
+#define R200_TEX_BLEND_0_ENABLE             0x00001000UL
+#define R200_RB3D_BLENDCNTL                 0x1c20UL
+#define R200_PP_MISC                        0x1c14UL
+#define R200_ALPHA_TEST_NEVER               (0UL << 8)
+#define R200_ALPHA_TEST_LESS                (1UL << 8)
+#define R200_ALPHA_TEST_LEQUAL              (2UL << 8)
+#define R200_ALPHA_TEST_EQUAL               (3UL << 8)
+#define R200_ALPHA_TEST_GEQUAL              (4UL << 8)
+#define R200_ALPHA_TEST_GREATER             (5UL << 8)
+#define R200_ALPHA_TEST_NOTEQUAL            (6UL << 8)
+#define R200_ALPHA_TEST_ALWAYS              (7UL << 8)
+#define R200_SRC_BLEND_GL_ONE               (33UL << 16)
+#define R200_DST_BLEND_GL_ZERO              (32UL << 24)
+#define R200_SRC_BLEND_GL_SRC_ALPHA         (38UL << 16)
+#define R200_DST_BLEND_GL_ONE_MINUS_SRC_ALPHA (39UL << 24)
+#define R200_SRC_BLEND_GL_ZERO              (32UL << 16)
+#define R200_SRC_BLEND_GL_SRC_COLOR         (34UL << 16)
+#define R200_SRC_BLEND_GL_ONE_MINUS_SRC_COLOR (35UL << 16)
+#define R200_SRC_BLEND_GL_DST_COLOR         (36UL << 16)
+#define R200_SRC_BLEND_GL_ONE_MINUS_DST_COLOR (37UL << 16)
+#define R200_SRC_BLEND_GL_DST_ALPHA         (40UL << 16)
+#define R200_SRC_BLEND_GL_ONE_MINUS_DST_ALPHA (41UL << 16)
+#define R200_SRC_BLEND_GL_SRC_ALPHA_SATURATE (42UL << 16)
+#define R200_DST_BLEND_GL_ONE               (33UL << 24)
+#define R200_DST_BLEND_GL_SRC_COLOR         (34UL << 24)
+#define R200_DST_BLEND_GL_ONE_MINUS_SRC_COLOR (35UL << 24)
+#define R200_DST_BLEND_GL_DST_COLOR         (36UL << 24)
+#define R200_DST_BLEND_GL_ONE_MINUS_DST_COLOR (37UL << 24)
+#define R200_DST_BLEND_GL_SRC_ALPHA         (38UL << 24)
+#define R200_DST_BLEND_GL_DST_ALPHA         (40UL << 24)
+#define R200_DST_BLEND_GL_ONE_MINUS_DST_ALPHA (41UL << 24)
+#define R200_RB3D_DEPTHOFFSET               0x1c24UL
+#define R200_RB3D_DEPTHPITCH                0x1c28UL
+#define R200_DEPTHPITCH_MASK                0x00001ff8UL
+#define R200_RB3D_ZSTENCILCNTL              0x1c2cUL
+#define R200_DEPTH_FORMAT_16BIT_INT_Z        0UL
+#define R200_Z_TEST_NEVER                    (0UL << 4)
+#define R200_Z_TEST_LESS                     (1UL << 4)
+#define R200_Z_TEST_LEQUAL                   (2UL << 4)
+#define R200_Z_TEST_EQUAL                    (3UL << 4)
+#define R200_Z_TEST_GEQUAL                   (4UL << 4)
+#define R200_Z_TEST_GREATER                  (5UL << 4)
+#define R200_Z_TEST_NOTEQUAL                 (6UL << 4)
+#define R200_Z_TEST_ALWAYS                   (7UL << 4)
+#define R200_STENCIL_TEST_ALWAYS             (7UL << 12)
+#define R200_Z_WRITE_ENABLE                  (1UL << 30)
+#define R200_RB3D_COLOROFFSET               0x1c40UL
+#define R200_COLOROFFSET_MASK                0xfffffff0UL
+#define R200_RE_WIDTH_HEIGHT                0x1c44UL
+#define R200_RB3D_COLORPITCH                0x1c48UL
+#define R200_COLORPITCH_MASK                 0x00001ff8UL
+#define R200_SE_CNTL                        0x1c4cUL
+#define R200_RE_CNTL                        0x1c50UL
+#define R200_RB3D_PLANEMASK                 0x1d84UL
+#define R200_COLOR_FORMAT_RGB565            (4UL << 10)
+#define R200_ALPHA_BLEND_ENABLE              (1UL << 0)
+#define R200_Z_ENABLE                        (1UL << 8)
+#define R200_SE_VAP_CNTL                    0x2080UL
+#define R200_VAP_FORCE_W_TO_ONE             0x00010000UL
+#define R200_VAP_VF_MAX_VTX_NUM_SHIFT       18
+#define R200_SE_VTX_FMT_0                   0x2088UL
+#define R200_VTX_PK_RGBA                    1UL
+#define R200_VTX_Z0                         (1UL << 0)
+#define R200_VTX_DISCRETE_FOG               (1UL << 8)
+#define R200_VTX_COLOR_0_SHIFT              11
+#define R200_SE_VTX_FMT_1                   0x208cUL
+#define R200_VTX_TEX0_COMP_CNT_SHIFT        0
+#define R200_VTX_TEX1_COMP_CNT_SHIFT        3
+#define R200_SE_VTE_CNTL                    0x20b0UL
+#define R200_SE_VAP_CNTL_STATUS             0x2140UL
+#define R200_SE_VTX_STATE_CNTL              0x2180UL
+#define R200_RE_TOP_LEFT                    0x26c0UL
+#define R200_RE_AUX_SCISSOR_CNTL            0x26f0UL
+#define R200_SCISSOR_ENABLE                 0x00000002UL
+#define R200_PP_TXFILTER_0                  0x2c00UL
+#define R200_PP_TXFILTER_1                  0x2c20UL
+#define R200_MAG_FILTER_LINEAR              (1UL << 0)
+#define R200_MIN_FILTER_LINEAR              (1UL << 1)
+#define R200_MIN_FILTER_NEAREST_MIP_NEAREST (2UL << 1)
+#define R200_MIN_FILTER_LINEAR_MIP_NEAREST  (3UL << 1)
+#define R200_MIN_FILTER_NEAREST_MIP_LINEAR  (6UL << 1)
+#define R200_MIN_FILTER_LINEAR_MIP_LINEAR   (7UL << 1)
+#define R200_MAX_MIP_LEVEL_SHIFT            16
+#define R200_CLAMP_S_CLAMP_LAST             (2UL << 23)
+#define R200_CLAMP_T_CLAMP_LAST             (2UL << 27)
+#define R200_PP_TXFORMAT_0                  0x2c04UL
+#define R200_PP_TXFORMAT_1                  0x2c24UL
+#define R200_TXFORMAT_RGB565                4UL
+#define R200_TXFORMAT_ARGB8888              6UL
+#define R200_TXFORMAT_ALPHA_IN_MAP          (1UL << 6)
+#define R200_TXFORMAT_NON_POWER2            (1UL << 7)
+#define R200_TXFORMAT_WIDTH_SHIFT           8
+#define R200_TXFORMAT_HEIGHT_SHIFT          12
+#define R200_TXFORMAT_ST_ROUTE_STQ1          (1UL << 24)
+#define R200_PP_TXFORMAT_X_0                0x2c08UL
+#define R200_PP_TXFORMAT_X_1                0x2c28UL
+#define R200_PP_TXSIZE_0                    0x2c0cUL
+#define R200_PP_TXSIZE_1                    0x2c2cUL
+#define R200_PP_TXPITCH_0                   0x2c10UL
+#define R200_PP_TXPITCH_1                   0x2c30UL
+#define R200_TXPITCH_MASK                   0x00001fe0UL
+#define R200_PP_TXMULTI_CTL_0               0x2c1cUL
+#define R200_PP_TXMULTI_CTL_1               0x2c3cUL
+#define R200_PP_CNTL_X                      0x2cc4UL
+#define R200_PP_TXOFFSET_0                  0x2d00UL
+#define R200_PP_TXOFFSET_1                  0x2d18UL
+#define R200_TXO_OFFSET_MASK                0xffffffe0UL
+#define R200_TEX_0_ENABLE                   0x00000010UL
+#define R200_TEX_1_ENABLE                   0x00000020UL
+#define R200_TEX_BLEND_1_ENABLE             0x00002000UL
+#define R200_FOG_ENABLE                     0x00400000UL
+#define R200_ALPHA_TEST_ENABLE              0x00800000UL
+#define R200_PP_TXCBLEND_0                  0x2f00UL
+#define R200_PP_TXCBLEND2_0                 0x2f04UL
+#define R200_PP_TXABLEND_0                  0x2f08UL
+#define R200_PP_TXABLEND2_0                 0x2f0cUL
+#define R200_PP_TXCBLEND_1                  0x2f10UL
+#define R200_PP_TXCBLEND2_1                 0x2f14UL
+#define R200_PP_TXABLEND_1                  0x2f18UL
+#define R200_PP_TXABLEND2_1                 0x2f1cUL
+#define R200_TXC_ARG_C_DIFFUSE_COLOR        (4UL << 10)
+#define R200_TXA_ARG_C_DIFFUSE_ALPHA        (4UL << 10)
+#define R200_TXC_ARG_C_R0_COLOR             (10UL << 10)
+#define R200_TXA_ARG_C_R0_ALPHA             (10UL << 10)
+#define R200_TXC_ARG_A_R0_COLOR             10UL
+#define R200_TXC_ARG_B_DIFFUSE_COLOR        (4UL << 5)
+#define R200_TXA_ARG_A_R0_ALPHA             10UL
+#define R200_TXA_ARG_B_DIFFUSE_ALPHA        (4UL << 5)
+#define R200_TXC_ARG_A_R1_COLOR             12UL
+#define R200_TXC_ARG_B_R0_COLOR             (10UL << 5)
+#define R200_TXC_ARG_C_R1_COLOR             (12UL << 10)
+#define R200_TXA_ARG_A_R1_ALPHA             12UL
+#define R200_TXA_ARG_B_R0_ALPHA             (10UL << 5)
+#define R200_TXA_ARG_C_R1_ALPHA             (12UL << 10)
+#define R200_TXC_CLAMP_0_1                  (1UL << 12)
+#define R200_TXA_CLAMP_0_1                  (1UL << 12)
+#define R200_TXC_OUTPUT_REG_R0              (1UL << 16)
+#define R200_TXA_OUTPUT_REG_R0              (1UL << 16)
+#define R200_PP_FOG_COLOR                   0x1c18UL
+#define R200_FOG_USE_VTX_FOG                (4UL << 25)
+#define R200_FOG_SHADE_GOURAUD              (2UL << 14)
+#define R200_DISC_FOG_SHADE_GOURAUD         (2UL << 24)
+#define R200_BFACE_SOLID                    (3UL << 1)
+#define R200_FFACE_SOLID                    (3UL << 3)
+#define R200_DIFFUSE_SHADE_GOURAUD          (2UL << 8)
+#define R200_VTX_PIX_CENTER_OGL             (1UL << 27)
+#define R200_ROUND_MODE_ROUND               (1UL << 28)
+#define R200_ROUND_PREC_4TH_PIX             (2UL << 30)
 #define RADEON_RB2D_DSTCACHE_MODE           0x3428UL
 
 /* R200 command processor registers and packet encodings. */
@@ -215,6 +365,9 @@
 #define RADEON_CP_PACKET2                   0x80000000UL
 #define RADEON_CP_PACKET3(packet, count) \
     (0xc0000000UL | (ULONG)(packet) | ((ULONG)(count) << 16))
+#define R200_CP_CMD_3D_DRAW_IMMD_2          0x00003500UL
+#define R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST  0x00000004UL
+#define R200_CP_VC_CNTL_PRIM_WALK_RING      0x00000030UL
 #define RADEON_CNTL_PAINT_MULTI             0x00009a00UL
 
 #define RADEON_GMC_SRC_PITCH_OFFSET_CNTL    (1UL << 0)

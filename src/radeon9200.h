@@ -5,6 +5,7 @@
 #include <prometheus.h>
 
 #include <boardinfo.h>
+#include <radeon3d.h>
 
 #define RADEON_VENDOR_ATI 0x1002U
 
@@ -15,6 +16,12 @@
 struct RadeonDmaArena;
 struct RadeonCpState;
 struct RadeonCursorState;
+
+#define RADEON3D_SERVICE_EMPTY        0UL
+#define RADEON3D_SERVICE_INITIALIZING 1UL
+#define RADEON3D_SERVICE_ATTACHED     2UL
+#define RADEON3D_SERVICE_READY        3UL
+#define RADEON3D_SERVICE_DETACHING    4UL
 
 struct RadeonBoardData {
     PCIBoard *Device;
@@ -42,6 +49,7 @@ struct RadeonBoardData {
     UBYTE PostDivider;
     UBYTE DpmsLevel;
     UBYTE AccelState;
+    UBYTE Need2DRestore;
     ULONG FramebufferGpuBase;
     struct RadeonCursorState *CursorState;
     BOOL ASM (*FreeCardMemDefault)(__REGA0(struct BoardInfo *bi),
@@ -59,11 +67,30 @@ struct RadeonBoardData {
 
 struct RadeonChipBase {
     struct Library Library;
+    UBYTE Flags;
+    UBYTE Pad;
     struct ExecBase *ExecBase;
     APTR SegList;
     struct Library *PrometheusBase;
     struct BoardInfo *BoardInfo;
+    struct SignalSemaphore ServiceLock;
+    struct MinList ServiceDevices;
+    struct MinList RetiredServiceDevices;
+    ULONG ServiceGeneration;
+    ULONG ServiceSessions;
+    ULONG ServiceState;
 };
+
+typedef char RadeonChipBaseExecBaseOffsetCheck[
+    __builtin_offsetof(struct RadeonChipBase, ExecBase) ==
+            __builtin_offsetof(struct ChipBase, ExecBase)
+        ? 1
+        : -1];
+typedef char RadeonChipBaseSegListOffsetCheck[
+    __builtin_offsetof(struct RadeonChipBase, SegList) ==
+            __builtin_offsetof(struct ChipBase, SegList)
+        ? 1
+        : -1];
 
 typedef char RadeonBoardDataFitsChipData[
     sizeof(struct RadeonBoardData) <= sizeof(((struct BoardInfo *)0)->ChipData)
@@ -75,7 +102,13 @@ static __inline__ struct RadeonBoardData *RadeonGetBoardData(
 {
     return bi ? (struct RadeonBoardData *)bi->ChipData : NULL;
 }
-void RadeonReleaseBoard(struct RadeonChipBase *base);
+BOOL RadeonReleaseBoard(struct RadeonChipBase *base,
+                        struct BoardInfo *expectedBoard,
+                        BOOL allowInitializing);
+void Radeon3DAdvanceGeneration(struct RadeonChipBase *base);
+void Radeon3DInvalidateService(struct BoardInfo *bi);
+BOOL Radeon3DRearmService(struct BoardInfo *bi);
+void Radeon3DFreeRetiredDevices(struct RadeonChipBase *base);
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg);
 BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value);
@@ -92,8 +125,11 @@ void RadeonDelayUs(ULONG microseconds);
 
 BOOL RadeonInitializeHardware(struct BoardInfo *bi);
 BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
-                                  BOOL stageTemplates);
+                                   BOOL stageTemplates);
 void RadeonShutdownAcceleration(struct BoardInfo *bi);
+BOOL RadeonPrepare3D(struct BoardInfo *bi);
+void RadeonMark3DSubmitted(struct BoardInfo *bi);
+BOOL RadeonRecoverAcceleration(struct BoardInfo *bi);
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi));
 void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                     __REGA1(struct RenderInfo *render),
@@ -166,12 +202,36 @@ APTR RadeonAllocatePrivateVram(struct BoardInfo *bi, ULONG requestedSize);
 BOOL RadeonFreePrivateVram(struct BoardInfo *bi, APTR memory,
                            ULONG requestedSize);
 BOOL RadeonCpInitialize(struct BoardInfo *bi);
+BOOL RadeonCpRecover(struct BoardInfo *bi);
 void RadeonCpShutdown(struct BoardInfo *bi);
 void RadeonCpAbort(struct BoardInfo *bi);
 BOOL RadeonCpIsReady(struct BoardInfo *bi);
 BOOL RadeonCpSubmit(struct BoardInfo *bi, const ULONG *commands,
                     ULONG commandCount);
+BOOL RadeonCpSubmitStream(struct BoardInfo *bi, const ULONG *commands,
+                          ULONG commandCount, BOOL addFence,
+                          ULONG *fenceOut);
+BOOL RadeonCpTestFence(struct BoardInfo *bi, ULONG fence);
+BOOL RadeonCpWaitFence(struct BoardInfo *bi, ULONG fence,
+                       ULONG timeoutMs);
 BOOL RadeonCpWait(struct BoardInfo *bi);
+#ifdef DEBUG
+struct RadeonCpDebugResult {
+    ULONG WrapBefore;
+    ULONG WrapAfter;
+    ULONG WrapSuccess;
+    ULONG NearFullSuccess;
+    ULONG ReserveTimeoutSuccess;
+    ULONG FirstFence;
+    ULONG SecondFence;
+    ULONG FenceOrderSuccess;
+};
+
+BOOL RadeonCpDebugSubmitNoops(struct BoardInfo *bi, ULONG commandCount,
+                               BOOL direct);
+BOOL RadeonCpDebugRunTests(struct BoardInfo *bi,
+                           struct RadeonCpDebugResult *result);
+#endif
 
 #ifdef DEBUG
 #include <clib/debug_protos.h>
@@ -184,7 +244,46 @@ BOOL RadeonCpWait(struct BoardInfo *bi);
 BOOL InitChip(__REGA0(struct BoardInfo *bi),
               __REGA6(struct RadeonChipBase *base));
 BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
-                        __REGD0(ULONG features),
-                        __REGA6(struct RadeonChipBase *base));
+                         __REGD0(ULONG features),
+                         __REGA6(struct RadeonChipBase *base));
+struct Radeon3DDevice *Radeon3DOpen(
+    __REGD0(ULONG requestedVersion),
+    __REGA0(struct Radeon3DInfo *info),
+    __REGA6(struct RadeonChipBase *base));
+void Radeon3DClose(__REGA0(struct Radeon3DDevice *device),
+                   __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DGetInfo(__REGA0(struct Radeon3DDevice *device),
+                     __REGA1(struct Radeon3DInfo *info),
+                     __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DSubmit(__REGA0(struct Radeon3DDevice *device),
+                    __REGA1(const ULONG *commands),
+                    __REGD0(ULONG commandCount),
+                    __REGD1(ULONG flags),
+                    __REGA2(ULONG *fenceOut),
+                    __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DTestFence(__REGA0(struct Radeon3DDevice *device),
+                       __REGD0(ULONG fence),
+                       __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DWaitFence(__REGA0(struct Radeon3DDevice *device),
+                       __REGD0(ULONG fence),
+                       __REGD1(ULONG timeoutMs),
+                       __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DImportBitMap(__REGA0(struct Radeon3DDevice *device),
+                          __REGA1(struct BitMap *bitmap),
+                          __REGA2(struct Radeon3DSurface *surface),
+                          __REGA6(struct RadeonChipBase *base));
+void Radeon3DReleaseSurface(__REGA0(struct Radeon3DDevice *device),
+                            __REGA1(struct Radeon3DSurface *surface),
+                             __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DExecute(__REGA0(struct Radeon3DDevice *device),
+                     __REGA1(const ULONG *records),
+                     __REGD0(ULONG recordDwords),
+                     __REGD1(ULONG flags),
+                     __REGA2(ULONG *fenceOut),
+                      __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DInvalidateForTest(__REGA0(struct Radeon3DDevice *device),
+                               __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
+                         __REGA6(struct RadeonChipBase *base));
 
 #endif

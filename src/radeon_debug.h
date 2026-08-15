@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 11UL
+#define RADEON_DEBUG_VERSION 14UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -48,7 +48,7 @@ struct RadeonDebugStats {
     ULONG Version;
     ULONG CpRequested;     /* CP=YES seen in the icon ToolTypes */
     ULONG CpActive;        /* RadeonCpInitialize() succeeded */
-    ULONG DmaRequested;    /* bytes parsed from DMASIZE, 0 if absent */
+    ULONG DmaRequested;    /* total bytes hidden before debug publication */
     ULONG DmaReserved;     /* arena actually created */
     ULONG BoardMemorySize; /* bi->MemorySize after any reservation */
     ULONG EClockRate;      /* EClock ticks per second, 0 if no timer */
@@ -162,7 +162,39 @@ struct RadeonDebugStats {
     ULONG CompleteValidateMaxTicks;
     ULONG CompleteSubmitMaxTicks;
     ULONG CompleteDefaultMaxTicks;
+    /*
+     * Version 12: Phase 0 aperture throughput at two transfer sizes. Both
+     * timings include a final volatile read from the last written longword,
+     * matching the CP ring's pre-WPTR posting drain.
+     */
+    ULONG VramSmallBytes;
+    ULONG VramSmallTicks;
+    ULONG VramBurstBytes;
+    ULONG VramBurstTicks;
+    ULONG VramDrainValue;
+    /* Version 13: large CP batch comparison with identical completion waits. */
+    ULONG CpProbeDwords;
+    ULONG CpBufferedTicks;
+    ULONG CpDirectTicks;
+    ULONG CpBufferedSuccess;
+    ULONG CpDirectSuccess;
+    /* Version 14: bounded CP functional checks and P96 lock ownership. */
+    ULONG CpWrapBefore;
+    ULONG CpWrapAfter;
+    ULONG CpWrapSuccess;
+    ULONG CpNearFullSuccess;
+    ULONG CpReserveTimeoutSuccess;
+    ULONG CpFirstFence;
+    ULONG CpSecondFence;
+    ULONG CpFenceOrderSuccess;
+    ULONG BoardLockChecks;
+    ULONG BoardLockOwned;
+    ULONG BoardLockOwnedByOther;
 };
+
+#define RADEON_DEBUG_STATS_V14_SIZE 588UL
+typedef char RadeonDebugStatsV14SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V14_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL
@@ -212,6 +244,7 @@ void RadeonDebugRecovery(ULONG success, ULONG accelState);
 void RadeonDebugCompleteSubmit(ULONG success);
 ULONG RadeonDebugPhaseBegin(void);
 void RadeonDebugCompletePhase(ULONG phase, ULONG start);
+void RadeonDebugBoardLock(struct BoardInfo *bi);
 
 #define RADEON_DEBUG_COMPLETE_VALIDATE 0UL
 #define RADEON_DEBUG_COMPLETE_SUBMIT   1UL
@@ -255,6 +288,7 @@ void RadeonDebugCompletePhase(ULONG phase, ULONG start);
 #define RDEBUG_PHASE_BEGIN() RadeonDebugPhaseBegin()
 #define RDEBUG_COMPLETE_PHASE(phase, start) \
     RadeonDebugCompletePhase((phase), (start))
+#define RDEBUG_BOARD_LOCK(bi) RadeonDebugBoardLock(bi)
 
 #else
 
@@ -287,6 +321,7 @@ void RadeonDebugCompletePhase(ULONG phase, ULONG start);
 #define RDEBUG_COMPLETE_SUBMIT(success) ((void)0)
 #define RDEBUG_PHASE_BEGIN() 0UL
 #define RDEBUG_COMPLETE_PHASE(phase, start) ((void)0)
+#define RDEBUG_BOARD_LOCK(bi) ((void)0)
 
 #endif
 

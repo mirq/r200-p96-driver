@@ -7,16 +7,16 @@
 
 #include "radeon9200.h"
 
-#define LIB_VERSION 1
+#define LIB_VERSION 3
 #define LIB_REVISION 0
 
 #define USED __attribute__((used))
 
 static const char LibName[] = "Radeon9200.chip";
 static const char LibIdString[] =
-    "Radeon9200.chip 1.0 (12.8.2026)\r\n";
+    "Radeon9200.chip 3.0 (15.8.2026)\r\n";
 static const char VerTag[] USED =
-    "\0$VER: Radeon9200.chip 1.0 (12.8.2026)";
+    "\0$VER: Radeon9200.chip 3.0 (15.8.2026)";
 
 struct Library *PrometheusBase;
 
@@ -37,6 +37,17 @@ static APTR FunctionTable[] USED = {
     (APTR)LibReserved,
     (APTR)InitChip,
     (APTR)InitRadeonFeatures,
+    (APTR)Radeon3DOpen,
+    (APTR)Radeon3DClose,
+    (APTR)Radeon3DGetInfo,
+    (APTR)Radeon3DDetachOwner,
+    (APTR)Radeon3DSubmit,
+    (APTR)Radeon3DTestFence,
+    (APTR)Radeon3DWaitFence,
+    (APTR)Radeon3DImportBitMap,
+    (APTR)Radeon3DReleaseSurface,
+    (APTR)Radeon3DExecute,
+    (APTR)Radeon3DInvalidateForTest,
     (APTR)-1
 };
 
@@ -88,10 +99,26 @@ static struct RadeonChipBase *LibInit(
     base->Library.lib_Version = LIB_VERSION;
     base->Library.lib_Revision = LIB_REVISION;
     base->Library.lib_IdString = (char *)LibIdString;
+    base->Flags = 0;
+    base->Pad = 0;
     base->ExecBase = SysBase;
     base->SegList = segList;
     base->PrometheusBase = NULL;
     base->BoardInfo = NULL;
+    InitSemaphore(&base->ServiceLock);
+    base->ServiceDevices.mlh_Head =
+        (struct MinNode *)&base->ServiceDevices.mlh_Tail;
+    base->ServiceDevices.mlh_Tail = NULL;
+    base->ServiceDevices.mlh_TailPred =
+        (struct MinNode *)&base->ServiceDevices.mlh_Head;
+    base->RetiredServiceDevices.mlh_Head =
+        (struct MinNode *)&base->RetiredServiceDevices.mlh_Tail;
+    base->RetiredServiceDevices.mlh_Tail = NULL;
+    base->RetiredServiceDevices.mlh_TailPred =
+        (struct MinNode *)&base->RetiredServiceDevices.mlh_Head;
+    base->ServiceGeneration = 1;
+    base->ServiceSessions = 0;
+    base->ServiceState = RADEON3D_SERVICE_EMPTY;
     PrometheusBase = NULL;
 
     return base;
@@ -102,7 +129,7 @@ static struct RadeonChipBase *LibOpen(
 {
     struct ExecBase *SysBase = base->ExecBase;
 
-    if (base->Library.lib_OpenCnt == 0) {
+    if (base->Library.lib_OpenCnt == 0 && !base->PrometheusBase) {
         base->PrometheusBase = OpenLibrary(
             (CONST_STRPTR)"prometheus.library", 2);
         if (!base->PrometheusBase)
@@ -123,7 +150,11 @@ static LONG LibClose(__REGA6(struct RadeonChipBase *base))
         return 0;
 
     if (--base->Library.lib_OpenCnt == 0) {
-        RadeonReleaseBoard(base);
+        if (base->ServiceSessions) {
+            base->Library.lib_Flags |= LIBF_DELEXP;
+            return 0;
+        }
+        (void)RadeonReleaseBoard(base, NULL, FALSE);
         if (base->PrometheusBase) {
             CloseLibrary(base->PrometheusBase);
             base->PrometheusBase = NULL;
@@ -143,12 +174,13 @@ static APTR LibExpunge(__REGA6(struct RadeonChipBase *base))
     APTR segList;
     ULONG size;
 
-    if (base->Library.lib_OpenCnt) {
+    if (base->Library.lib_OpenCnt || base->ServiceSessions) {
         base->Library.lib_Flags |= LIBF_DELEXP;
         return NULL;
     }
 
-    RadeonReleaseBoard(base);
+    (void)RadeonReleaseBoard(base, NULL, FALSE);
+    Radeon3DFreeRetiredDevices(base);
     if (base->PrometheusBase) {
         CloseLibrary(base->PrometheusBase);
         base->PrometheusBase = NULL;

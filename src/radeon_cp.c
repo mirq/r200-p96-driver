@@ -14,6 +14,7 @@
 #define CP_MAX_COMMAND_DWORDS 64UL
 #define CP_FENCE_DWORDS       6UL
 #define CP_TIMEOUT_POLLS      100000UL
+#define CP_MAX_FENCE_WAIT_MS  60000UL
 
 #define CP_RB_CNTL_VALUE \
     (17UL | (9UL << 8) | (1UL << 18) | RADEON_RB_NO_UPDATE)
@@ -21,6 +22,10 @@
 #define CP_TEST_BEFORE         0xcafedeadUL
 #define CP_TEST_AFTER          0xdeadbeefUL
 #define CP_CACHE_FLUSH_ALL     0x0000000fUL
+
+#ifdef DEBUG
+#define CP_DEBUG_MAX_DWORDS 4096UL
+#endif
 
 struct RadeonCpState {
     APTR RingMemory;
@@ -33,6 +38,10 @@ struct RadeonCpState {
     UBYTE Ready;
     UBYTE BusConfigured;
     UBYTE StagingStorage[CP_MAX_COMMAND_DWORDS * sizeof(ULONG) + 7UL];
+#ifdef DEBUG
+    ULONG *DebugStaging;
+    ULONG DebugSequence;
+#endif
 };
 
 static BOOL CpWaitGuiIdle(struct BoardInfo *bi)
@@ -182,6 +191,259 @@ static BOOL CpCommit(struct BoardInfo *bi, struct RadeonCpState *state,
     return TRUE;
 }
 
+static ULONG CpStreamDword(const ULONG *commands, ULONG commandCount,
+                           ULONG index, BOOL addFence, ULONG sequence)
+{
+    static const ULONG fenceCommands[CP_FENCE_DWORDS - 1UL] = {
+        RADEON_CP_PACKET0(RADEON_DSTCACHE_CTLSTAT, 0),
+        CP_CACHE_FLUSH_ALL,
+        RADEON_CP_PACKET0(RADEON_WAIT_UNTIL, 0),
+        RADEON_WAIT_2D_IDLECLEAN | RADEON_WAIT_3D_IDLECLEAN |
+            RADEON_WAIT_HOST_IDLECLEAN | RADEON_WAIT_DMA_GUI_IDLE,
+        RADEON_CP_PACKET0(RADEON_SCRATCH_REG0, 0)
+    };
+
+    if (index < commandCount)
+        return commands[index];
+    index -= commandCount;
+    if (addFence && index < CP_FENCE_DWORDS - 1UL)
+        return fenceCommands[index];
+    if (addFence && index == CP_FENCE_DWORDS - 1UL)
+        return sequence;
+    return RADEON_CP_PACKET2;
+}
+
+static BOOL CpCommitStream(struct BoardInfo *bi,
+                           struct RadeonCpState *state,
+                           const ULONG *commands, ULONG commandCount,
+                           BOOL addFence, ULONG sequence)
+{
+    ULONG streamCount = commandCount + (addFence ? CP_FENCE_DWORDS : 0UL);
+    ULONG paddedCount;
+    ULONG firstCount;
+    ULONG remainingCount;
+    ULONG newWritePointer;
+    ULONG lastIndex;
+    ULONG expectedLast;
+    ULONG index;
+    volatile ULONG *ring;
+
+    if (!state || !state->Ready || !commands || !commandCount ||
+        commandCount > RADEON3D_MAX_BATCH_DWORDS)
+        return FALSE;
+    paddedCount = (streamCount + CP_RING_ALIGNMENT - 1UL) &
+                  ~(CP_RING_ALIGNMENT - 1UL);
+    if (!paddedCount || paddedCount >= CP_RING_DWORDS ||
+        !CpReserve(bi, state, paddedCount))
+        return FALSE;
+
+    firstCount = CP_RING_DWORDS - state->WritePointer;
+    if (firstCount > paddedCount)
+        firstCount = paddedCount;
+    remainingCount = paddedCount - firstCount;
+    ring = (volatile ULONG *)state->RingMemory;
+    for (index = 0; index < firstCount; ++index)
+        ring[state->WritePointer + index] = SWAPLONG(CpStreamDword(
+            commands, commandCount, index, addFence, sequence));
+    for (index = 0; index < remainingCount; ++index)
+        ring[index] = SWAPLONG(CpStreamDword(
+            commands, commandCount, firstCount + index,
+            addFence, sequence));
+
+    lastIndex = (state->WritePointer + paddedCount - 1UL) & CP_RING_MASK;
+    expectedLast = CpStreamDword(commands, commandCount, paddedCount - 1UL,
+                                 addFence, sequence);
+    if (SWAPLONG(*(volatile ULONG *)((UBYTE *)state->RingMemory +
+                                    lastIndex * sizeof(ULONG))) != expectedLast)
+        return FALSE;
+
+    newWritePointer = (state->WritePointer + paddedCount) & CP_RING_MASK;
+    if (!RadeonWrite32(bi, RADEON_CP_RB_WPTR, newWritePointer))
+        return FALSE;
+    (void)RadeonRead32(bi, RADEON_CP_RB_WPTR);
+    state->WritePointer = newWritePointer;
+    return TRUE;
+}
+
+#ifdef DEBUG
+
+static ULONG CpDebugCommand(ULONG index, ULONG paddedCount, ULONG sequence)
+{
+    if (index < paddedCount - 2UL)
+        return RADEON_CP_PACKET2;
+    if (index == paddedCount - 2UL)
+        return RADEON_CP_PACKET0(RADEON_SCRATCH_REG1, 0);
+    if (index == paddedCount - 1UL)
+        return sequence;
+    return RADEON_CP_PACKET2;
+}
+
+static BOOL CpDebugCommitNoops(struct BoardInfo *bi,
+                               struct RadeonCpState *state,
+                               ULONG commandCount, BOOL direct,
+                               ULONG sequence)
+{
+    ULONG paddedCount;
+    ULONG firstCount;
+    ULONG remainingCount;
+    ULONG newWritePointer;
+    ULONG lastIndex;
+    ULONG expectedLast;
+    ULONG index;
+    volatile ULONG *ring;
+
+    if (!state || !state->Ready || commandCount < 2UL ||
+        commandCount > CP_DEBUG_MAX_DWORDS ||
+        (!direct && !state->DebugStaging))
+        return FALSE;
+    paddedCount = (commandCount + CP_RING_ALIGNMENT - 1UL) &
+                  ~(CP_RING_ALIGNMENT - 1UL);
+    if (!paddedCount || paddedCount >= CP_RING_DWORDS ||
+        !CpReserve(bi, state, paddedCount))
+        return FALSE;
+
+    firstCount = CP_RING_DWORDS - state->WritePointer;
+    if (firstCount > paddedCount)
+        firstCount = paddedCount;
+    remainingCount = paddedCount - firstCount;
+    ring = (volatile ULONG *)state->RingMemory;
+
+    if (!direct) {
+        for (index = 0; index < paddedCount; ++index)
+            state->DebugStaging[index] =
+                SWAPLONG(CpDebugCommand(index, paddedCount, sequence));
+        for (index = 0; index < firstCount; ++index)
+            ring[state->WritePointer + index] = state->DebugStaging[index];
+        for (index = 0; index < remainingCount; ++index)
+            ring[index] = state->DebugStaging[firstCount + index];
+    } else {
+        for (index = 0; index < firstCount; ++index)
+            ring[state->WritePointer + index] =
+                SWAPLONG(CpDebugCommand(index, paddedCount, sequence));
+        for (index = 0; index < remainingCount; ++index)
+            ring[index] = SWAPLONG(CpDebugCommand(
+                firstCount + index, paddedCount, sequence));
+    }
+
+    lastIndex = (state->WritePointer + paddedCount - 1UL) & CP_RING_MASK;
+    expectedLast = CpDebugCommand(paddedCount - 1UL, paddedCount, sequence);
+    if (SWAPLONG(*(volatile ULONG *)((UBYTE *)state->RingMemory +
+                                    lastIndex * sizeof(ULONG))) != expectedLast)
+        return FALSE;
+
+    newWritePointer = (state->WritePointer + paddedCount) & CP_RING_MASK;
+    if (!RadeonWrite32(bi, RADEON_CP_RB_WPTR, newWritePointer))
+        return FALSE;
+    (void)RadeonRead32(bi, RADEON_CP_RB_WPTR);
+    state->WritePointer = newWritePointer;
+    return TRUE;
+}
+
+BOOL RadeonCpDebugSubmitNoops(struct BoardInfo *bi, ULONG commandCount,
+                               BOOL direct)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+    ULONG sequence;
+    ULONG count;
+
+    if (!data || !data->CpState || !data->CpState->Ready)
+        return FALSE;
+    state = data->CpState;
+    if (!direct && !state->DebugStaging)
+        return FALSE;
+    sequence = ++state->DebugSequence;
+    if (!sequence)
+        sequence = ++state->DebugSequence;
+    if (!CpDebugCommitNoops(bi, state, commandCount, direct, sequence)) {
+        RadeonCpAbort(bi);
+        return FALSE;
+    }
+
+    for (count = 0; count < CP_TIMEOUT_POLLS; ++count) {
+        if (RadeonRead32(bi, RADEON_SCRATCH_REG1) == sequence)
+            return TRUE;
+        RadeonDelayUs(1);
+    }
+    RadeonCpAbort(bi);
+    return FALSE;
+}
+
+static BOOL CpDebugWaitDrained(struct BoardInfo *bi,
+                               struct RadeonCpState *state)
+{
+    ULONG count;
+
+    for (count = 0; count < CP_TIMEOUT_POLLS; ++count) {
+        if ((RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK) ==
+            state->WritePointer)
+            return TRUE;
+        RadeonDelayUs(1);
+    }
+    return FALSE;
+}
+
+BOOL RadeonCpDebugRunTests(struct BoardInfo *bi,
+                           struct RadeonCpDebugResult *result)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+    ULONG command = RADEON_CP_PACKET2;
+    ULONG remaining;
+    ULONG crossingCount;
+
+    if (!data || !data->CpState || !data->CpState->Ready || !result)
+        return FALSE;
+    state = data->CpState;
+
+    if (!RadeonCpSubmit(bi, &command, 1UL))
+        goto fail;
+    result->FirstFence = state->PendingFence;
+    if (!RadeonCpSubmit(bi, &command, 1UL))
+        goto fail;
+    result->SecondFence = state->PendingFence;
+    if (!result->FirstFence || !result->SecondFence ||
+        result->FirstFence == result->SecondFence ||
+        !RadeonCpWait(bi) ||
+        RadeonRead32(bi, RADEON_SCRATCH_REG0) != result->SecondFence)
+        goto fail;
+    result->FenceOrderSuccess = TRUE;
+
+    if (!CpDebugWaitDrained(bi, state))
+        goto fail;
+    result->NearFullSuccess =
+        CpReserve(bi, state, CP_RING_DWORDS - 1UL);
+    result->ReserveTimeoutSuccess =
+        !CpReserve(bi, state, CP_RING_DWORDS);
+    if (!result->NearFullSuccess || !result->ReserveTimeoutSuccess)
+        goto fail;
+
+    remaining = CP_RING_DWORDS - state->WritePointer;
+    while (remaining > CP_DEBUG_MAX_DWORDS) {
+        if (!RadeonCpDebugSubmitNoops(
+                bi, CP_DEBUG_MAX_DWORDS, TRUE))
+            return FALSE;
+        remaining = CP_RING_DWORDS - state->WritePointer;
+    }
+    result->WrapBefore = state->WritePointer;
+    crossingCount = remaining == CP_DEBUG_MAX_DWORDS
+                        ? CP_DEBUG_MAX_DWORDS
+                        : remaining + CP_RING_ALIGNMENT;
+    if (!RadeonCpDebugSubmitNoops(bi, crossingCount, TRUE))
+        return FALSE;
+    result->WrapAfter = state->WritePointer;
+    result->WrapSuccess = result->WrapAfter < result->WrapBefore;
+    if (!result->WrapSuccess)
+        goto fail;
+    return TRUE;
+
+fail:
+    RadeonCpAbort(bi);
+    return FALSE;
+}
+
+#endif
+
 static BOOL CpConfigureRing(struct BoardInfo *bi,
                             struct RadeonCpState *state)
 {
@@ -320,6 +582,10 @@ BOOL RadeonCpInitialize(struct BoardInfo *bi)
     if (!state)
         return FALSE;
     data->CpState = state;
+#ifdef DEBUG
+    state->DebugStaging = AllocMem(
+        CP_DEBUG_MAX_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
+#endif
     state->RingMemory = RadeonAllocatePrivateVram(bi, CP_RING_SIZE);
     if (!state->RingMemory)
         goto fail;
@@ -368,12 +634,50 @@ fail:
     return FALSE;
 }
 
+BOOL RadeonCpRecover(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+
+    if (!data || !data->CpState || !data->Device)
+        return FALSE;
+    state = data->CpState;
+    if (state->Ready)
+        return TRUE;
+
+    state->SavedCommand = PromReadConfigWord(data->Device,
+                                              PROM_PCI_COMMAND);
+    state->SavedBusCntl = RadeonRead32(bi, RADEON_BUS_CNTL);
+    state->BusConfigured = TRUE;
+    PromWriteConfigWord(data->Device,
+                        state->SavedCommand | PROM_PCI_COMMAND_MASTER,
+                        PROM_PCI_COMMAND);
+    if (!(PromReadConfigWord(data->Device, PROM_PCI_COMMAND) &
+          PROM_PCI_COMMAND_MASTER) ||
+        !RadeonWrite32(bi, RADEON_BUS_CNTL,
+                       state->SavedBusCntl & ~RADEON_BUS_MASTER_DIS) ||
+        !CpReset(bi) || !CpLoadMicrocode(bi) ||
+        !CpConfigureRing(bi, state) || !CpRingTest(bi, state)) {
+        CpDisable(bi, state, FALSE);
+        CpRestoreBus(bi, state);
+        RLOG("Radeon9200: R200 CP recovery failed; retaining direct MMIO\n");
+        return FALSE;
+    }
+
+    state->PendingFence = 0;
+    state->NextFence = 1;
+    RLOG("Radeon9200: R200 CP recovered ring=%lx gpu=%lx\n",
+         (ULONG)state->RingMemory, state->RingGpuAddress);
+    return TRUE;
+}
+
 void RadeonCpAbort(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
 
     if (!data || !data->CpState)
         return;
+    Radeon3DInvalidateService(bi);
     CpDisable(bi, data->CpState, FALSE);
     CpRestoreBus(bi, data->CpState);
 }
@@ -392,6 +696,11 @@ void RadeonCpShutdown(struct BoardInfo *bi)
     if (state->RingMemory)
         (void)RadeonFreePrivateVram(bi, state->RingMemory,
                                     CP_RING_SIZE);
+#ifdef DEBUG
+    if (state->DebugStaging)
+        FreeMem(state->DebugStaging,
+                CP_DEBUG_MAX_DWORDS * sizeof(ULONG));
+#endif
     data->CpState = NULL;
     FreeMem(state, sizeof(*state));
 }
@@ -436,6 +745,82 @@ BOOL RadeonCpSubmit(struct BoardInfo *bi, const ULONG *commands,
         return FALSE;
     state->PendingFence = sequence;
     return TRUE;
+}
+
+BOOL RadeonCpSubmitStream(struct BoardInfo *bi, const ULONG *commands,
+                          ULONG commandCount, BOOL addFence,
+                          ULONG *fenceOut)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+    ULONG sequence = 0;
+
+    if (fenceOut)
+        *fenceOut = 0;
+    if (!data || !data->CpState || !data->CpState->Ready ||
+        !commands || !commandCount ||
+        commandCount > RADEON3D_MAX_BATCH_DWORDS)
+        return FALSE;
+    state = data->CpState;
+    if (addFence) {
+        sequence = state->NextFence++;
+        if (!sequence)
+            sequence = state->NextFence++;
+    }
+    if (!CpCommitStream(bi, state, commands, commandCount,
+                        addFence, sequence))
+        return FALSE;
+    if (addFence) {
+        state->PendingFence = sequence;
+        if (fenceOut)
+            *fenceOut = sequence;
+    }
+    return TRUE;
+}
+
+static BOOL CpFenceReached(ULONG current, ULONG fence)
+{
+    return fence && (LONG)(current - fence) >= 0;
+}
+
+BOOL RadeonCpTestFence(struct BoardInfo *bi, ULONG fence)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+    ULONG current;
+
+    if (!data || !data->CpState || !data->CpState->Ready || !fence)
+        return FALSE;
+    state = data->CpState;
+    current = RadeonRead32(bi, RADEON_SCRATCH_REG0);
+    if (!CpFenceReached(current, fence))
+        return FALSE;
+    if (!CpInvalidateHostReadBuffer(bi))
+        return FALSE;
+    if (state->PendingFence &&
+        CpFenceReached(current, state->PendingFence))
+        state->PendingFence = 0;
+    return TRUE;
+}
+
+BOOL RadeonCpWaitFence(struct BoardInfo *bi, ULONG fence,
+                       ULONG timeoutMs)
+{
+    ULONG polls;
+
+    if (!fence)
+        return FALSE;
+    if (!timeoutMs)
+        return RadeonCpTestFence(bi, fence);
+    if (timeoutMs > CP_MAX_FENCE_WAIT_MS)
+        timeoutMs = CP_MAX_FENCE_WAIT_MS;
+    polls = timeoutMs * 1000UL;
+    while (polls--) {
+        if (RadeonCpTestFence(bi, fence))
+            return TRUE;
+        RadeonDelayUs(1);
+    }
+    return FALSE;
 }
 
 BOOL RadeonCpWait(struct BoardInfo *bi)

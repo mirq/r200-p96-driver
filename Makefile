@@ -3,9 +3,15 @@ DEBUG ?= 0
 CC := $(CROSS)gcc
 STRIP := $(CROSS)strip
 
-TARGET := Radeon9200.chip
-CARD_TARGET := Prometheus.card
-BUILD_DIR := build
+ifeq ($(DEBUG),1)
+TARGET ?= Radeon9200-debug.chip
+CARD_TARGET ?= Prometheus-debug.card
+BUILD_DIR ?= build-debug
+else
+TARGET ?= Radeon9200.chip
+CARD_TARGET ?= Prometheus.card
+BUILD_DIR ?= build
+endif
 CARD_BUILD_DIR := $(BUILD_DIR)/prometheus-card
 P96_SCREEN_TEST := $(BUILD_DIR)/p96screen
 P96_OVERLAP_TEST := $(BUILD_DIR)/p96overlap
@@ -21,6 +27,7 @@ SOURCES := \
 	src/dma.c \
 	src/r200_microcode.c \
 	src/radeon_cp.c \
+	src/radeon3d_service.c \
 	src/radeon_debug.c \
 	src/radeon_cursor.c \
 	src/radeon_accel.c \
@@ -82,6 +89,9 @@ CARD_CPPFLAGS := \
 	-I$(CARD_DIR)/proto \
 	-I$(CARD_DIR)/clib \
 	-I$(CARD_DIR)/inline
+ifeq ($(DEBUG),1)
+CARD_CPPFLAGS += -DRADEON3D_DEBUG_CHIP
+endif
 CARD_CFLAGS := \
 	-std=gnu99 \
 	-O2 \
@@ -103,11 +113,54 @@ ifeq ($(DEBUG),1)
 LDLIBS := -ldebug -lc $(LDLIBS)
 endif
 
-.PHONY: all clean tools
+VBCC_ROOT ?= /home/mirek/vbcc
+VBCC_NDK ?= /opt/amiga/m68k-amigaos/ndk-include
+VBCC_INCLUDE := $(VBCC_ROOT)/build/targets/m68k-amigaos/include
+ABI_CHECK_GCC := $(BUILD_DIR)/abi/radeon3d-gcc.o
+ABI_CHECK_VBCC := $(BUILD_DIR)/abi/radeon3d-vbcc.o
+R3D_INFO_TEST := $(BUILD_DIR)/radeon3dinfo
+R3D_PHASE1_TEST := $(BUILD_DIR)/radeon3dphase1
+
+.PHONY: all abi-check clean r3d-tools tools
 
 all: $(TARGET) $(CARD_TARGET)
 
 tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST)
+
+abi-check: $(ABI_CHECK_GCC) $(ABI_CHECK_VBCC)
+
+r3d-tools: $(R3D_INFO_TEST) $(R3D_PHASE1_TEST)
+
+$(ABI_CHECK_GCC): tools/radeon3d_abi_check.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d.h
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -mregparm=4 \
+		-noixemul -Iinclude -I$(P96_DIR)/PrivateInclude -c $< -o $@
+
+$(ABI_CHECK_VBCC): tools/radeon3d_abi_check.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d_protos.h
+	mkdir -p $(dir $@)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
+		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) -c $< -o $@
+
+$(R3D_INFO_TEST): tools/radeon3dinfo.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d_protos.h
+	mkdir -p $(dir $@)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
+		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
+
+$(R3D_PHASE1_TEST): tools/radeon3dphase1.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d_protos.h
+	mkdir -p $(dir $@)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
+		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
 
 $(P96_SCREEN_TEST): tools/p96screen.c
 	mkdir -p $(dir $@)
@@ -143,4 +196,5 @@ $(CARD_BUILD_DIR)/%.o: $(CARD_DIR)/%.c
 -include $(OBJECTS:.o=.d) $(CARD_OBJECTS:.o=.d)
 
 clean:
-	rm -rf build build-debug $(TARGET) $(CARD_TARGET)
+	rm -rf build build-debug Radeon9200.chip Radeon9200-debug.chip \
+		Prometheus.card Prometheus-debug.card

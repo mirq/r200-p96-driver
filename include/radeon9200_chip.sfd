@@ -1,0 +1,26 @@
+==id $Id: radeon9200_chip.sfd $
+==base _Radeon9200Base
+==basetype struct Library*
+==libname Picasso96/Radeon9200.chip
+==bias 30
+==public
+==include <boardinfo.h>
+==include <radeon3d.h>
+==version 1
+BOOL InitChip(struct BoardInfo *bi) (a0)
+BOOL InitRadeonFeatures(struct BoardInfo *bi, ULONG features) (a0,d0)
+==version 2
+struct Radeon3DDevice *Radeon3DOpen(ULONG requestedVersion, struct Radeon3DInfo *info) (d0,a0)
+VOID Radeon3DClose(struct Radeon3DDevice *device) (a0)
+BOOL Radeon3DGetInfo(struct Radeon3DDevice *device, struct Radeon3DInfo *info) (a0,a1)
+==private
+BOOL Radeon3DDetachOwner(struct BoardInfo *bi) (a0)
+==public
+BOOL Radeon3DSubmit(struct Radeon3DDevice *device, const ULONG *commands, ULONG commandCount, ULONG flags, ULONG *fenceOut) (a0,a1,d0,d1,a2)
+BOOL Radeon3DTestFence(struct Radeon3DDevice *device, ULONG fence) (a0,d0)
+BOOL Radeon3DWaitFence(struct Radeon3DDevice *device, ULONG fence, ULONG timeoutMs) (a0,d0,d1)
+BOOL Radeon3DImportBitMap(struct Radeon3DDevice *device, struct BitMap *bitmap, struct Radeon3DSurface *surface) (a0,a1,a2)
+VOID Radeon3DReleaseSurface(struct Radeon3DDevice *device, struct Radeon3DSurface *surface) (a0,a1)
+==version 3
+BOOL Radeon3DExecute(struct Radeon3DDevice *device, const ULONG *records, ULONG recordDwords, ULONG flags, ULONG *fenceOut) (a0,a1,d0,d1,a2)
+==end

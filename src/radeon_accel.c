@@ -289,11 +289,14 @@ static BOOL RestoreEngineState(struct BoardInfo *bi)
 static BOOL RecoverEngine(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    BOOL recoverCp;
 
     if (!data || data->AccelRecoveryTried)
         return FALSE;
+    recoverCp = data->CpState != NULL;
     data->AccelRecoveryTried = TRUE;
     data->AccelPending = RADEON_PENDING_NONE;
+    data->Need2DRestore = FALSE;
     RadeonCpAbort(bi);
 
     if (!ResetEngine(bi) || !RestoreEngineState(bi) ||
@@ -302,6 +305,17 @@ static BOOL RecoverEngine(struct BoardInfo *bi)
         RDEBUG_RECOVERY(FALSE, data->AccelState);
         RLOG("Radeon9200: 2D engine recovery failed\n");
         return FALSE;
+    }
+
+    if (recoverCp && RadeonCpRecover(bi)) {
+        if (Radeon3DRearmService(bi)) {
+            data->AccelState = RADEON_ACCEL_READY;
+            data->AccelRecoveryTried = FALSE;
+            RDEBUG_RECOVERY(TRUE, data->AccelState);
+            RLOG("Radeon9200: 2D/3D engine and CP recovered\n");
+            return TRUE;
+        }
+        RadeonCpAbort(bi);
     }
 
     data->AccelState = RADEON_ACCEL_FALLBACK;
@@ -313,16 +327,48 @@ static BOOL RecoverEngine(struct BoardInfo *bi)
 static BOOL SynchronizeEngine(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    UBYTE pending;
 
     if (!data || !data->AccelPending)
         return !data || data->AccelState != RADEON_ACCEL_UNSAFE;
-    if ((data->AccelPending == RADEON_PENDING_CP && RadeonCpWait(bi)) ||
-        (data->AccelPending == RADEON_PENDING_MMIO &&
-         WaitIdleAndFlush(bi))) {
+    pending = data->AccelPending;
+    if ((pending == RADEON_PENDING_CP && RadeonCpWait(bi) &&
+         RestoreEngineState(bi)) ||
+        (pending == RADEON_PENDING_MMIO && WaitIdleAndFlush(bi))) {
         data->AccelPending = RADEON_PENDING_NONE;
+        data->Need2DRestore = FALSE;
         return TRUE;
     }
     return RecoverEngine(bi);
+}
+
+BOOL RadeonPrepare3D(struct BoardInfo *bi)
+{
+    return SynchronizeEngine(bi);
+}
+
+void RadeonMark3DSubmitted(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (data) {
+        data->Need2DRestore = TRUE;
+        data->AccelPending = RADEON_PENDING_CP;
+    }
+}
+
+BOOL RadeonRecoverAcceleration(struct BoardInfo *bi)
+{
+    return RecoverEngine(bi);
+}
+
+static __inline__ BOOL PrepareMmioEngine(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!data || data->AccelState != RADEON_ACCEL_READY)
+        return FALSE;
+    return !data->Need2DRestore || SynchronizeEngine(bi);
 }
 
 static ULONG HardwareDatatype(RGBFTYPE format, ULONG *bytesPerPixel)
@@ -622,6 +668,8 @@ static BOOL SubmitSolidRect(struct BoardInfo *bi,
                      RADEON_GMC_SRC_DATATYPE_COLOR | rop |
                      RADEON_GMC_CLR_CMP_CNTL_DIS;
     (void)bytesPerPixel;
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     InvalidateLineEngine();
     InvalidateTemplateEngine();
     pen = HardwarePen(pen, format);
@@ -663,6 +711,8 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
     ULONG phaseY = ((pattern->YOffset & 7UL) + 8UL -
                     (destinationY & 7UL)) & 7UL;
     (void)bytesPerPixel;
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     InvalidateLineEngine();
     InvalidateTemplateEngine();
     return WaitFifo(bi, 13) &&
@@ -828,6 +878,8 @@ static BOOL SubmitStagedTemplate(struct BoardInfo *bi,
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
 
     (void)bytesPerPixel;
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     /* Both cached engine states program the same registers this does. */
     InvalidateLineEngine();
     InvalidateTemplateEngine();
@@ -901,6 +953,8 @@ static BOOL SubmitTemplate(struct BoardInfo *bi,
     UWORD row;
 
     (void)bytesPerPixel;
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     InvalidateLineEngine();
     if (!WaitFifo(bi, setupWrites) ||
         (!valid &&
@@ -988,6 +1042,8 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     ULONG direction = 0;
     (void)bytesPerPixel;
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     InvalidateLineEngine();
     InvalidateTemplateEngine();
     srcX = (WORD)(srcX + source->XBias);
@@ -1181,6 +1237,7 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
     InvalidateTemplateEngine();
     data->AccelState = RADEON_ACCEL_OFF;
     data->AccelPending = RADEON_PENDING_NONE;
+    data->Need2DRestore = FALSE;
     data->AccelRecoveryTried = FALSE;
 
     location = (RadeonRead32(bi, RADEON_MC_FB_LOCATION) & 0xffffUL) << 16;
@@ -1240,12 +1297,14 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
     InvalidateLineEngine();
     InvalidateTemplateEngine();
     data->AccelPending = RADEON_PENDING_NONE;
+    data->Need2DRestore = FALSE;
     data->AccelState = RADEON_ACCEL_OFF;
     ReleaseSemaphore(&bi->BoardLock);
 }
 
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi))
 {
+    RDEBUG_BOARD_LOCK(bi);
     RDEBUG_SAMPLE
 
     if (!bi)
@@ -1262,6 +1321,7 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                     __REGD4(ULONG pen), __REGD5(UBYTE mask),
                     __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1323,6 +1383,7 @@ void RadeonInvertRect(__REGA0(struct BoardInfo *bi),
                       __REGD4(UBYTE mask),
                       __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1373,6 +1434,7 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
                        __REGD4(UBYTE mask),
                        __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1439,6 +1501,7 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
                         __REGD4(UBYTE mask),
                         __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1516,6 +1579,7 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
                     __REGD4(WORD width), __REGD5(WORD height),
                     __REGD6(UBYTE mask), __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface source;
@@ -1587,6 +1651,7 @@ void RadeonBlitRectNoMaskComplete(
     __REGD4(WORD width), __REGD5(WORD height),
     __REGD6(UBYTE opcode), __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface source;
@@ -1726,6 +1791,8 @@ static BOOL SubmitLine(struct BoardInfo *bi,
     ULONG entries = 2UL + masterChanged + pitchOffsetChanged +
                     maskChanged + penChanged + (!valid ? 3UL : 0UL);
 
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     InvalidateTemplateEngine();
 
     if (!WaitFifo(bi, entries) ||
@@ -1769,6 +1836,8 @@ static BOOL SubmitSolidAxisRect(struct BoardInfo *bi,
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     BOOL valid = LineEngine.Valid && LineEngine.Board == bi;
 
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
     InvalidateTemplateEngine();
 
     x = (WORD)(x + surface->XBias);
@@ -1815,6 +1884,7 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
                     __REGD0(UBYTE mask),
                     __REGD7(RGBFTYPE format))
 {
+    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct LineSurfaceCache *surface;

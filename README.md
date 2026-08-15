@@ -167,13 +167,15 @@ HWSPRITE=YES
 ```
 
 `BOARDTYPE` selects this card driver. `OUTPUT=VGA` makes the supported output
-explicit, although VGA is also the default. The CP ring is 1 MiB, so `DMASIZE`
-must reserve at least 1 MiB; 2 MiB is the validated setting. `CP=YES` opts into
-CP initialization so the ring remains available for future 3D work. Picasso96
-2D fill, pattern, and copy callbacks use direct MMIO even while the CP is
-active. `HWSPRITE=YES` enables the RV280 64x64 ARGB hardware cursor; allocation
-or initialization failure leaves Picasso96's software cursor active. Hardware
-cursor support is enabled by default; use `HWSPRITE=NO` to disable it explicitly.
+explicit, although VGA is also the default. `DMASIZE` reserves a VRAM-backed
+shared DMA arena solely for peer PCI devices such as RTL8139. The 1 MiB Radeon
+CP ring is a separate private reservation and does not affect `DMASIZE`.
+`CP=YES` opts into CP initialization so the ring remains available for future
+3D work. Picasso96 2D fill, pattern, and copy callbacks use direct MMIO even
+while the CP is active. `HWSPRITE=YES` enables the RV280 64x64 ARGB hardware
+cursor; allocation or initialization failure leaves Picasso96's software cursor
+active. Hardware cursor support is enabled by default; use `HWSPRITE=NO` to
+disable it explicitly.
 
 To create the icon, copy a valid Picasso96 monitor icon to
 `DEVS:Monitors/Radeon.info`, then use Workbench **Information** to preserve its
@@ -203,6 +205,12 @@ round up to 4096 bytes and must leave at least 4 MiB for Picasso96. The reserved
 tail is published by `Prometheus.card` through its DMA allocation vectors for
 peer PCI devices; Radeon-private cursor and CP storage is allocated separately
 below it.
+
+If another PCI driver requests DMA before Picasso96 initializes the Radeon,
+`Prometheus.card` creates its 2 MiB early arena first. A smaller positive
+`DMASIZE` request accepts that existing arena and excludes the full 2 MiB from
+Picasso96. This keeps boot order from deciding whether Radeon initialization
+succeeds while preserving every allocation the earlier client may already hold.
 
 ## First Hardware Test
 

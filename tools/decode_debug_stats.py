@@ -6,7 +6,7 @@ Finding the block from the host:
     1. read the longword at 0x00000004                  -> SysBase
     2. read 16 bytes at SysBase + 392                   -> exec PortList,
                                                            lh_Type must be 4
-    3. walk ln_Succ from lh_Head, reading 240 bytes per node, until the
+    3. walk ln_Succ from lh_Head, reading 652 bytes per node, until the
        magic 'R92D' appears at node + 34 (= sizeof(struct MsgPort))
 
 Then paste the dump here:
@@ -77,6 +77,28 @@ FIELDS.extend([
     "CompleteDefaultMaxTicks",
 ])
 
+# Version 12
+FIELDS.extend([
+    "VramSmallBytes", "VramSmallTicks", "VramBurstBytes",
+    "VramBurstTicks", "VramDrainValue",
+])
+
+# Version 13
+FIELDS.extend([
+    "CpProbeDwords", "CpBufferedTicks", "CpDirectTicks",
+    "CpBufferedSuccess", "CpDirectSuccess",
+])
+
+# Version 14
+FIELDS.extend([
+    "CpWrapBefore", "CpWrapAfter", "CpWrapSuccess",
+    "CpNearFullSuccess", "CpReserveTimeoutSuccess", "CpFirstFence",
+    "CpSecondFence", "CpFenceOrderSuccess", "BoardLockChecks",
+    "BoardLockOwned", "BoardLockOwnedByOther",
+])
+
+KNOWN_VERSION = 14
+
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
 
@@ -108,7 +130,14 @@ def main():
         ">%dI" % len(names), data, start)))
     if len(names) < len(FIELDS):
         print("# note: dump holds %d of %d fields\n" % (len(names),
-                                                        len(FIELDS)))
+                                                         len(FIELDS)))
+    elif available > len(FIELDS):
+        print("# note: dump has %d unknown trailing fields\n" %
+              (available - len(FIELDS)))
+
+    if values.get("Version", 0) > KNOWN_VERSION:
+        print("# warning: stats version %d is newer than decoder version %d\n" %
+              (values["Version"], KNOWN_VERSION))
 
     for name in names:
         print("%-16s %10d  0x%08X" % (name, values[name], values[name]))
@@ -139,6 +168,38 @@ def main():
         mmio = per(values["MmioWriteTicks"], samples)
         print("VRAM write         %7.2f us  (%.1fx cheaper than an MMIO write)"
               % (vram, mmio / vram if vram else 0.0))
+    for label, byte_field, tick_field in (
+            ("VRAM small", "VramSmallBytes", "VramSmallTicks"),
+            ("VRAM burst", "VramBurstBytes", "VramBurstTicks")):
+        byte_count = values.get(byte_field, 0)
+        ticks = values.get(tick_field, 0)
+        if byte_count and ticks:
+            mibps = byte_count * rate / float(ticks) / (1024.0 * 1024.0)
+            print("%-18s %7.2f MiB/s  (%d bytes, %.2f us)" %
+                  (label, mibps, byte_count, ticks * us))
+    if values.get("CpProbeDwords"):
+        print("CP buffered        %7.2f us  success=%d" %
+              (values.get("CpBufferedTicks", 0) * us,
+               values.get("CpBufferedSuccess", 0)))
+        print("CP direct          %7.2f us  success=%d" %
+              (values.get("CpDirectTicks", 0) * us,
+               values.get("CpDirectSuccess", 0)))
+    if "CpWrapSuccess" in values:
+        print("CP wrap            success=%d  wptr=%d -> %d" %
+              (values["CpWrapSuccess"], values["CpWrapBefore"],
+               values["CpWrapAfter"]))
+        print("CP reserve         near-full=%d timeout=%d" %
+              (values["CpNearFullSuccess"],
+               values["CpReserveTimeoutSuccess"]))
+        print("CP fence order     success=%d  %d -> %d" %
+              (values["CpFenceOrderSuccess"], values["CpFirstFence"],
+               values["CpSecondFence"]))
+        checks = values["BoardLockChecks"]
+        unowned = max(checks - values["BoardLockOwned"] -
+                      values["BoardLockOwnedByOther"], 0)
+        print("BoardLock          checks=%d current=%d other=%d unowned=%d" %
+              (checks, values["BoardLockOwned"],
+               values["BoardLockOwnedByOther"], unowned))
 
     # Each sampled interval brackets the work with two ReadEClock calls and so
     # carries roughly one call's latency; subtract it before reporting.
