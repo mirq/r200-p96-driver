@@ -540,3 +540,43 @@ SHA-256=23798364612f9c82f139ff25058ecaf43e0ebcc8d81e10028c39bcdb399500dd
 Work:phase6_acceptance size=18924 CRC32=8235AD1C
 SHA-256=f05d39f3bf5fb51502d994fb19e4a6ea4144dbb7a481345294d7e27ae0bd4558
 ```
+
+## Interface 6 Color Targets
+
+Interface 6 advertises `RADEON3D_CAP_COLOR_TARGET_FORMATS`. The semantic clear
+and draw paths now derive RB3D format and pixel pitch from imported CLUT8,
+R5G6B5PC or B8G8R8A8 targets. CLUT8 is interpreted as direct RGB332 and uses
+R200 output dithering; interface-5 sessions remain restricted to RGB565 color
+targets. The raw interface-v1 immediate packet validator is unchanged and
+remains RGB565-only.
+
+The independent MiniGL frontend accepts `mglChoosePixelDepth(8|16|32)`, retains
+D16 depth independently of color depth, reports the selected format through
+`mglLockBack()`, and reallocates window targets without falling back through
+RGB565. Eight-bit rendering is fullscreen-only and installs a private 3-3-2
+palette; arbitrary public-screen CLUT palettes cannot represent RGB332 without
+per-frame CPU remapping.
+
+Physical RV280 `5964` verification on 16 August 2026 passed semantic triangles,
+exact RGB565/BGRX32 readback, bounded dithered RGB332 readback, and the legacy
+interface-5 rejection check:
+
+```text
+R3DFORMAT depth=8 format=3 pitch=320 sample=0000004f
+R3DFORMAT depth=16 format=1 pitch=640 sample=00003933
+R3DFORMAT depth=32 format=2 pitch=1280 sample=cc663300
+R3DFORMATS status=ok result=0 legacy_v5=rejected
+MINIGL_PHASE6_ACCEPT depth=8 fullscreen_resize=rejected
+MINIGL_PHASE6_ACCEPT depth=16 fullscreen_resize=rejected
+MINIGL_PHASE6_ACCEPT depth=32 fullscreen_resize=rejected
+MINIGL_PHASE6_ACCEPT depth=32 arrays=pass fastpath=v2 window=move,overlap resize=pass batch_budget=pass context_loss=recovered fullscreen=not-run
+```
+
+The B8G8R8A8 display format's fourth byte is unused by Picasso96 and read back
+as zero, so the validated 32-bit target is BGRX32 rather than an alpha-bearing
+offscreen framebuffer. Installed artifacts are:
+
+```text
+LIBS:Picasso96/Radeon9200.chip size=49584 CRC32=C4966B3E
+LIBS:minigl.library size=39400 CRC32=C4FAD297
+```

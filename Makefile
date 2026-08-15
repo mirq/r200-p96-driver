@@ -120,6 +120,7 @@ ABI_CHECK_GCC := $(BUILD_DIR)/abi/radeon3d-gcc.o
 ABI_CHECK_VBCC := $(BUILD_DIR)/abi/radeon3d-vbcc.o
 R3D_INFO_TEST := $(BUILD_DIR)/radeon3dinfo
 R3D_PHASE1_TEST := $(BUILD_DIR)/radeon3dphase1
+R3D_FORMATS_TEST := $(BUILD_DIR)/radeon3dformats
 
 .PHONY: all abi-check clean r3d-tools tools
 
@@ -129,7 +130,7 @@ tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST)
 
 abi-check: $(ABI_CHECK_GCC) $(ABI_CHECK_VBCC)
 
-r3d-tools: $(R3D_INFO_TEST) $(R3D_PHASE1_TEST)
+r3d-tools: $(R3D_INFO_TEST) $(R3D_PHASE1_TEST) $(R3D_FORMATS_TEST)
 
 $(ABI_CHECK_GCC): tools/radeon3d_abi_check.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
@@ -155,6 +156,14 @@ $(R3D_INFO_TEST): tools/radeon3dinfo.c include/radeon3d.h \
 		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
 
 $(R3D_PHASE1_TEST): tools/radeon3dphase1.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d_protos.h
+	mkdir -p $(dir $@)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
+		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
+
+$(R3D_FORMATS_TEST): tools/radeon3dformats.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
 		include/inline/radeon3d_protos.h
 	mkdir -p $(dir $@)

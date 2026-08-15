@@ -149,6 +149,8 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     if (interfaceVersion >= 5UL)
         info->Caps |= RADEON3D_CAP_PHASE6_FOG_MULTITEX |
                       RADEON3D_CAP_TEST_INVALIDATE;
+    if (interfaceVersion >= 6UL)
+        info->Caps |= RADEON3D_CAP_COLOR_TARGET_FORMATS;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -463,14 +465,41 @@ static struct Radeon3DSurfaceHandle *ExecuteSurface(
     return FindSurfaceHandle(device, (APTR)handleValue);
 }
 
-static BOOL ValidColorTarget(struct Radeon3DSurfaceHandle *surface)
+static ULONG SurfaceBytesPerPixel(const struct Radeon3DSurfaceHandle *surface)
 {
-    return surface && surface->Format == RADEON3D_FORMAT_R5G6B5PC &&
+    if (!surface)
+        return 0;
+    if (surface->Format == RADEON3D_FORMAT_CLUT8)
+        return 1UL;
+    if (surface->Format == RADEON3D_FORMAT_R5G6B5PC)
+        return 2UL;
+    if (surface->Format == RADEON3D_FORMAT_B8G8R8A8)
+        return 4UL;
+    return 0;
+}
+
+static ULONG ColorTargetControl(const struct Radeon3DSurfaceHandle *surface)
+{
+    if (surface->Format == RADEON3D_FORMAT_CLUT8)
+        return R200_COLOR_FORMAT_RGB332 | R200_DITHER_ENABLE;
+    if (surface->Format == RADEON3D_FORMAT_B8G8R8A8)
+        return R200_COLOR_FORMAT_ARGB8888;
+    return R200_COLOR_FORMAT_RGB565;
+}
+
+static BOOL ValidColorTarget(struct Radeon3DDevice *device,
+                             struct Radeon3DSurfaceHandle *surface)
+{
+    ULONG bytesPerPixel = SurfaceBytesPerPixel(surface);
+
+    return surface && bytesPerPixel &&
+           (surface->Format == RADEON3D_FORMAT_R5G6B5PC ||
+            device->InterfaceVersion >= 6UL) &&
            !(surface->GpuAddress & ~R200_COLOROFFSET_MASK) &&
            surface->Width && surface->Width <= 65536UL &&
            surface->Height && surface->Height <= 65536UL &&
-           !(surface->Pitch & 1UL) &&
-           !((surface->Pitch / 2UL) & ~R200_COLORPITCH_MASK);
+           !(surface->Pitch % bytesPerPixel) &&
+           !((surface->Pitch / bytesPerPixel) & ~R200_COLORPITCH_MASK);
 }
 
 static BOOL ExecuteSurfacesOverlap(struct Radeon3DSurfaceHandle *first,
@@ -483,9 +512,10 @@ static BOOL ExecuteSurfacesOverlap(struct Radeon3DSurfaceHandle *first,
 
     if (!first || !second)
         return FALSE;
-    firstBytesPerPixel = first->Format == RADEON3D_FORMAT_B8G8R8A8 ? 4UL : 2UL;
-    secondBytesPerPixel =
-        second->Format == RADEON3D_FORMAT_B8G8R8A8 ? 4UL : 2UL;
+    firstBytesPerPixel = SurfaceBytesPerPixel(first);
+    secondBytesPerPixel = SurfaceBytesPerPixel(second);
+    if (!firstBytesPerPixel || !secondBytesPerPixel)
+        return TRUE;
     firstBytes = (first->Height - 1UL) * first->Pitch +
                  first->Width * firstBytesPerPixel;
     secondBytes = (second->Height - 1UL) * second->Pitch +
@@ -688,7 +718,7 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
     ULONG format0 = R200_VTX_PK_RGBA << R200_VTX_COLOR_0_SHIFT;
     ULONG format1 = 0;
     ULONG ppControl = R200_TEX_BLEND_0_ENABLE;
-    ULONG rbControl = R200_COLOR_FORMAT_RGB565;
+    ULONG rbControl = ColorTargetControl(color);
     ULONG blendControl = R200_SRC_BLEND_GL_ONE | R200_DST_BLEND_GL_ZERO;
     ULONG ppMisc = R200_ALPHA_TEST_ALWAYS;
     ULONG zControl = R200_DEPTH_FORMAT_16BIT_INT_Z |
@@ -874,7 +904,7 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
            ExecuteEmitRegister(emitter, R200_RB3D_COLOROFFSET,
                                color->GpuAddress) &&
            ExecuteEmitRegister(emitter, R200_RB3D_COLORPITCH,
-                               color->Pitch / 2UL);
+                               color->Pitch / SurfaceBytesPerPixel(color));
 }
 
 static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
@@ -950,7 +980,7 @@ static BOOL EmitExecuteClear(struct Radeon3DDevice *device,
     depth = ExecuteSurface(device, record[3]);
     clearMask = record[4];
     if (!clearMask || (clearMask & ~RADEON3D_CLEAR_MASK) ||
-        !ValidColorTarget(color) ||
+        !ValidColorTarget(device, color) ||
         ((clearMask & RADEON3D_CLEAR_DEPTH) &&
          (!ValidDepthTarget(depth, color) || !ValidUnitFloat(record[6]))) ||
         (!(clearMask & RADEON3D_CLEAR_DEPTH) && record[3]) ||
@@ -1089,7 +1119,7 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
         vertexCount < 3UL || vertexCount > RADEON3D_IMMD_MAX_VERTICES ||
         vertexCount % 3UL ||
         length != headerDwords + vertexCount * vertexStride ||
-        !ValidColorTarget(color) ||
+        !ValidColorTarget(device, color) ||
         (useDepth ? !ValidDepthTarget(depth, color) : record[3] != 0) ||
         (textured ? (stateV4
                          ? !ValidTextureTargetV4(texture, color, depth,
@@ -1512,6 +1542,8 @@ BOOL Radeon3DWaitFence(
 
 static ULONG PublicSurfaceFormat(RGBFTYPE format, ULONG bytesPerPixel)
 {
+    if (format == RGBFB_CLUT && bytesPerPixel == 1)
+        return RADEON3D_FORMAT_CLUT8;
     if (format == RGBFB_R5G6B5PC && bytesPerPixel == 2)
         return RADEON3D_FORMAT_R5G6B5PC;
     if (format == RGBFB_B8G8R8A8 && bytesPerPixel == 4)

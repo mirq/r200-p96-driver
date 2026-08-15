@@ -46,8 +46,10 @@ ABI_CHECK(Radeon3DPhase6Capability,
            RADEON3D_CAP_PHASE6_FOG_MULTITEX == (1UL << 10));
 ABI_CHECK(Radeon3DTestInvalidateCapability,
           RADEON3D_CAP_TEST_INVALIDATE == (1UL << 11));
+ABI_CHECK(Radeon3DColorTargetCapability,
+          RADEON3D_CAP_COLOR_TARGET_FORMATS == (1UL << 12));
 ABI_CHECK(Radeon3DInterfaceVersion,
-          RADEON3D_IFACE_VERSION == 5UL);
+          RADEON3D_IFACE_VERSION == 6UL);
 ABI_CHECK(Radeon3DV4Options,
           RADEON3D_DRAW_OPTIONS_V4 == 0x000001ffUL);
 ABI_CHECK(Radeon3DV4StateOption,

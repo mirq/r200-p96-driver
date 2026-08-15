@@ -246,6 +246,9 @@
 #define R200_RE_CNTL                        0x1c50UL
 #define R200_RB3D_PLANEMASK                 0x1d84UL
 #define R200_COLOR_FORMAT_RGB565            (4UL << 10)
+#define R200_COLOR_FORMAT_ARGB8888          (6UL << 10)
+#define R200_COLOR_FORMAT_RGB332            (7UL << 10)
+#define R200_DITHER_ENABLE                  (1UL << 2)
 #define R200_ALPHA_BLEND_ENABLE              (1UL << 0)
 #define R200_Z_ENABLE                        (1UL << 8)
 #define R200_SE_VAP_CNTL                    0x2080UL

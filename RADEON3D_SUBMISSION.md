@@ -87,12 +87,16 @@ IEEE-754 depth in [0,1]
 left, top, right-exclusive, bottom-exclusive
 ```
 
-The color target is a live session-owned imported RGB565 surface. A depth
-clear requires a distinct, non-overlapping imported RGB565 surface with the
-same dimensions and a representable D16 pitch. A color-only clear requires a
-zero depth handle. The scissor must be nonempty and contained by the target.
-The service emits two triangles with fixed replace blending; depth clear uses
-D16, `ALWAYS`, and depth writes.
+The color target is a live session-owned imported RGB565 surface. Interface-v6
+clients with `RADEON3D_CAP_COLOR_TARGET_FORMATS` may also use imported CLUT8
+surfaces as RGB332 targets and imported B8G8R8A8 surfaces as ARGB8888 targets.
+The service derives color format and pixel pitch from the imported surface;
+RGB332 output uses hardware dithering. A depth clear requires a distinct,
+non-overlapping imported RGB565 surface with the same dimensions and a
+representable D16 pitch. A color-only clear requires a zero depth handle. The
+scissor must be nonempty and contained by the target. The service emits two
+triangles with fixed replace blending; depth clear uses D16, `ALWAYS`, and
+depth writes.
 
 ### Triangle record
 
