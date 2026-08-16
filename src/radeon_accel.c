@@ -159,15 +159,11 @@ static __inline__ BOOL AccelWriteHostData(struct BoardInfo *bi, ULONG reg,
 #define RadeonWrite32(bi, reg, value) \
     AccelWrite32((bi), (reg), (value))
 
-static BOOL SetEngineState(struct BoardInfo *bi, ULONG index,
-                           ULONG reg, ULONG value)
+static __inline__ __attribute__((always_inline)) BOOL SetEngineState(
+    struct BoardInfo *bi, ULONG index, ULONG reg, ULONG value)
 {
     ULONG bit = 1UL << index;
 
-    if (EngineState.Board != bi) {
-        InvalidateEngineState();
-        EngineState.Board = bi;
-    }
     if ((EngineState.ValidMask & bit) && EngineState.Value[index] == value)
         return TRUE;
     if (!RadeonWrite32(bi, reg, value)) {
@@ -289,6 +285,7 @@ static BOOL ResetEngine(struct BoardInfo *bi)
 static BOOL RestoreEngineState(struct BoardInfo *bi)
 {
     InvalidateEngineState();
+    BeginEnginePath(bi, FALSE);
     /* All later HDP invalidates restore this driver-owned baseline. */
     return RadeonWrite32(bi, RADEON_HOST_PATH_CNTL, 0) &&
            RadeonWrite32(bi, RADEON_RB3D_CNTL, 0) &&
@@ -1083,6 +1080,12 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                    RADEON_DP_SRC_SOURCE_MEMORY |
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
     ULONG direction = 0;
+    ULONG stateMask = (1UL << ENGINE_MASTER) |
+                      (1UL << ENGINE_WRITE_MASK) |
+                      (1UL << ENGINE_DP_CNTL) |
+                      (1UL << ENGINE_SRC_PITCH_OFFSET) |
+                      (1UL << ENGINE_DST_PITCH_OFFSET);
+    BOOL stateReady;
     (void)bytesPerPixel;
     if (!PrepareMmioEngine(bi))
         return FALSE;
@@ -1105,23 +1108,34 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
         srcY = (WORD)(srcY + height - 1);
         dstY = (WORD)(dstY + height - 1);
     }
+    stateReady = (EngineState.ValidMask & stateMask) == stateMask &&
+                 EngineState.Value[ENGINE_MASTER] == master &&
+                 EngineState.Value[ENGINE_WRITE_MASK] == writeMask &&
+                 EngineState.Value[ENGINE_DP_CNTL] == direction &&
+                 EngineState.Value[ENGINE_SRC_PITCH_OFFSET] ==
+                     source->PitchOffset &&
+                 EngineState.Value[ENGINE_DST_PITCH_OFFSET] ==
+                     destination->PitchOffset;
 
     return WaitFifo(bi, 10) &&
-           SetEngineState(bi, ENGINE_MASTER,
-                          RADEON_DP_GUI_MASTER_CNTL, master) &&
-           SetEngineState(bi, ENGINE_WRITE_MASK,
-                          RADEON_DP_WRITE_MASK, writeMask) &&
-           SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL, direction) &&
+           (stateReady ||
+            (SetEngineState(bi, ENGINE_MASTER,
+                            RADEON_DP_GUI_MASTER_CNTL, master) &&
+             SetEngineState(bi, ENGINE_WRITE_MASK,
+                            RADEON_DP_WRITE_MASK, writeMask) &&
+             SetEngineState(bi, ENGINE_DP_CNTL,
+                            RADEON_DP_CNTL, direction) &&
+             SetEngineState(bi, ENGINE_SRC_PITCH_OFFSET,
+                            RADEON_SRC_PITCH_OFFSET,
+                            source->PitchOffset) &&
+             SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
+                            RADEON_DST_PITCH_OFFSET,
+                            destination->PitchOffset))) &&
            RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
                           RADEON_RB2D_DC_FLUSH_ALL) &&
            RadeonWrite32(bi, RADEON_WAIT_UNTIL,
                           RADEON_WAIT_2D_IDLECLEAN |
                               RADEON_WAIT_DMA_GUI_IDLE) &&
-           SetEngineState(bi, ENGINE_SRC_PITCH_OFFSET,
-                          RADEON_SRC_PITCH_OFFSET, source->PitchOffset) &&
-           SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
-                          RADEON_DST_PITCH_OFFSET,
-                          destination->PitchOffset) &&
            RadeonWrite32(bi, RADEON_SRC_Y_X,
                          ((ULONG)(UWORD)srcY << 16) | (UWORD)srcX) &&
            RadeonWrite32(bi, RADEON_DST_Y_X,
@@ -1823,25 +1837,49 @@ static BOOL SubmitLine(struct BoardInfo *bi,
                        ULONG start, ULONG end, ULONG pen,
                        ULONG writeMask, ULONG master)
 {
+    ULONG stateMask = (1UL << ENGINE_MASTER) |
+                      (1UL << ENGINE_DST_PITCH_OFFSET) |
+                      (1UL << ENGINE_WRITE_MASK) |
+                      (1UL << ENGINE_BRUSH_FG) |
+                      (1UL << ENGINE_DP_CNTL) |
+                      (1UL << ENGINE_SC_TOP_LEFT) |
+                      (1UL << ENGINE_SC_BOTTOM_RIGHT);
+    BOOL stateReady;
+
     if (!PrepareMmioEngine(bi))
         return FALSE;
     BeginEnginePath(bi, FALSE);
+    stateReady = (EngineState.ValidMask & stateMask) == stateMask &&
+                 EngineState.Value[ENGINE_MASTER] == master &&
+                 EngineState.Value[ENGINE_DST_PITCH_OFFSET] ==
+                     surface->PitchOffset &&
+                 EngineState.Value[ENGINE_WRITE_MASK] == writeMask &&
+                 EngineState.Value[ENGINE_BRUSH_FG] == pen &&
+                 EngineState.Value[ENGINE_DP_CNTL] ==
+                     (RADEON_DST_X_LEFT_TO_RIGHT |
+                      RADEON_DST_Y_TOP_TO_BOTTOM) &&
+                 EngineState.Value[ENGINE_SC_TOP_LEFT] == 0 &&
+                 EngineState.Value[ENGINE_SC_BOTTOM_RIGHT] ==
+                     RADEON_SCISSOR_MAX;
 
     if (!WaitFifo(bi, 9) ||
-        !SetEngineState(bi, ENGINE_MASTER,
-                        RADEON_DP_GUI_MASTER_CNTL, master) ||
-        !SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
-                        RADEON_DST_PITCH_OFFSET, surface->PitchOffset) ||
-        !SetEngineState(bi, ENGINE_WRITE_MASK,
-                        RADEON_DP_WRITE_MASK, writeMask) ||
-        !SetEngineState(bi, ENGINE_BRUSH_FG,
-                        RADEON_DP_BRUSH_FRGD_CLR, pen) ||
-        !SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL,
-                        RADEON_DST_X_LEFT_TO_RIGHT |
-                        RADEON_DST_Y_TOP_TO_BOTTOM) ||
-        !SetEngineState(bi, ENGINE_SC_TOP_LEFT, RADEON_SC_TOP_LEFT, 0) ||
-        !SetEngineState(bi, ENGINE_SC_BOTTOM_RIGHT,
-                        RADEON_SC_BOTTOM_RIGHT, RADEON_SCISSOR_MAX) ||
+        (!stateReady &&
+         (!SetEngineState(bi, ENGINE_MASTER,
+                          RADEON_DP_GUI_MASTER_CNTL, master) ||
+          !SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
+                          RADEON_DST_PITCH_OFFSET, surface->PitchOffset) ||
+          !SetEngineState(bi, ENGINE_WRITE_MASK,
+                          RADEON_DP_WRITE_MASK, writeMask) ||
+          !SetEngineState(bi, ENGINE_BRUSH_FG,
+                          RADEON_DP_BRUSH_FRGD_CLR, pen) ||
+          !SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL,
+                          RADEON_DST_X_LEFT_TO_RIGHT |
+                          RADEON_DST_Y_TOP_TO_BOTTOM) ||
+          !SetEngineState(bi, ENGINE_SC_TOP_LEFT,
+                          RADEON_SC_TOP_LEFT, 0) ||
+          !SetEngineState(bi, ENGINE_SC_BOTTOM_RIGHT,
+                          RADEON_SC_BOTTOM_RIGHT,
+                          RADEON_SCISSOR_MAX))) ||
         !RadeonWrite32(bi, RADEON_DST_LINE_START, start) ||
         !RadeonWrite32(bi, RADEON_DST_LINE_END, end))
         return FALSE;
@@ -1857,30 +1895,49 @@ static BOOL SubmitSolidAxisRect(struct BoardInfo *bi,
                    RADEON_GMC_BRUSH_SOLID_COLOR | surface->Datatype |
                    RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
                    RADEON_GMC_CLR_CMP_CNTL_DIS;
+    ULONG stateMask = (1UL << ENGINE_MASTER) |
+                      (1UL << ENGINE_DST_PITCH_OFFSET) |
+                      (1UL << ENGINE_WRITE_MASK) |
+                      (1UL << ENGINE_BRUSH_FG) |
+                      (1UL << ENGINE_DP_CNTL) |
+                      (1UL << ENGINE_SC_TOP_LEFT) |
+                      (1UL << ENGINE_SC_BOTTOM_RIGHT);
+    BOOL stateReady;
     if (!PrepareMmioEngine(bi))
         return FALSE;
     BeginEnginePath(bi, FALSE);
+    stateReady = (EngineState.ValidMask & stateMask) == stateMask &&
+                 EngineState.Value[ENGINE_MASTER] == master &&
+                 EngineState.Value[ENGINE_DST_PITCH_OFFSET] ==
+                     surface->PitchOffset &&
+                 EngineState.Value[ENGINE_WRITE_MASK] == writeMask &&
+                 EngineState.Value[ENGINE_BRUSH_FG] == pen &&
+                 EngineState.Value[ENGINE_DP_CNTL] ==
+                     (RADEON_DST_X_LEFT_TO_RIGHT |
+                      RADEON_DST_Y_TOP_TO_BOTTOM) &&
+                 EngineState.Value[ENGINE_SC_TOP_LEFT] == 0 &&
+                 EngineState.Value[ENGINE_SC_BOTTOM_RIGHT] ==
+                     RADEON_SCISSOR_MAX;
 
     x = (WORD)(x + surface->XBias);
     y = (WORD)(y + surface->YBias);
-    if (!SetEngineState(bi, ENGINE_MASTER,
-                        RADEON_DP_GUI_MASTER_CNTL, master))
-        return FALSE;
-    if (!SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
-                        RADEON_DST_PITCH_OFFSET, surface->PitchOffset))
-        return FALSE;
-    if (!SetEngineState(bi, ENGINE_WRITE_MASK,
-                        RADEON_DP_WRITE_MASK, writeMask))
-        return FALSE;
-    if (!SetEngineState(bi, ENGINE_BRUSH_FG,
-                        RADEON_DP_BRUSH_FRGD_CLR, pen))
-        return FALSE;
-    if (!SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL,
-                        RADEON_DST_X_LEFT_TO_RIGHT |
-                        RADEON_DST_Y_TOP_TO_BOTTOM) ||
-        !SetEngineState(bi, ENGINE_SC_TOP_LEFT, RADEON_SC_TOP_LEFT, 0) ||
-        !SetEngineState(bi, ENGINE_SC_BOTTOM_RIGHT,
-                        RADEON_SC_BOTTOM_RIGHT, RADEON_SCISSOR_MAX))
+    if (!stateReady &&
+        (!SetEngineState(bi, ENGINE_MASTER,
+                         RADEON_DP_GUI_MASTER_CNTL, master) ||
+         !SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
+                         RADEON_DST_PITCH_OFFSET, surface->PitchOffset) ||
+         !SetEngineState(bi, ENGINE_WRITE_MASK,
+                         RADEON_DP_WRITE_MASK, writeMask) ||
+         !SetEngineState(bi, ENGINE_BRUSH_FG,
+                         RADEON_DP_BRUSH_FRGD_CLR, pen) ||
+         !SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL,
+                         RADEON_DST_X_LEFT_TO_RIGHT |
+                         RADEON_DST_Y_TOP_TO_BOTTOM) ||
+         !SetEngineState(bi, ENGINE_SC_TOP_LEFT,
+                         RADEON_SC_TOP_LEFT, 0) ||
+         !SetEngineState(bi, ENGINE_SC_BOTTOM_RIGHT,
+                         RADEON_SC_BOTTOM_RIGHT,
+                         RADEON_SCISSOR_MAX)))
         return FALSE;
     if (!RadeonWrite32(bi, RADEON_DST_Y_X,
                        ((ULONG)(UWORD)y << 16) | (UWORD)x) ||
