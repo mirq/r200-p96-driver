@@ -193,8 +193,11 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     if (interfaceVersion >= 4UL)
         info->Caps |= RADEON3D_CAP_PHASE5_TEXTURE_STATE;
     if (interfaceVersion >= 5UL)
-        info->Caps |= RADEON3D_CAP_PHASE6_FOG_MULTITEX |
-                      RADEON3D_CAP_TEST_INVALIDATE;
+        info->Caps |= RADEON3D_CAP_PHASE6_FOG_MULTITEX;
+#ifdef DEBUG
+    if (interfaceVersion >= 5UL)
+        info->Caps |= RADEON3D_CAP_TEST_INVALIDATE;
+#endif
     if (interfaceVersion >= 6UL)
         info->Caps |= RADEON3D_CAP_COLOR_TARGET_FORMATS;
     if (interfaceVersion >= 7UL)
@@ -1375,6 +1378,11 @@ BOOL Radeon3DInvalidateForTest(
     __REGA0(struct Radeon3DDevice *device),
     __REGA6(struct RadeonChipBase *base))
 {
+#ifndef DEBUG
+    (void)device;
+    (void)base;
+    return FALSE;
+#else
     struct ExecBase *SysBase = base ? base->ExecBase : NULL;
     struct BoardInfo *bi;
     BOOL recovered;
@@ -1387,6 +1395,7 @@ BOOL Radeon3DInvalidateForTest(
     recovered = RadeonRecoverAcceleration(bi);
     UnlockServiceBoard(base, bi, device);
     return recovered;
+#endif
 }
 
 struct Radeon3DDevice *Radeon3DOpen(

@@ -214,8 +214,11 @@ Interface-v1 sessions cannot call `Radeon3DExecute()` and do not receive its
 capability. Fence tokens are accepted only by the session that most recently
 received them.
 
-Interface-v5 diagnostic clients may use `Radeon3DInvalidateForTest()` when
-`RADEON3D_CAP_TEST_INVALIDATE` is present. It exercises the production recovery
-sequence: invalidate existing sessions, reset the engine, reload and test the
-CP, then re-arm the service. Existing sessions remain stale after a successful
-recovery, so clients must reopen and reimport their resources.
+Interface-v5 diagnostic clients may use `Radeon3DInvalidateForTest()` only when
+`RADEON3D_CAP_TEST_INVALIDATE` is present. The capability is advertised only by
+`DEBUG` builds. The vector remains at its existing LVO for ABI compatibility,
+but release builds return `FALSE` without changing global service state. In a
+diagnostic build it exercises the production recovery sequence: invalidate
+existing sessions, reset the engine, reload and test the CP, then re-arm the
+service. Existing sessions remain stale after a successful recovery, so clients
+must reopen and reimport their resources.

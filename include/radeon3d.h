@@ -17,6 +17,7 @@
 #define RADEON3D_CAP_PHASE4_DEPTH_FUNCS (1UL << 8)
 #define RADEON3D_CAP_PHASE5_TEXTURE_STATE (1UL << 9)
 #define RADEON3D_CAP_PHASE6_FOG_MULTITEX   (1UL << 10)
+/* Diagnostic builds only; the ABI vector remains present in release builds. */
 #define RADEON3D_CAP_TEST_INVALIDATE        (1UL << 11)
 #define RADEON3D_CAP_COLOR_TARGET_FORMATS   (1UL << 12)
 #define RADEON3D_CAP_NATIVE_TRI_PRIMITIVES  (1UL << 13)
