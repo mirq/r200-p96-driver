@@ -744,8 +744,7 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
     if (!PrepareMmioEngine(bi))
         return FALSE;
     BeginEnginePath(bi, FALSE);
-    return WaitFifo(bi, 11) &&
-           SetEngineState(bi, ENGINE_MASTER,
+    return SetEngineState(bi, ENGINE_MASTER,
                           RADEON_DP_GUI_MASTER_CNTL, master) &&
            SetEngineState(bi, ENGINE_WRITE_MASK,
                           RADEON_DP_WRITE_MASK, writeMask) &&
@@ -910,8 +909,7 @@ static BOOL SubmitStagedTemplate(struct BoardInfo *bi,
         return FALSE;
     BeginEnginePath(bi, FALSE);
 
-    return WaitFifo(bi, 12) &&
-           SetEngineState(bi, ENGINE_MASTER,
+    return SetEngineState(bi, ENGINE_MASTER,
                           RADEON_DP_GUI_MASTER_CNTL, master) &&
            SetEngineState(bi, ENGINE_WRITE_MASK,
                           RADEON_DP_WRITE_MASK, writeMask) &&
@@ -1112,8 +1110,7 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                  EngineState.Value[ENGINE_DST_PITCH_OFFSET] ==
                      destination->PitchOffset;
 
-    return WaitFifo(bi, 8) &&
-           (stateReady ||
+    return (stateReady ||
             (SetEngineState(bi, ENGINE_MASTER,
                             RADEON_DP_GUI_MASTER_CNTL, master) &&
              SetEngineState(bi, ENGINE_WRITE_MASK,
