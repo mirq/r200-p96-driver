@@ -13,10 +13,12 @@ struct Radeon3DDevice {
     ULONG InterfaceVersion;
     struct RadeonChipBase *Base;
     struct Library *OwnerBase;
+    struct Radeon3DDevice *Handle;
     ULONG ActiveCalls;
     ULONG LastFence;
     UBYTE Closing;
     UBYTE CleanupDone;
+    UBYTE CleanupReady;
     ULONG *ExecuteTrusted;
     ULONG *ExecuteGenerated;
     struct MinList Surfaces;
@@ -41,8 +43,23 @@ static struct Radeon3DDevice *FindDevice(
 
     for (node = base->ServiceDevices.mlh_Head; node->mln_Succ;
          node = node->mln_Succ) {
+        struct Radeon3DDevice *device = (struct Radeon3DDevice *)node;
+
+        if (device->Handle == candidate)
+            return device;
+    }
+    return NULL;
+}
+
+static struct Radeon3DDevice *FindActiveDevice(
+    struct RadeonChipBase *base, struct Radeon3DDevice *candidate)
+{
+    struct MinNode *node;
+
+    for (node = base->ServiceDevices.mlh_Head; node->mln_Succ;
+         node = node->mln_Succ) {
         if ((struct Radeon3DDevice *)node == candidate)
-            return (struct Radeon3DDevice *)node;
+            return candidate;
     }
     return NULL;
 }
@@ -78,6 +95,22 @@ static void RemoveServiceDevice(struct Radeon3DDevice *device)
     device->Node.mln_Succ->mln_Pred = device->Node.mln_Pred;
     device->Node.mln_Succ = NULL;
     device->Node.mln_Pred = NULL;
+}
+
+static void ReapRetiredDevicesLocked(struct RadeonChipBase *base)
+{
+    struct ExecBase *SysBase = base->ExecBase;
+    struct MinNode *node = base->RetiredServiceDevices.mlh_Head;
+
+    while (node->mln_Succ) {
+        struct Radeon3DDevice *device = (struct Radeon3DDevice *)node;
+
+        node = node->mln_Succ;
+        if (device->CleanupReady) {
+            RemoveServiceDevice(device);
+            FreeMem(device, sizeof(*device));
+        }
+    }
 }
 
 static void AddSurfaceHandle(struct Radeon3DDevice *device,
@@ -172,14 +205,12 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     info->MaxBatchDwords = RADEON3D_MAX_BATCH_DWORDS;
 }
 
-static BOOL IsValidDevice(struct RadeonChipBase *base,
-                          struct Radeon3DDevice *device)
+static BOOL IsUsableDevice(struct RadeonChipBase *base,
+                           struct Radeon3DDevice *device)
 {
-    struct Radeon3DDevice *active = FindDevice(base, device);
-
-    return active && active->Magic == RADEON3D_SESSION_MAGIC &&
-           active->Base == base &&
-           active->Generation == base->ServiceGeneration &&
+    return device && device->Magic == RADEON3D_SESSION_MAGIC &&
+           device->Base == base &&
+           device->Generation == base->ServiceGeneration &&
            base->ServiceState == RADEON3D_SERVICE_READY &&
            base->BoardInfo && RadeonCpIsReady(base->BoardInfo);
 }
@@ -198,19 +229,43 @@ static void CloseOwnerPin(struct RadeonChipBase *base,
         CloseLibrary(ownerPin);
 }
 
+static void FinishDeviceCleanup(struct RadeonChipBase *base,
+                                struct BoardInfo *bi,
+                                struct Radeon3DDevice *device,
+                                BOOL cleanup,
+                                struct Library *ownerPin)
+{
+    struct ExecBase *SysBase = base->ExecBase;
+
+    if (cleanup) {
+        FreeDeviceSurfaces(base, device);
+        ObtainSemaphore(&base->ServiceLock);
+        device->CleanupReady = TRUE;
+        if (base->ServiceSessions)
+            --base->ServiceSessions;
+        ReleaseSemaphore(&base->ServiceLock);
+    }
+
+    /* Dropping the owner pin can release the board, so it must be last. */
+    CloseOwnerPin(base, bi, ownerPin);
+}
+
 static struct BoardInfo *LockServiceBoard(
-    struct RadeonChipBase *base, struct Radeon3DDevice *device)
+    struct RadeonChipBase *base, struct Radeon3DDevice **devicePtr)
 {
     struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    struct Radeon3DDevice *device;
     struct BoardInfo *bi = NULL;
     struct Library *ownerPin = NULL;
     BOOL cleanup = FALSE;
 
-    if (!SysBase || !device)
+    if (!SysBase || !devicePtr || !*devicePtr)
         return NULL;
     ObtainSemaphore(&base->ServiceLock);
-    if (IsValidDevice(base, device)) {
+    device = FindDevice(base, *devicePtr);
+    if (IsUsableDevice(base, device)) {
         ++device->ActiveCalls;
+        *devicePtr = device;
         bi = base->BoardInfo;
     }
     ReleaseSemaphore(&base->ServiceLock);
@@ -219,7 +274,8 @@ static struct BoardInfo *LockServiceBoard(
 
     ObtainSemaphore(&bi->BoardLock);
     ObtainSemaphore(&base->ServiceLock);
-    if (!IsValidDevice(base, device) || base->BoardInfo != bi) {
+    if (!FindActiveDevice(base, device) ||
+        !IsUsableDevice(base, device) || base->BoardInfo != bi) {
         if (device->ActiveCalls)
             --device->ActiveCalls;
         if (device->Closing && !device->ActiveCalls) {
@@ -232,9 +288,7 @@ static struct BoardInfo *LockServiceBoard(
         }
         ReleaseSemaphore(&base->ServiceLock);
         ReleaseSemaphore(&bi->BoardLock);
-        if (cleanup)
-            FreeDeviceSurfaces(base, device);
-        CloseOwnerPin(base, bi, ownerPin);
+        FinishDeviceCleanup(base, bi, device, cleanup, ownerPin);
         return NULL;
     }
     ReleaseSemaphore(&base->ServiceLock);
@@ -262,9 +316,7 @@ static void UnlockServiceBoard(struct RadeonChipBase *base,
         }
     }
     ReleaseSemaphore(&base->ServiceLock);
-    if (cleanup)
-        FreeDeviceSurfaces(base, device);
-    CloseOwnerPin(base, bi, ownerPin);
+    FinishDeviceCleanup(base, bi, device, cleanup, ownerPin);
 }
 
 static BOOL MatchRegister(const ULONG *commands, ULONG commandCount,
@@ -1263,7 +1315,7 @@ BOOL Radeon3DInvalidateForTest(
 
     if (!SysBase || !device)
         return FALSE;
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (!bi)
         return FALSE;
     recovered = RadeonRecoverAcceleration(bi);
@@ -1300,6 +1352,7 @@ struct Radeon3DDevice *Radeon3DOpen(
         (struct MinNode *)&device->Surfaces.mlh_Head;
 
     ObtainSemaphore(&base->ServiceLock);
+    ReapRetiredDevicesLocked(base);
     data = RadeonGetBoardData(base->BoardInfo);
     if (base->ServiceState != RADEON3D_SERVICE_READY ||
         !base->BoardInfo || !data ||
@@ -1319,11 +1372,14 @@ struct Radeon3DDevice *Radeon3DOpen(
                                    : RADEON3D_IFACE_VERSION;
     device->Base = base;
     device->OwnerBase = ownerBase;
+    device->Handle = (struct Radeon3DDevice *)base->ServiceNextHandle++;
+    if (base->ServiceNextHandle < 0x80000000UL)
+        base->ServiceNextHandle = 0x80000000UL;
     AddServiceDevice(base, device);
     ++base->ServiceSessions;
     FillInfo(base, info, device->InterfaceVersion);
     ReleaseSemaphore(&base->ServiceLock);
-    return device;
+    return device->Handle;
 }
 
 void Radeon3DClose(
@@ -1332,6 +1388,7 @@ void Radeon3DClose(
 {
     struct ExecBase *SysBase = base ? base->ExecBase : NULL;
     struct Radeon3DDevice *active;
+    struct Radeon3DDevice *candidate = device;
     struct Library *ownerBase;
     BOOL cleanup = FALSE;
     struct BoardInfo *bi;
@@ -1339,7 +1396,7 @@ void Radeon3DClose(
     if (!SysBase || !device)
         return;
 
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (bi) {
         if (device->LastFence &&
             !RadeonCpWaitFence(bi, device->LastFence, 1000UL))
@@ -1349,7 +1406,7 @@ void Radeon3DClose(
     }
 
     ObtainSemaphore(&base->ServiceLock);
-    active = FindDevice(base, device);
+    active = FindDevice(base, candidate);
     if (!active) {
         ReleaseSemaphore(&base->ServiceLock);
         return;
@@ -1366,13 +1423,9 @@ void Radeon3DClose(
     active->Magic = 0;
     active->Base = NULL;
     AddRetiredDevice(base, active);
-    if (base->ServiceSessions)
-        --base->ServiceSessions;
     ReleaseSemaphore(&base->ServiceLock);
 
-    if (cleanup)
-        FreeDeviceSurfaces(base, active);
-    CloseOwnerPin(base, NULL, ownerBase);
+    FinishDeviceCleanup(base, NULL, active, cleanup, ownerBase);
 }
 
 BOOL Radeon3DGetInfo(
@@ -1428,7 +1481,7 @@ BOOL Radeon3DSubmit(
         return FALSE;
     for (index = 0; index < commandCount; ++index)
         trusted[index] = commands[index];
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (!bi) {
         FreeMem(trusted, commandCount * sizeof(*trusted));
         return FALSE;
@@ -1478,7 +1531,7 @@ BOOL Radeon3DExecute(
         recordDwords > RADEON3D_MAX_BATCH_DWORDS ||
         (flags & ~RADEON3D_SUBMIT_FLAGS))
         return FALSE;
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (!bi)
         return FALSE;
     if (device->InterfaceVersion < 2UL) {
@@ -1562,7 +1615,7 @@ BOOL Radeon3DTestFence(
 
     if (!IsSessionFence(base, device, fence))
         return FALSE;
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (!bi)
         return FALSE;
     result = RadeonCpTestFence(bi, fence);
@@ -1581,7 +1634,7 @@ BOOL Radeon3DWaitFence(
 
     if (!IsSessionFence(base, device, fence))
         return FALSE;
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (!bi)
         return FALSE;
     result = RadeonCpWaitFence(bi, fence, timeoutMs);
@@ -1628,7 +1681,7 @@ BOOL Radeon3DImportBitMap(
         return FALSE;
     surface->Version = 0;
     surface->Handle = NULL;
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (!bi)
         return FALSE;
     data = RadeonGetBoardData(bi);
@@ -1674,7 +1727,8 @@ BOOL Radeon3DImportBitMap(
     handle->Format = publicFormat;
 
     ObtainSemaphore(&base->ServiceLock);
-    if (IsValidDevice(base, device) && !device->Closing) {
+    if (FindActiveDevice(base, device) &&
+        IsUsableDevice(base, device) && !device->Closing) {
         AddSurfaceHandle(device, handle);
         added = TRUE;
     }
@@ -1707,12 +1761,13 @@ void Radeon3DReleaseSurface(
     struct ExecBase *SysBase = base ? base->ExecBase : NULL;
     struct BoardInfo *bi;
     struct Radeon3DDevice *active;
+    struct Radeon3DDevice *candidate = device;
     struct Radeon3DSurfaceHandle *handle = NULL;
 
     if (!SysBase || !surface ||
         surface->Size < RADEON3D_SURFACE_V1_SIZE || !surface->Handle)
         return;
-    bi = LockServiceBoard(base, device);
+    bi = LockServiceBoard(base, &device);
     if (bi) {
         if (device->LastFence &&
             !RadeonCpWaitFence(bi, device->LastFence, 1000UL))
@@ -1720,7 +1775,7 @@ void Radeon3DReleaseSurface(
         device->LastFence = 0;
     }
     ObtainSemaphore(&base->ServiceLock);
-    active = FindDevice(base, device);
+    active = FindDevice(base, candidate);
     if (active) {
         handle = FindSurfaceHandle(active, surface->Handle);
         if (handle && handle->Device == active)

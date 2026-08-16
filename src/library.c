@@ -118,6 +118,7 @@ static struct RadeonChipBase *LibInit(
         (struct MinNode *)&base->RetiredServiceDevices.mlh_Head;
     base->ServiceGeneration = 1;
     base->ServiceSessions = 0;
+    base->ServiceNextHandle = 0x80000000UL;
     base->ServiceState = RADEON3D_SERVICE_EMPTY;
     PrometheusBase = NULL;
 

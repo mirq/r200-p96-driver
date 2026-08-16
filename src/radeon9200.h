@@ -78,6 +78,7 @@ struct RadeonChipBase {
     struct MinList RetiredServiceDevices;
     ULONG ServiceGeneration;
     ULONG ServiceSessions;
+    ULONG ServiceNextHandle;
     ULONG ServiceState;
 };
 
