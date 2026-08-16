@@ -104,7 +104,7 @@ replace the release artifacts. The DEBUG card opens
 3. Run `radeon3dinfo`. Expected result begins with `R3DINFO status=ok`, reports
    interface version 1, includes `RADEON3D_CAP_CP_READY`, and reports the
    submission capability appropriate to the current build.
-4. Read at least 670 bytes per Exec port-list node and decode the
+4. Read at least 678 bytes per Exec port-list node and decode the
    `Radeon9200.Debug` block with `tools/decode_debug_stats.py`.
 5. Record `VramSmallBytes/Ticks`, `VramBurstBytes/Ticks`,
    `CpBufferedTicks/Success`, `CpDirectTicks/Success`, CP functional checks and

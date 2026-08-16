@@ -6,7 +6,7 @@ Finding the block from the host:
     1. read the longword at 0x00000004                  -> SysBase
     2. read 16 bytes at SysBase + 392                   -> exec PortList,
                                                            lh_Type must be 4
-    3. walk ln_Succ from lh_Head, reading 670 bytes per node, until the
+    3. walk ln_Succ from lh_Head, reading 678 bytes per node, until the
        magic 'R92D' appears at node + 34 (= sizeof(struct MsgPort))
 
 Then paste the dump here:
@@ -114,7 +114,10 @@ FIELDS.extend([
     "BlitRectBoundsSuccess", "BlitRectProbeCalls", "BlitRectProbeTicks",
 ])
 
-KNOWN_VERSION = 17
+# Version 18
+FIELDS.extend(["SurfaceCacheHits", "SurfaceCacheMisses"])
+
+KNOWN_VERSION = 18
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -242,6 +245,9 @@ def main():
                   (values["BlitRectProbeCalls"],
                    per(values["BlitRectProbeTicks"],
                        values["BlitRectProbeCalls"])))
+    if "SurfaceCacheHits" in values:
+        print("surface cache      hits=%d misses=%d" %
+              (values["SurfaceCacheHits"], values["SurfaceCacheMisses"]))
 
     # Each sampled interval brackets the work with two ReadEClock calls and so
     # carries roughly one call's latency; subtract it before reporting.

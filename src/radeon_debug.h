@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 17UL
+#define RADEON_DEBUG_VERSION 18UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -205,11 +205,14 @@ struct RadeonDebugStats {
     ULONG BlitRectBoundsSuccess;
     ULONG BlitRectProbeCalls;
     ULONG BlitRectProbeTicks;
+    /* Version 18: generalized 2D surface-layout cache. */
+    ULONG SurfaceCacheHits;
+    ULONG SurfaceCacheMisses;
 };
 
-#define RADEON_DEBUG_STATS_V17_SIZE 636UL
-typedef char RadeonDebugStatsV17SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V17_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V18_SIZE 644UL
+typedef char RadeonDebugStatsV18SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V18_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL
@@ -231,6 +234,7 @@ struct RadeonDebugSample {
 
 extern ULONG RadeonDebugReads;
 extern ULONG RadeonDebugWrites;
+extern ULONG RadeonDebugSuppressSurfaceCache;
 /* Set by the acceleration probe before RadeonDebugOpen() publishes the port. */
 extern ULONG RadeonMonoProbeResult;
 extern ULONG RadeonMonoProbeSample;
@@ -262,6 +266,7 @@ void RadeonDebugCompletePhase(ULONG phase, ULONG start);
 void RadeonDebugBoardLock(struct BoardInfo *bi);
 void RadeonDebugFallbackDrain(ULONG skipped);
 void RadeonDebugFallbackProbe(struct BoardInfo *bi);
+void RadeonDebugSurfaceCache(ULONG hit);
 
 #define RADEON_DEBUG_COMPLETE_VALIDATE 0UL
 #define RADEON_DEBUG_COMPLETE_SUBMIT   1UL
@@ -308,6 +313,11 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi);
 #define RDEBUG_BOARD_LOCK(bi) RadeonDebugBoardLock(bi)
 #define RDEBUG_FALLBACK_DRAIN(skipped) RadeonDebugFallbackDrain(skipped)
 #define RDEBUG_FALLBACK_PROBE(bi) RadeonDebugFallbackProbe(bi)
+#define RDEBUG_SURFACE_CACHE(hit) \
+    do { \
+        if (!RadeonDebugSuppressSurfaceCache) \
+            RadeonDebugSurfaceCache(hit); \
+    } while (0)
 
 #else
 
@@ -343,6 +353,7 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi);
 #define RDEBUG_BOARD_LOCK(bi) ((void)0)
 #define RDEBUG_FALLBACK_DRAIN(skipped) ((void)0)
 #define RDEBUG_FALLBACK_PROBE(bi) ((void)0)
+#define RDEBUG_SURFACE_CACHE(hit) ((void)0)
 
 #endif
 

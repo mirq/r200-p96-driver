@@ -24,6 +24,7 @@
 
 ULONG RadeonDebugReads;
 ULONG RadeonDebugWrites;
+ULONG RadeonDebugSuppressSurfaceCache;
 ULONG RadeonMonoProbeResult;
 ULONG RadeonMonoProbeSample;
 ULONG RadeonMonoProbeSampleAlt;
@@ -287,6 +288,16 @@ void RadeonDebugFallbackDrain(ULONG skipped)
         ++DebugNode->Stats.FallbackDrainRequired;
 }
 
+void RadeonDebugSurfaceCache(ULONG hit)
+{
+    if (!DebugNode)
+        return;
+    if (hit)
+        ++DebugNode->Stats.SurfaceCacheHits;
+    else
+        ++DebugNode->Stats.SurfaceCacheMisses;
+}
+
 void RadeonDebugFallbackProbe(struct BoardInfo *bi)
 {
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
@@ -341,11 +352,13 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi)
     savedNext = vram[64];
     vram[0] = 0x5aU;
     vram[64] = 0xa5U;
+    RadeonDebugSuppressSurfaceCache = TRUE;
     start = Clock();
     for (index = 0; index < FALLBACK_PROBE_CALLS; ++index)
         RadeonBlitRect(bi, &vramRender, 0, 0, 64, 0,
                        1, 1, 0xffU, RGBFB_CLUT);
     DebugNode->Stats.BlitRectProbeTicks = Clock() - start;
+    RadeonDebugSuppressSurfaceCache = FALSE;
     DebugNode->Stats.BlitRectProbeCalls = FALLBACK_PROBE_CALLS;
     DebugNode->Stats.BlitRectBoundsSuccess = vram[64] == 0xa5U;
     vram[0] = saved;

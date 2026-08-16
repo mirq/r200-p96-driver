@@ -81,26 +81,30 @@ struct AccelSurface {
     ULONG PitchOffset;
     ULONG StartOffset;
     ULONG EndOffset;
-    ULONG SurfaceOffset;
-    ULONG MemoryLimit;
-    ULONG Pitch;
-    ULONG BytesPerPixel;
+    ULONG Datatype;
     UWORD XBias;
     UWORD YBias;
 };
 
-struct LineSurfaceCache {
-    struct BoardInfo *Board;
-    APTR Memory;
-    WORD BytesPerRow;
-    RGBFTYPE Format;
+struct SurfaceLayout {
     ULONG PitchOffset;
-    ULONG Datatype;
+    ULONG SurfaceOffset;
+    ULONG MemoryLimit;
+    ULONG Pitch;
     ULONG BytesPerPixel;
+    ULONG Datatype;
     ULONG MaxX;
     ULONG MaxY;
     UWORD XBias;
     UWORD YBias;
+};
+
+struct SurfaceLayoutCache {
+    struct BoardInfo *Board;
+    APTR Memory;
+    WORD BytesPerRow;
+    RGBFTYPE Format;
+    struct SurfaceLayout Layout;
     BOOL Valid;
 };
 
@@ -126,7 +130,7 @@ struct EngineStateCache {
     BOOL HostTemplateReady;
 };
 
-static struct LineSurfaceCache LineSurface;
+static struct SurfaceLayoutCache SurfaceLayout;
 static struct EngineStateCache EngineState;
 
 static void InvalidateEngineState(void)
@@ -275,6 +279,7 @@ static BOOL ResetEngine(struct BoardInfo *bi)
     ULONG reset = RadeonRead32(bi, RADEON_RBBM_SOFT_RESET);
     ULONG host = RadeonRead32(bi, RADEON_HOST_PATH_CNTL);
 
+    SurfaceLayout.Valid = FALSE;
     if (!RadeonWrite32(bi, RADEON_RBBM_SOFT_RESET, reset | resetMask))
         return FALSE;
     (void)RadeonRead32(bi, RADEON_RBBM_SOFT_RESET);
@@ -485,18 +490,16 @@ static BOOL PrepareSoftwareFallback(struct BoardInfo *bi,
     return software;
 }
 
-static enum SurfaceResult ValidateSurface(
+static __inline__ enum SurfaceResult ValidateSurfaceLayout(
     struct BoardInfo *bi, const struct RenderInfo *render,
-    WORD x, WORD y, WORD width, WORD height, RGBFTYPE format,
-    struct AccelSurface *surface)
+    RGBFTYPE format, ULONG datatype, ULONG bytesPerPixel,
+    const struct SurfaceLayout **surface)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
-    ULONG bytesPerPixel;
-    ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
+    struct SurfaceLayout *layout = &SurfaceLayout.Layout;
     ULONG memoryBase;
     ULONG memoryAddress;
     ULONG memoryLimit;
-    ULONG apertureLimit;
     ULONG surfaceOffset;
     ULONG gpuAddress;
     ULONG alignedGpuAddress;
@@ -504,35 +507,36 @@ static enum SurfaceResult ValidateSurface(
     ULONG xBias;
     ULONG yBias;
     ULONG pitch;
-    ULONG lineEnd;
-    ULONG lastRowOffset;
-    ULONG rectangleStart;
-    ULONG rectangleEnd;
     ULONG remaining;
-    ULONG xEnd;
-    ULONG yEnd;
+    ULONG rows;
 
-    (void)datatype;
     if (!data || !render || !render->Memory || !surface ||
         !bytesPerPixel || render->BytesPerRow <= 0)
-        return SoftwareSurfaceResult(bi, render);
-    if (width <= 0 || height <= 0)
-        return SURFACE_REJECT;
-    if (x < 0 || y < 0)
         return SoftwareSurfaceResult(bi, render);
 
     memoryBase = (ULONG)bi->MemoryBase;
     memoryAddress = (ULONG)render->Memory;
+    if (memoryAddress < memoryBase ||
+        memoryAddress - memoryBase >= bi->MemorySpaceSize)
+        return SURFACE_SOFTWARE_OFFBOARD;
+
+    if (SurfaceLayout.Valid && SurfaceLayout.Board == bi &&
+        SurfaceLayout.Memory == render->Memory &&
+        SurfaceLayout.BytesPerRow == render->BytesPerRow &&
+        SurfaceLayout.Format == format) {
+        RDEBUG_SURFACE_CACHE(TRUE);
+        *surface = layout;
+        return SURFACE_HARDWARE;
+    }
+    RDEBUG_SURFACE_CACHE(FALSE);
+    SurfaceLayout.Valid = FALSE;
+
     memoryLimit = bi->MemorySize;
     if (data->InstalledVram < memoryLimit)
         memoryLimit = data->InstalledVram;
     if (bi->MemorySpaceSize < memoryLimit)
         memoryLimit = bi->MemorySpaceSize;
-    apertureLimit = bi->MemorySpaceSize;
 
-    if (memoryAddress < memoryBase ||
-        memoryAddress - memoryBase >= apertureLimit)
-        return SURFACE_SOFTWARE_OFFBOARD;
     surfaceOffset = memoryAddress - memoryBase;
     if (surfaceOffset >= memoryLimit)
         return SURFACE_REJECT;
@@ -541,23 +545,7 @@ static enum SurfaceResult ValidateSurface(
     if ((pitch & 63UL) || pitch > ACCEL_MAX_PITCH)
         return SURFACE_SOFTWARE_ONBOARD;
 
-    xEnd = (ULONG)(UWORD)x + (UWORD)width;
-    yEnd = (ULONG)(UWORD)y + (UWORD)height;
-    if (xEnd - 1UL > ACCEL_MAX_COORD ||
-        yEnd - 1UL > ACCEL_MAX_COORD)
-        return SURFACE_SOFTWARE_ONBOARD;
-
-    lineEnd = xEnd * bytesPerPixel;
-    if (lineEnd > pitch)
-        return SURFACE_REJECT;
-    lastRowOffset = (yEnd - 1UL) * pitch;
     remaining = memoryLimit - surfaceOffset;
-    if (lineEnd > remaining ||
-        lastRowOffset > remaining - lineEnd)
-        return SURFACE_REJECT;
-    rectangleEnd = surfaceOffset + lastRowOffset + lineEnd;
-    rectangleStart = surfaceOffset + (ULONG)(UWORD)y * pitch +
-                     (ULONG)(UWORD)x * bytesPerPixel;
 
     if (data->FramebufferGpuBase > 0xffffffffUL - surfaceOffset)
         return SURFACE_REJECT;
@@ -576,26 +564,68 @@ static enum SurfaceResult ValidateSurface(
         xBias = 0;
         yBias = 0;
     }
-    if (xBias + (UWORD)x + (UWORD)width - 1UL > ACCEL_MAX_COORD ||
-        yBias + (UWORD)y + (UWORD)height - 1UL > ACCEL_MAX_COORD)
+    if (xBias > ACCEL_MAX_COORD || yBias > ACCEL_MAX_COORD)
         return SURFACE_SOFTWARE_ONBOARD;
 
-    surface->PitchOffset = ((pitch >> 6) << 22) |
-                           (alignedGpuAddress >> 10);
-    surface->StartOffset = rectangleStart;
-    surface->EndOffset = rectangleEnd;
-    surface->SurfaceOffset = surfaceOffset;
-    surface->MemoryLimit = memoryLimit;
-    surface->Pitch = pitch;
-    surface->BytesPerPixel = bytesPerPixel;
-    surface->XBias = (UWORD)xBias;
-    surface->YBias = (UWORD)yBias;
+    layout->PitchOffset = ((pitch >> 6) << 22) |
+                          (alignedGpuAddress >> 10);
+    layout->SurfaceOffset = surfaceOffset;
+    layout->MemoryLimit = memoryLimit;
+    layout->Pitch = pitch;
+    layout->BytesPerPixel = bytesPerPixel;
+    layout->Datatype = datatype;
+    layout->MaxX = pitch / bytesPerPixel - 1UL;
+    if (layout->MaxX > ACCEL_MAX_COORD - xBias)
+        layout->MaxX = ACCEL_MAX_COORD - xBias;
+    rows = remaining / pitch;
+    layout->MaxY = rows ? rows - 1UL : 0;
+    if (layout->MaxY > ACCEL_MAX_COORD - yBias)
+        layout->MaxY = ACCEL_MAX_COORD - yBias;
+    layout->XBias = (UWORD)xBias;
+    layout->YBias = (UWORD)yBias;
+
+    SurfaceLayout.Board = bi;
+    SurfaceLayout.Memory = render->Memory;
+    SurfaceLayout.BytesPerRow = render->BytesPerRow;
+    SurfaceLayout.Format = format;
+    SurfaceLayout.Valid = TRUE;
+    *surface = layout;
     return SURFACE_HARDWARE;
 }
 
 static enum SurfaceResult ValidateSameSurfaceRectangle(
     WORD x, WORD y, WORD width, WORD height,
-    const struct AccelSurface *layout, struct AccelSurface *surface)
+    const struct SurfaceLayout *layout, struct AccelSurface *surface);
+
+static enum SurfaceResult ValidateSurface(
+    struct BoardInfo *bi, const struct RenderInfo *render,
+    WORD x, WORD y, WORD width, WORD height, RGBFTYPE format,
+    struct AccelSurface *surface)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    const struct SurfaceLayout *layout;
+    enum SurfaceResult result;
+    ULONG bytesPerPixel;
+    ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
+
+    if (!data || !render || !render->Memory || !surface ||
+        !bytesPerPixel || render->BytesPerRow <= 0)
+        return SoftwareSurfaceResult(bi, render);
+    if (width <= 0 || height <= 0)
+        return SURFACE_REJECT;
+    if (x < 0 || y < 0)
+        return SoftwareSurfaceResult(bi, render);
+    result = ValidateSurfaceLayout(bi, render, format, datatype,
+                                   bytesPerPixel, &layout);
+    if (result != SURFACE_HARDWARE)
+        return result;
+    return ValidateSameSurfaceRectangle(
+        x, y, width, height, layout, surface);
+}
+
+static enum SurfaceResult ValidateSameSurfaceRectangle(
+    WORD x, WORD y, WORD width, WORD height,
+    const struct SurfaceLayout *layout, struct AccelSurface *surface)
 {
     ULONG lineEnd;
     ULONG lastRowOffset;
@@ -625,7 +655,10 @@ static enum SurfaceResult ValidateSameSurfaceRectangle(
             ACCEL_MAX_COORD)
         return SURFACE_SOFTWARE_ONBOARD;
 
-    *surface = *layout;
+    surface->PitchOffset = layout->PitchOffset;
+    surface->Datatype = layout->Datatype;
+    surface->XBias = layout->XBias;
+    surface->YBias = layout->YBias;
     surface->StartOffset = layout->SurfaceOffset +
                            (ULONG)(UWORD)y * layout->Pitch +
                            (ULONG)(UWORD)x * layout->BytesPerPixel;
@@ -636,104 +669,27 @@ static enum SurfaceResult ValidateSameSurfaceRectangle(
 static enum SurfaceResult ValidateLineSurface(
     struct BoardInfo *bi, const struct RenderInfo *render,
     LONG left, LONG top, LONG right, LONG bottom, RGBFTYPE format,
-    struct LineSurfaceCache **surface)
+    const struct SurfaceLayout **surface)
 {
-    struct RadeonBoardData *data = RadeonGetBoardData(bi);
-    ULONG memoryBase;
-    ULONG memoryAddress;
-    ULONG memoryLimit;
-    ULONG surfaceOffset;
-    ULONG gpuAddress;
-    ULONG alignedGpuAddress;
-    ULONG addressBias;
-    ULONG remaining;
-    ULONG rows;
+    const struct SurfaceLayout *layout;
+    enum SurfaceResult result;
+    ULONG bytesPerPixel;
+    ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
 
-    if (!data || !render || !render->Memory || !surface)
+    if (!RadeonGetBoardData(bi) || !render || !render->Memory || !surface ||
+        !bytesPerPixel || render->BytesPerRow <= 0)
         return SoftwareSurfaceResult(bi, render);
-
-    if (!LineSurface.Valid || LineSurface.Board != bi ||
-        LineSurface.Memory != render->Memory ||
-        LineSurface.BytesPerRow != render->BytesPerRow ||
-        LineSurface.Format != format) {
-        LineSurface.Valid = FALSE;
-        LineSurface.Datatype = HardwareDatatype(
-            format, &LineSurface.BytesPerPixel);
-        if (!LineSurface.BytesPerPixel || render->BytesPerRow <= 0)
-            return SoftwareSurfaceResult(bi, render);
-
-        memoryBase = (ULONG)bi->MemoryBase;
-        memoryAddress = (ULONG)render->Memory;
-        if (memoryAddress < memoryBase ||
-            memoryAddress - memoryBase >= bi->MemorySpaceSize)
-            return SURFACE_SOFTWARE_OFFBOARD;
-        surfaceOffset = memoryAddress - memoryBase;
-
-        memoryLimit = bi->MemorySize;
-        if (data->InstalledVram < memoryLimit)
-            memoryLimit = data->InstalledVram;
-        if (bi->MemorySpaceSize < memoryLimit)
-            memoryLimit = bi->MemorySpaceSize;
-        if (surfaceOffset >= memoryLimit ||
-            data->FramebufferGpuBase > 0xffffffffUL - surfaceOffset)
-            return SURFACE_REJECT;
-
-        LineSurface.BytesPerRow = render->BytesPerRow;
-        if (((ULONG)(UWORD)LineSurface.BytesPerRow & 63UL) ||
-            (ULONG)(UWORD)LineSurface.BytesPerRow > ACCEL_MAX_PITCH)
-            return SURFACE_SOFTWARE_ONBOARD;
-        LineSurface.MaxX = (ULONG)(UWORD)LineSurface.BytesPerRow /
-                           LineSurface.BytesPerPixel;
-        if (!LineSurface.MaxX)
-            return SURFACE_REJECT;
-        --LineSurface.MaxX;
-        if (LineSurface.MaxX > ACCEL_MAX_COORD)
-            LineSurface.MaxX = ACCEL_MAX_COORD;
-
-        remaining = memoryLimit - surfaceOffset;
-        rows = remaining / (ULONG)(UWORD)LineSurface.BytesPerRow;
-        if (!rows)
-            return SURFACE_REJECT;
-        LineSurface.MaxY = rows - 1UL;
-        if (LineSurface.MaxY > ACCEL_MAX_COORD)
-            LineSurface.MaxY = ACCEL_MAX_COORD;
-
-        gpuAddress = data->FramebufferGpuBase + surfaceOffset;
-        alignedGpuAddress = gpuAddress & ~1023UL;
-        if (alignedGpuAddress > 0xfffffc00UL)
-            return SURFACE_SOFTWARE_ONBOARD;
-        addressBias = gpuAddress - alignedGpuAddress;
-        LineSurface.YBias = addressBias /
-                            (ULONG)(UWORD)LineSurface.BytesPerRow;
-        addressBias -= (ULONG)LineSurface.YBias *
-                       (ULONG)(UWORD)LineSurface.BytesPerRow;
-        if (addressBias % LineSurface.BytesPerPixel)
-            return SURFACE_SOFTWARE_ONBOARD;
-        LineSurface.XBias = addressBias / LineSurface.BytesPerPixel;
-        if (LineSurface.XBias > ACCEL_MAX_COORD ||
-            LineSurface.YBias > ACCEL_MAX_COORD)
-            return SURFACE_SOFTWARE_ONBOARD;
-        if (LineSurface.MaxX > ACCEL_MAX_COORD - LineSurface.XBias)
-            LineSurface.MaxX = ACCEL_MAX_COORD - LineSurface.XBias;
-        if (LineSurface.MaxY > ACCEL_MAX_COORD - LineSurface.YBias)
-            LineSurface.MaxY = ACCEL_MAX_COORD - LineSurface.YBias;
-
-        LineSurface.Board = bi;
-        LineSurface.Memory = render->Memory;
-        LineSurface.Format = format;
-        LineSurface.PitchOffset =
-            (((ULONG)(UWORD)LineSurface.BytesPerRow >> 6) << 22) |
-            (alignedGpuAddress >> 10);
-        LineSurface.Valid = TRUE;
-    }
-
+    result = ValidateSurfaceLayout(bi, render, format, datatype,
+                                   bytesPerPixel, &layout);
+    if (result != SURFACE_HARDWARE)
+        return result;
     if (left < 0 || top < 0 || right < left || bottom < top)
         return SoftwareSurfaceResult(bi, render);
-    if ((ULONG)right > LineSurface.MaxX ||
-        (ULONG)bottom > LineSurface.MaxY)
+    if (layout->MemoryLimit - layout->SurfaceOffset < layout->Pitch ||
+        (ULONG)right > layout->MaxX || (ULONG)bottom > layout->MaxY)
         return SURFACE_REJECT;
 
-    *surface = &LineSurface;
+    *surface = layout;
     return SURFACE_HARDWARE;
 }
 
@@ -1371,7 +1327,7 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
 
     if (!data || !bi->MemoryBase || !bi->MemoryIOBase)
         return FALSE;
-    LineSurface.Valid = FALSE;
+    SurfaceLayout.Valid = FALSE;
     InvalidateEngineState();
     data->AccelState = RADEON_ACCEL_OFF;
     data->AccelPending = RADEON_PENDING_NONE;
@@ -1431,7 +1387,7 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
     if (data->AccelPending)
         (void)SynchronizeEngine(bi);
     RadeonCpShutdown(bi);
-    LineSurface.Valid = FALSE;
+    SurfaceLayout.Valid = FALSE;
     InvalidateEngineState();
     data->AccelPending = RADEON_PENDING_NONE;
     data->Need2DRestore = FALSE;
@@ -1727,7 +1683,8 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
                                 format, &source);
     if (srcResult == SURFACE_HARDWARE)
         dstResult = ValidateSameSurfaceRectangle(
-            dstX, dstY, width, height, &source, &destination);
+            dstX, dstY, width, height,
+            &SurfaceLayout.Layout, &destination);
     else
         dstResult = ValidateSurface(bi, render, dstX, dstY, width, height,
                                     format, &destination);
@@ -1910,7 +1867,7 @@ void RadeonBlitRectNoMaskComplete(
 }
 
 static BOOL SubmitLine(struct BoardInfo *bi,
-                       const struct LineSurfaceCache *surface,
+                       const struct SurfaceLayout *surface,
                        ULONG start, ULONG end, ULONG pen,
                        ULONG writeMask, ULONG master)
 {
@@ -1964,7 +1921,7 @@ static BOOL SubmitLine(struct BoardInfo *bi,
 }
 
 static BOOL SubmitSolidAxisRect(struct BoardInfo *bi,
-                                const struct LineSurfaceCache *surface,
+                                const struct SurfaceLayout *surface,
                                 WORD x, WORD y, WORD width, WORD height,
                                 ULONG pen, ULONG writeMask)
 {
@@ -2032,7 +1989,7 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
 {
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
-    struct LineSurfaceCache *surface;
+    const struct SurfaceLayout *surface = NULL;
     enum SurfaceResult result;
     LONG startX, startY, endX, endY;
     LONG left, top, right, bottom;
