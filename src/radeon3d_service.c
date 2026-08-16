@@ -17,6 +17,8 @@ struct Radeon3DDevice {
     ULONG LastFence;
     UBYTE Closing;
     UBYTE CleanupDone;
+    ULONG *ExecuteTrusted;
+    ULONG *ExecuteGenerated;
     struct MinList Surfaces;
 };
 
@@ -122,6 +124,16 @@ static void FreeDeviceSurfaces(struct RadeonChipBase *base,
         RemoveSurfaceHandle(surface);
         FreeMem(surface, sizeof(*surface));
     }
+    if (device->ExecuteTrusted) {
+        FreeMem(device->ExecuteTrusted,
+                RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
+        device->ExecuteTrusted = NULL;
+    }
+    if (device->ExecuteGenerated) {
+        FreeMem(device->ExecuteGenerated,
+                RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
+        device->ExecuteGenerated = NULL;
+    }
 }
 
 static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
@@ -151,6 +163,8 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
                       RADEON3D_CAP_TEST_INVALIDATE;
     if (interfaceVersion >= 6UL)
         info->Caps |= RADEON3D_CAP_COLOR_TARGET_FORMATS;
+    if (interfaceVersion >= 7UL)
+        info->Caps |= RADEON3D_CAP_NATIVE_TRI_PRIMITIVES;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -910,7 +924,8 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
 static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                                  const ULONG *vertices, ULONG vertexCount,
                                  BOOL useDepth, BOOL textured, BOOL stateV4,
-                                 BOOL stateV5, ULONG phase6State)
+                                 BOOL stateV5, ULONG phase6State,
+                                 ULONG primitiveType)
 {
     ULONG dwordsPerVertex = 3UL + (useDepth ? 1UL : 0UL) +
                               (textured ? (stateV4 ? 2UL : 1UL) : 0UL) +
@@ -927,9 +942,9 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                          RADEON_CP_PACKET3(R200_CP_CMD_3D_DRAW_IMMD_2,
                                            vertexDwords)) ||
         !ExecuteEmitWord(emitter,
-                         (vertexCount << 16) |
-                             R200_CP_VC_CNTL_PRIM_WALK_RING |
-                             R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST))
+                          (vertexCount << 16) |
+                              R200_CP_VC_CNTL_PRIM_WALK_RING |
+                              primitiveType))
         return FALSE;
     for (vertex = 0; vertex < vertexCount; ++vertex) {
         const ULONG *input = vertices + vertex *
@@ -1009,12 +1024,14 @@ static BOOL EmitExecuteClear(struct Radeon3DDevice *device,
                             FALSE, FALSE, 0, 0, 0, 0, 0, 0,
                             0, 0, 0, 0, 0, 0, 0) &&
            EmitExecuteVertices(emitter, vertices, 6UL, depth != NULL,
-                                FALSE, FALSE, FALSE, 0);
+                                 FALSE, FALSE, FALSE, 0,
+                                 R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST);
 }
 
 static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
-                            struct Radeon3DExecuteEmitter *emitter,
-                            const ULONG *record, ULONG length)
+                             struct Radeon3DExecuteEmitter *emitter,
+                             const ULONG *record, ULONG length,
+                             ULONG primitiveType)
 {
     struct Radeon3DSurfaceHandle *color;
     struct Radeon3DSurfaceHandle *depth;
@@ -1117,7 +1134,8 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
         (options & RADEON3D_DRAW_DEPTH_WRITE &&
          !(options & RADEON3D_DRAW_DEPTH_LESS)) ||
         vertexCount < 3UL || vertexCount > RADEON3D_IMMD_MAX_VERTICES ||
-        vertexCount % 3UL ||
+        (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST &&
+         vertexCount % 3UL) ||
         length != headerDwords + vertexCount * vertexStride ||
         !ValidColorTarget(device, color) ||
         (useDepth ? !ValidDepthTarget(depth, color) : record[3] != 0) ||
@@ -1182,7 +1200,8 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
                              texture1Height, texture1State, texture1Bytes,
                              phase6State, fogColor) &&
            EmitExecuteVertices(emitter, vertices, vertexCount, useDepth,
-                                textured, stateV4, stateV5, phase6State);
+                                 textured, stateV4, stateV5, phase6State,
+                                 primitiveType);
 }
 
 static BOOL BuildExecuteStream(struct Radeon3DDevice *device,
@@ -1205,7 +1224,18 @@ static BOOL BuildExecuteStream(struct Radeon3DDevice *device,
             if (!EmitExecuteClear(device, emitter, records + index, length))
                 return FALSE;
         } else if (records[index] == RADEON3D_EXEC_DRAW_TRIANGLES) {
-            if (!EmitExecuteDraw(device, emitter, records + index, length))
+            if (!EmitExecuteDraw(device, emitter, records + index, length,
+                                 R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST))
+                return FALSE;
+        } else if (device->InterfaceVersion >= 7UL &&
+                   records[index] == RADEON3D_EXEC_DRAW_TRI_STRIP) {
+            if (!EmitExecuteDraw(device, emitter, records + index, length,
+                                 R200_CP_VC_CNTL_PRIM_TYPE_TRI_STRIP))
+                return FALSE;
+        } else if (device->InterfaceVersion >= 7UL &&
+                   records[index] == RADEON3D_EXEC_DRAW_TRI_FAN) {
+            if (!EmitExecuteDraw(device, emitter, records + index, length,
+                                 R200_CP_VC_CNTL_PRIM_TYPE_TRI_FAN))
                 return FALSE;
         } else
             return FALSE;
@@ -1263,6 +1293,11 @@ struct Radeon3DDevice *Radeon3DOpen(
         CloseLibrary(ownerBase);
         return NULL;
     }
+    device->Surfaces.mlh_Head =
+        (struct MinNode *)&device->Surfaces.mlh_Tail;
+    device->Surfaces.mlh_Tail = NULL;
+    device->Surfaces.mlh_TailPred =
+        (struct MinNode *)&device->Surfaces.mlh_Head;
 
     ObtainSemaphore(&base->ServiceLock);
     data = RadeonGetBoardData(base->BoardInfo);
@@ -1271,6 +1306,7 @@ struct Radeon3DDevice *Radeon3DOpen(
         !data->Initialized ||
         !RadeonCpIsReady(base->BoardInfo)) {
         ReleaseSemaphore(&base->ServiceLock);
+        FreeDeviceSurfaces(base, device);
         FreeMem(device, sizeof(*device));
         CloseLibrary(ownerBase);
         return NULL;
@@ -1283,11 +1319,6 @@ struct Radeon3DDevice *Radeon3DOpen(
                                    : RADEON3D_IFACE_VERSION;
     device->Base = base;
     device->OwnerBase = ownerBase;
-    device->Surfaces.mlh_Head =
-        (struct MinNode *)&device->Surfaces.mlh_Tail;
-    device->Surfaces.mlh_Tail = NULL;
-    device->Surfaces.mlh_TailPred =
-        (struct MinNode *)&device->Surfaces.mlh_Head;
     AddServiceDevice(base, device);
     ++base->ServiceSessions;
     FillInfo(base, info, device->InterfaceVersion);
@@ -1434,8 +1465,8 @@ BOOL Radeon3DExecute(
     struct BoardInfo *bi;
     struct ExecBase *SysBase = base ? base->ExecBase : NULL;
     struct Radeon3DExecuteEmitter emitter;
-    ULONG *trusted = NULL;
-    ULONG *generated = NULL;
+    ULONG *trusted;
+    ULONG *generated;
     ULONG internalFence = 0;
     ULONG index;
     BOOL submitAttempted = FALSE;
@@ -1447,19 +1478,43 @@ BOOL Radeon3DExecute(
         recordDwords > RADEON3D_MAX_BATCH_DWORDS ||
         (flags & ~RADEON3D_SUBMIT_FLAGS))
         return FALSE;
-    trusted = AllocMem(recordDwords * sizeof(*trusted), MEMF_PUBLIC);
-    generated = AllocMem(RADEON3D_MAX_BATCH_DWORDS * sizeof(*generated),
-                         MEMF_PUBLIC);
-    if (!trusted || !generated)
-        goto out;
+    bi = LockServiceBoard(base, device);
+    if (!bi)
+        return FALSE;
+    if (device->InterfaceVersion < 2UL) {
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    if (!device->ExecuteTrusted)
+        device->ExecuteTrusted = AllocMem(
+            RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
+    if (!device->ExecuteGenerated)
+        device->ExecuteGenerated = AllocMem(
+            RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
+    if (!device->ExecuteTrusted || !device->ExecuteGenerated) {
+        if (device->ExecuteTrusted) {
+            FreeMem(device->ExecuteTrusted,
+                    RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
+            device->ExecuteTrusted = NULL;
+        }
+        if (device->ExecuteGenerated) {
+            FreeMem(device->ExecuteGenerated,
+                    RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
+            device->ExecuteGenerated = NULL;
+        }
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    trusted = device->ExecuteTrusted;
+    generated = device->ExecuteGenerated;
+    if (!trusted || !generated) {
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
     for (index = 0; index < recordDwords; ++index)
         trusted[index] = records[index];
     emitter.Words = generated;
     emitter.Count = 0;
-
-    bi = LockServiceBoard(base, device);
-    if (!bi)
-        goto out;
     result = BuildExecuteStream(device, trusted, recordDwords, &emitter);
     if (result)
         result = RadeonPrepare3D(bi);
@@ -1477,12 +1532,6 @@ BOOL Radeon3DExecute(
         (void)RadeonRecoverAcceleration(bi);
     }
     UnlockServiceBoard(base, bi, device);
-out:
-    if (generated)
-        FreeMem(generated,
-                RADEON3D_MAX_BATCH_DWORDS * sizeof(*generated));
-    if (trusted)
-        FreeMem(trusted, recordDwords * sizeof(*trusted));
     return result;
 }
 

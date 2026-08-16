@@ -119,6 +119,12 @@ per vertex: X, Y, Z, S, T IEEE-754 bits, packed RGBA
 non-negative, and within the color target. Z/S/T are finite values in `[0,1]`.
 Untextured records require zero S/T. Unknown option bits are rejected.
 
+Interface-v7 sessions with `RADEON3D_CAP_NATIVE_TRI_PRIMITIVES` may use
+`RADEON3D_EXEC_DRAW_TRI_STRIP` or `RADEON3D_EXEC_DRAW_TRI_FAN`. They have the
+same headers, state, and vertex layouts as triangle records, but accept any
+vertex count from 3 through 255 and emit the corresponding native R200
+primitive. Earlier interface versions reject these opcodes.
+
 The only options are:
 
 ```text

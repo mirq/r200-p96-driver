@@ -48,8 +48,14 @@ ABI_CHECK(Radeon3DTestInvalidateCapability,
           RADEON3D_CAP_TEST_INVALIDATE == (1UL << 11));
 ABI_CHECK(Radeon3DColorTargetCapability,
           RADEON3D_CAP_COLOR_TARGET_FORMATS == (1UL << 12));
+ABI_CHECK(Radeon3DNativePrimitiveCapability,
+          RADEON3D_CAP_NATIVE_TRI_PRIMITIVES == (1UL << 13));
 ABI_CHECK(Radeon3DInterfaceVersion,
-          RADEON3D_IFACE_VERSION == 6UL);
+          RADEON3D_IFACE_VERSION == 7UL);
+ABI_CHECK(Radeon3DTriangleStripOpcode,
+          RADEON3D_EXEC_DRAW_TRI_STRIP == 3UL);
+ABI_CHECK(Radeon3DTriangleFanOpcode,
+          RADEON3D_EXEC_DRAW_TRI_FAN == 4UL);
 ABI_CHECK(Radeon3DV4Options,
           RADEON3D_DRAW_OPTIONS_V4 == 0x000001ffUL);
 ABI_CHECK(Radeon3DV4StateOption,

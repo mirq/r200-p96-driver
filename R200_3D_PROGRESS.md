@@ -574,9 +574,27 @@ MINIGL_PHASE6_ACCEPT depth=32 arrays=pass fastpath=v2 window=move,overlap resize
 
 The B8G8R8A8 display format's fourth byte is unused by Picasso96 and read back
 as zero, so the validated 32-bit target is BGRX32 rather than an alpha-bearing
-offscreen framebuffer. Installed artifacts are:
+offscreen framebuffer. The installed interface-v6 artifacts were:
 
 ```text
 LIBS:Picasso96/Radeon9200.chip size=49584 CRC32=C4966B3E
 LIBS:minigl.library size=39400 CRC32=C4FAD297
+```
+
+## Interface 7 Native Triangle Primitives
+
+Interface 7 advertises `RADEON3D_CAP_NATIVE_TRI_PRIMITIVES` and accepts native
+triangle-strip and triangle-fan execute records. They reuse the validated draw
+state and vertex layouts, while the driver emits R200 primitive types 6 and 5
+instead of expanding every primitive into a triangle list. Interface 6 and
+older sessions reject the new opcodes.
+
+Physical RV280 validation on 16 August 2026 passed the Phase 4, Phase 5, and
+Phase 6 acceptance suites. The 20-frame 640x480 textured gears workload fell
+from 15 seconds to 13 seconds with MiniGL native strip/fan submission and
+identical-state triangle-list coalescing. Installed artifacts are:
+
+```text
+LIBS:Picasso96/Radeon9200.chip size=49216 CRC32=047A2DB8
+LIBS:minigl.library size=44680 CRC32=A85E1481
 ```
