@@ -5,6 +5,7 @@
 #include "radeon_regs.h"
 
 #define RADEON3D_SESSION_MAGIC 0x52334453UL
+#define RADEON3D_EXEC_SUPPRESS_COLOR_WRITE 0x80000000UL
 
 struct Radeon3DDevice {
     struct MinNode Node;
@@ -498,6 +499,34 @@ struct Radeon3DExecuteEmitter {
     ULONG Count;
 };
 
+struct Radeon3DExecuteState {
+    struct Radeon3DSurfaceHandle *Color;
+    struct Radeon3DSurfaceHandle *Depth;
+    struct Radeon3DSurfaceHandle *Texture;
+    struct Radeon3DSurfaceHandle *Texture1;
+    ULONG Options;
+    ULONG Left;
+    ULONG Top;
+    ULONG Right;
+    ULONG Bottom;
+    BOOL ClearDepth;
+    BOOL StateV4;
+    BOOL StateV5;
+    ULONG TextureOffset;
+    ULONG TextureWidth;
+    ULONG TextureHeight;
+    ULONG TextureState;
+    ULONG FragmentState;
+    ULONG TextureBytes;
+    ULONG Texture1Offset;
+    ULONG Texture1Width;
+    ULONG Texture1Height;
+    ULONG Texture1State;
+    ULONG Texture1Bytes;
+    ULONG Phase6State;
+    ULONG FogColor;
+};
+
 static BOOL ExecuteEmitWord(struct Radeon3DExecuteEmitter *emitter,
                             ULONG value)
 {
@@ -736,6 +765,7 @@ static BOOL EmitExecuteTexture(struct Radeon3DExecuteEmitter *emitter,
         textureFormat |= R200_TXFORMAT_ST_ROUTE_STQ1;
     textureEnd = (volatile UBYTE *)texture->CpuAddress + textureOffset +
                  textureBytes - 1UL;
+    /* Drain posted CPU texture writes before the CP reads this allocation. */
     (void)*textureEnd;
     if (texture->Format == RADEON3D_FORMAT_R5G6B5PC)
         textureFormat |= R200_TXFORMAT_RGB565;
@@ -761,21 +791,33 @@ static BOOL ValidExecuteScissor(struct Radeon3DSurfaceHandle *target,
 }
 
 static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
-                              struct Radeon3DSurfaceHandle *color,
-                              struct Radeon3DSurfaceHandle *depth,
-                              struct Radeon3DSurfaceHandle *texture,
-                              struct Radeon3DSurfaceHandle *texture1,
-                              ULONG options, ULONG left, ULONG top,
-                              ULONG right, ULONG bottom,
-                              BOOL clearDepth, BOOL stateV4, BOOL stateV5,
-                              ULONG textureOffset, ULONG textureWidth,
-                              ULONG textureHeight, ULONG textureState,
-                              ULONG fragmentState, ULONG textureBytes,
-                              ULONG texture1Offset, ULONG texture1Width,
-                              ULONG texture1Height, ULONG texture1State,
-                              ULONG texture1Bytes, ULONG phase6State,
-                              ULONG fogColor)
+                             const struct Radeon3DExecuteState *state)
 {
+    struct Radeon3DSurfaceHandle *color = state->Color;
+    struct Radeon3DSurfaceHandle *depth = state->Depth;
+    struct Radeon3DSurfaceHandle *texture = state->Texture;
+    struct Radeon3DSurfaceHandle *texture1 = state->Texture1;
+    ULONG options = state->Options;
+    ULONG left = state->Left;
+    ULONG top = state->Top;
+    ULONG right = state->Right;
+    ULONG bottom = state->Bottom;
+    BOOL clearDepth = state->ClearDepth;
+    BOOL stateV4 = state->StateV4;
+    BOOL stateV5 = state->StateV5;
+    ULONG textureOffset = state->TextureOffset;
+    ULONG textureWidth = state->TextureWidth;
+    ULONG textureHeight = state->TextureHeight;
+    ULONG textureState = state->TextureState;
+    ULONG fragmentState = state->FragmentState;
+    ULONG textureBytes = state->TextureBytes;
+    ULONG texture1Offset = state->Texture1Offset;
+    ULONG texture1Width = state->Texture1Width;
+    ULONG texture1Height = state->Texture1Height;
+    ULONG texture1State = state->Texture1State;
+    ULONG texture1Bytes = state->Texture1Bytes;
+    ULONG phase6State = state->Phase6State;
+    ULONG fogColor = state->FogColor;
     ULONG seControl = R200_BFACE_SOLID | R200_FFACE_SOLID |
                       R200_DIFFUSE_SHADE_GOURAUD |
                       R200_VTX_PIX_CENTER_OGL |
@@ -962,8 +1004,9 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
                                left | (top << 16)) &&
            ExecuteEmitRegister(emitter, R200_RE_WIDTH_HEIGHT,
                                (right - 1UL) | ((bottom - 1UL) << 16)) &&
-           ExecuteEmitRegister(emitter, R200_RB3D_PLANEMASK,
-                               (options & 0x80000000UL) ? 0UL : 0xffffffffUL) &&
+            ExecuteEmitRegister(emitter, R200_RB3D_PLANEMASK,
+                                (options & RADEON3D_EXEC_SUPPRESS_COLOR_WRITE)
+                                    ? 0UL : 0xffffffffUL) &&
            ExecuteEmitRegister(emitter, R200_RB3D_BLENDCNTL,
                                blendControl) &&
            ExecuteEmitRegister(emitter, RADEON_RB3D_CNTL, rbControl) &&
@@ -1035,6 +1078,7 @@ static BOOL EmitExecuteClear(struct Radeon3DDevice *device,
 {
     struct Radeon3DSurfaceHandle *color;
     struct Radeon3DSurfaceHandle *depth;
+    struct Radeon3DExecuteState state = {0};
     ULONG clearMask;
     ULONG vertices[6UL * RADEON3D_EXEC_VERTEX_DWORDS];
     ULONG vertex;
@@ -1068,13 +1112,16 @@ static BOOL EmitExecuteClear(struct Radeon3DDevice *device,
         output[4] = 0;
         output[5] = record[5];
     }
-    return EmitExecuteState(emitter, color, depth, NULL, NULL,
-                            (clearMask & RADEON3D_CLEAR_COLOR)
-                                ? 0UL : 0x80000000UL,
-                            record[7], record[8], record[9], record[10],
-                            (clearMask & RADEON3D_CLEAR_DEPTH) != 0,
-                            FALSE, FALSE, 0, 0, 0, 0, 0, 0,
-                            0, 0, 0, 0, 0, 0, 0) &&
+    state.Color = color;
+    state.Depth = depth;
+    state.Options = (clearMask & RADEON3D_CLEAR_COLOR)
+                        ? 0UL : RADEON3D_EXEC_SUPPRESS_COLOR_WRITE;
+    state.Left = record[7];
+    state.Top = record[8];
+    state.Right = record[9];
+    state.Bottom = record[10];
+    state.ClearDepth = (clearMask & RADEON3D_CLEAR_DEPTH) != 0;
+    return EmitExecuteState(emitter, &state) &&
            EmitExecuteVertices(emitter, vertices, 6UL, depth != NULL,
                                  FALSE, FALSE, FALSE, 0,
                                  R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST);
@@ -1089,6 +1136,7 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     struct Radeon3DSurfaceHandle *depth;
     struct Radeon3DSurfaceHandle *texture;
     struct Radeon3DSurfaceHandle *texture1 = NULL;
+    struct Radeon3DExecuteState state;
     ULONG options;
     ULONG vertexCount;
     const ULONG *vertices;
@@ -1243,14 +1291,32 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
              (fog ? !ValidUnitFloat(input[8]) : input[8] != 0)))
             return FALSE;
     }
-    return EmitExecuteState(emitter, color, depth, texture, texture1, options,
-                             record[6], record[7], record[8], record[9],
-                             FALSE, stateV4, stateV5,
-                             textureOffset, textureWidth,
-                             textureHeight, textureState, fragmentState,
-                             textureBytes, texture1Offset, texture1Width,
-                             texture1Height, texture1State, texture1Bytes,
-                             phase6State, fogColor) &&
+    state.Color = color;
+    state.Depth = depth;
+    state.Texture = texture;
+    state.Texture1 = texture1;
+    state.Options = options;
+    state.Left = record[6];
+    state.Top = record[7];
+    state.Right = record[8];
+    state.Bottom = record[9];
+    state.ClearDepth = FALSE;
+    state.StateV4 = stateV4;
+    state.StateV5 = stateV5;
+    state.TextureOffset = textureOffset;
+    state.TextureWidth = textureWidth;
+    state.TextureHeight = textureHeight;
+    state.TextureState = textureState;
+    state.FragmentState = fragmentState;
+    state.TextureBytes = textureBytes;
+    state.Texture1Offset = texture1Offset;
+    state.Texture1Width = texture1Width;
+    state.Texture1Height = texture1Height;
+    state.Texture1State = texture1State;
+    state.Texture1Bytes = texture1Bytes;
+    state.Phase6State = phase6State;
+    state.FogColor = fogColor;
+    return EmitExecuteState(emitter, &state) &&
            EmitExecuteVertices(emitter, vertices, vertexCount, useDepth,
                                  textured, stateV4, stateV5, phase6State,
                                  primitiveType);

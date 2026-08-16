@@ -1304,8 +1304,8 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
 
 void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi))
 {
-    RDEBUG_BOARD_LOCK(bi);
     RDEBUG_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!bi)
         return;
@@ -1321,7 +1321,6 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
                     __REGD4(ULONG pen), __REGD5(UBYTE mask),
                     __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1329,6 +1328,7 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
     BOOL software = FALSE;
     RDEBUG_SAMPLE
     RDEBUG_SAMPLE_OUTER
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data)
         return;
@@ -1383,13 +1383,13 @@ void RadeonInvertRect(__REGA0(struct BoardInfo *bi),
                       __REGD4(UBYTE mask),
                       __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
     enum SurfaceResult result;
     BOOL software = FALSE;
     RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data)
         return;
@@ -1434,7 +1434,6 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
                        __REGD4(UBYTE mask),
                        __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1444,6 +1443,7 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
     BOOL hardware;
     BOOL software = FALSE;
     RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data || !pattern || !pattern->Memory)
         return;
@@ -1501,7 +1501,6 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
                         __REGD4(UBYTE mask),
                         __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface surface;
@@ -1509,6 +1508,7 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
     BOOL hardware;
     BOOL software = FALSE;
     RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data)
         return;
@@ -1579,7 +1579,6 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
                     __REGD4(WORD width), __REGD5(WORD height),
                     __REGD6(UBYTE mask), __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface source;
@@ -1588,6 +1587,7 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
     enum SurfaceResult dstResult;
     BOOL software = FALSE;
     RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data)
         return;
@@ -1651,7 +1651,6 @@ void RadeonBlitRectNoMaskComplete(
     __REGD4(WORD width), __REGD5(WORD height),
     __REGD6(UBYTE opcode), __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct AccelSurface source;
@@ -1660,12 +1659,14 @@ void RadeonBlitRectNoMaskComplete(
     enum SurfaceResult dstResult;
     BOOL disjoint;
     BOOL copySafe;
+    BOOL submitted;
     BOOL software = FALSE;
 #ifdef DEBUG
     ULONG debugFlags = 0;
     ULONG phaseStart;
 #endif
     RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data)
         return;
@@ -1731,16 +1732,15 @@ void RadeonBlitRectNoMaskComplete(
 #ifdef DEBUG
         phaseStart = RDEBUG_PHASE_BEGIN();
 #endif
-        BOOL submitted = SubmitCopy(bi, &source, &destination,
-                                    srcX, srcY, dstX, dstY,
-                                    width, height, 0xffU, format,
-                                    source.PitchOffset ==
-                                        destination.PitchOffset,
-                                    !disjoint &&
-                                        destination.StartOffset >
-                                            source.StartOffset,
-                                    opcode == 0x06U ? RADEON_ROP3_S_XOR_D :
-                                                     RADEON_ROP3_S);
+        submitted = SubmitCopy(bi, &source, &destination,
+                               srcX, srcY, dstX, dstY,
+                               width, height, 0xffU, format,
+                               source.PitchOffset ==
+                                   destination.PitchOffset,
+                               !disjoint && destination.StartOffset >
+                                                source.StartOffset,
+                               opcode == 0x06U ? RADEON_ROP3_S_XOR_D :
+                                                RADEON_ROP3_S);
 
         RDEBUG_COMPLETE_PHASE(RADEON_DEBUG_COMPLETE_SUBMIT, phaseStart);
 
@@ -1884,7 +1884,6 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
                     __REGD0(UBYTE mask),
                     __REGD7(RGBFTYPE format))
 {
-    RDEBUG_BOARD_LOCK(bi);
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct LineSurfaceCache *surface;
@@ -1897,6 +1896,7 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
     BOOL solidAxis;
     BOOL software = FALSE;
     RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
 
     if (!SysBase || !data || !line)
         return;
