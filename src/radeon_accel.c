@@ -744,7 +744,7 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
     if (!PrepareMmioEngine(bi))
         return FALSE;
     BeginEnginePath(bi, FALSE);
-    return WaitFifo(bi, 13) &&
+    return WaitFifo(bi, 11) &&
            SetEngineState(bi, ENGINE_MASTER,
                           RADEON_DP_GUI_MASTER_CNTL, master) &&
            SetEngineState(bi, ENGINE_WRITE_MASK,
@@ -760,11 +760,6 @@ static BOOL SubmitPattern(struct BoardInfo *bi,
            SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL,
                           RADEON_DST_X_LEFT_TO_RIGHT |
                           RADEON_DST_Y_TOP_TO_BOTTOM) &&
-           RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                          RADEON_RB2D_DC_FLUSH_ALL) &&
-           RadeonWrite32(bi, RADEON_WAIT_UNTIL,
-                          RADEON_WAIT_2D_IDLECLEAN |
-                              RADEON_WAIT_DMA_GUI_IDLE) &&
            SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
                           RADEON_DST_PITCH_OFFSET, surface->PitchOffset) &&
            RadeonWrite32(bi, RADEON_BRUSH_Y_X,
@@ -1117,7 +1112,7 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
                  EngineState.Value[ENGINE_DST_PITCH_OFFSET] ==
                      destination->PitchOffset;
 
-    return WaitFifo(bi, 10) &&
+    return WaitFifo(bi, 8) &&
            (stateReady ||
             (SetEngineState(bi, ENGINE_MASTER,
                             RADEON_DP_GUI_MASTER_CNTL, master) &&
@@ -1131,11 +1126,6 @@ static BOOL SubmitCopy(struct BoardInfo *bi,
              SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
                             RADEON_DST_PITCH_OFFSET,
                             destination->PitchOffset))) &&
-           RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
-                          RADEON_RB2D_DC_FLUSH_ALL) &&
-           RadeonWrite32(bi, RADEON_WAIT_UNTIL,
-                          RADEON_WAIT_2D_IDLECLEAN |
-                              RADEON_WAIT_DMA_GUI_IDLE) &&
            RadeonWrite32(bi, RADEON_SRC_Y_X,
                          ((ULONG)(UWORD)srcY << 16) | (UWORD)srcX) &&
            RadeonWrite32(bi, RADEON_DST_Y_X,
