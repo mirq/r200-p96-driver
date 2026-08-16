@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 14UL
+#define RADEON_DEBUG_VERSION 15UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -190,11 +190,16 @@ struct RadeonDebugStats {
     ULONG BoardLockChecks;
     ULONG BoardLockOwned;
     ULONG BoardLockOwnedByOther;
+    /* Version 15: wall-clock behavior of non-responsive fence waits. */
+    ULONG CpFenceZeroPollSuccess;
+    ULONG CpFenceZeroPollTicks;
+    ULONG CpFenceTimeoutSuccess;
+    ULONG CpFenceTimeoutTicks;
 };
 
-#define RADEON_DEBUG_STATS_V14_SIZE 588UL
-typedef char RadeonDebugStatsV14SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V14_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V15_SIZE 604UL
+typedef char RadeonDebugStatsV15SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V15_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL

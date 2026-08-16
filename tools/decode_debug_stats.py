@@ -97,7 +97,13 @@ FIELDS.extend([
     "BoardLockOwned", "BoardLockOwnedByOther",
 ])
 
-KNOWN_VERSION = 14
+# Version 15
+FIELDS.extend([
+    "CpFenceZeroPollSuccess", "CpFenceZeroPollTicks",
+    "CpFenceTimeoutSuccess", "CpFenceTimeoutTicks",
+])
+
+KNOWN_VERSION = 15
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -194,6 +200,13 @@ def main():
         print("CP fence order     success=%d  %d -> %d" %
               (values["CpFenceOrderSuccess"], values["CpFirstFence"],
                values["CpSecondFence"]))
+        if "CpFenceTimeoutTicks" in values:
+            print("CP fence zero      success=%d  %.3f ms" %
+                  (values["CpFenceZeroPollSuccess"],
+                   values["CpFenceZeroPollTicks"] * us / 1000.0))
+            print("CP fence timeout   success=%d  %.3f ms (requested 20 ms)" %
+                  (values["CpFenceTimeoutSuccess"],
+                   values["CpFenceTimeoutTicks"] * us / 1000.0))
         checks = values["BoardLockChecks"]
         unowned = max(checks - values["BoardLockOwned"] -
                       values["BoardLockOwnedByOther"], 0)

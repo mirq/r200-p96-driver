@@ -1,6 +1,10 @@
+#include <devices/timer.h>
+#include <exec/io.h>
 #include <exec/memory.h>
+#include <exec/ports.h>
 #include <hardware/byteswap.h>
 #include <proto/exec.h>
+#include <proto/timer.h>
 
 #include "r200_microcode.h"
 #include "radeon9200.h"
@@ -34,15 +38,54 @@ struct RadeonCpState {
     ULONG PendingFence;
     ULONG NextFence;
     ULONG SavedBusCntl;
+    ULONG EClockRate;
     UWORD SavedCommand;
     UBYTE Ready;
     UBYTE BusConfigured;
+    UBYTE TimerOpen;
+    struct MsgPort TimerPort;
+    struct timerequest TimerRequest;
     UBYTE StagingStorage[CP_MAX_COMMAND_DWORDS * sizeof(ULONG) + 7UL];
 #ifdef DEBUG
     ULONG *DebugStaging;
     ULONG DebugSequence;
 #endif
 };
+
+static BOOL CpOpenTimer(struct ExecBase *SysBase,
+                        struct RadeonCpState *state)
+{
+    struct EClockVal value;
+    struct Device *TimerBase;
+
+    state->TimerPort.mp_Node.ln_Type = NT_MSGPORT;
+    state->TimerPort.mp_Flags = PA_IGNORE;
+    state->TimerPort.mp_MsgList.lh_Head =
+        (struct Node *)&state->TimerPort.mp_MsgList.lh_Tail;
+    state->TimerPort.mp_MsgList.lh_Tail = NULL;
+    state->TimerPort.mp_MsgList.lh_TailPred =
+        (struct Node *)&state->TimerPort.mp_MsgList.lh_Head;
+    state->TimerRequest.tr_node.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    state->TimerRequest.tr_node.io_Message.mn_ReplyPort = &state->TimerPort;
+    state->TimerRequest.tr_node.io_Message.mn_Length =
+        sizeof(state->TimerRequest);
+    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK,
+                   (struct IORequest *)&state->TimerRequest, 0))
+        return FALSE;
+    state->TimerOpen = TRUE;
+    TimerBase = state->TimerRequest.tr_node.io_Device;
+    state->EClockRate = ReadEClock(&value);
+    return state->EClockRate != 0;
+}
+
+static ULONG CpClock(struct RadeonCpState *state)
+{
+    struct EClockVal value;
+    struct Device *TimerBase = state->TimerRequest.tr_node.io_Device;
+
+    ReadEClock(&value);
+    return value.ev_lo;
+}
 
 static BOOL CpWaitGuiIdle(struct BoardInfo *bi)
 {
@@ -391,6 +434,8 @@ BOOL RadeonCpDebugRunTests(struct BoardInfo *bi,
     ULONG command = RADEON_CP_PACKET2;
     ULONG remaining;
     ULONG crossingCount;
+    ULONG futureFence;
+    ULONG start;
 
     if (!data || !data->CpState || !data->CpState->Ready || !result)
         return FALSE;
@@ -408,6 +453,20 @@ BOOL RadeonCpDebugRunTests(struct BoardInfo *bi,
         RadeonRead32(bi, RADEON_SCRATCH_REG0) != result->SecondFence)
         goto fail;
     result->FenceOrderSuccess = TRUE;
+
+    futureFence = RadeonRead32(bi, RADEON_SCRATCH_REG0) + 0x40000000UL;
+    if (!futureFence)
+        futureFence = 1;
+    start = CpClock(state);
+    result->FenceZeroPollSuccess =
+        !RadeonCpWaitFence(bi, futureFence, 0);
+    result->FenceZeroPollTicks = CpClock(state) - start;
+    start = CpClock(state);
+    result->FenceTimeoutSuccess =
+        !RadeonCpWaitFence(bi, futureFence, 20UL);
+    result->FenceTimeoutTicks = CpClock(state) - start;
+    if (!result->FenceZeroPollSuccess || !result->FenceTimeoutSuccess)
+        goto fail;
 
     if (!CpDebugWaitDrained(bi, state))
         goto fail;
@@ -582,6 +641,8 @@ BOOL RadeonCpInitialize(struct BoardInfo *bi)
     if (!state)
         return FALSE;
     data->CpState = state;
+    if (!CpOpenTimer(SysBase, state))
+        goto fail;
 #ifdef DEBUG
     state->DebugStaging = AllocMem(
         CP_DEBUG_MAX_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
@@ -696,6 +757,10 @@ void RadeonCpShutdown(struct BoardInfo *bi)
     if (state->RingMemory)
         (void)RadeonFreePrivateVram(bi, state->RingMemory,
                                     CP_RING_SIZE);
+    if (state->TimerOpen) {
+        CloseDevice((struct IORequest *)&state->TimerRequest);
+        state->TimerOpen = FALSE;
+    }
 #ifdef DEBUG
     if (state->DebugStaging)
         FreeMem(state->DebugStaging,
@@ -806,21 +871,30 @@ BOOL RadeonCpTestFence(struct BoardInfo *bi, ULONG fence)
 BOOL RadeonCpWaitFence(struct BoardInfo *bi, ULONG fence,
                        ULONG timeoutMs)
 {
-    ULONG polls;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+    ULONG timeoutTicks;
+    ULONG deadline;
 
-    if (!fence)
+    if (!data || !data->CpState || !fence)
         return FALSE;
+    state = data->CpState;
     if (!timeoutMs)
         return RadeonCpTestFence(bi, fence);
+    if (!state->TimerOpen || !state->EClockRate)
+        return FALSE;
     if (timeoutMs > CP_MAX_FENCE_WAIT_MS)
         timeoutMs = CP_MAX_FENCE_WAIT_MS;
-    polls = timeoutMs * 1000UL;
-    while (polls--) {
+    timeoutTicks = (state->EClockRate / 1000UL) * timeoutMs +
+                   ((state->EClockRate % 1000UL) * timeoutMs) / 1000UL;
+    deadline = CpClock(state) + timeoutTicks;
+    for (;;) {
         if (RadeonCpTestFence(bi, fence))
             return TRUE;
+        if ((LONG)(CpClock(state) - deadline) >= 0)
+            return FALSE;
         RadeonDelayUs(1);
     }
-    return FALSE;
 }
 
 BOOL RadeonCpWait(struct BoardInfo *bi)

@@ -211,6 +211,10 @@ static void TestCpFunction(struct BoardInfo *bi,
     stats->CpFirstFence = result.FirstFence;
     stats->CpSecondFence = result.SecondFence;
     stats->CpFenceOrderSuccess = result.FenceOrderSuccess;
+    stats->CpFenceZeroPollSuccess = result.FenceZeroPollSuccess;
+    stats->CpFenceZeroPollTicks = result.FenceZeroPollTicks;
+    stats->CpFenceTimeoutSuccess = result.FenceTimeoutSuccess;
+    stats->CpFenceTimeoutTicks = result.FenceTimeoutTicks;
 }
 
 void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,

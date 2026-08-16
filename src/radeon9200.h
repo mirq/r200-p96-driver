@@ -226,6 +226,10 @@ struct RadeonCpDebugResult {
     ULONG FirstFence;
     ULONG SecondFence;
     ULONG FenceOrderSuccess;
+    ULONG FenceZeroPollSuccess;
+    ULONG FenceZeroPollTicks;
+    ULONG FenceTimeoutSuccess;
+    ULONG FenceTimeoutTicks;
 };
 
 BOOL RadeonCpDebugSubmitNoops(struct BoardInfo *bi, ULONG commandCount,

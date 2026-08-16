@@ -212,7 +212,9 @@ texture fetches.
 
 Interface-v1 sessions cannot call `Radeon3DExecute()` and do not receive its
 capability. Fence tokens are accepted only by the session that most recently
-received them.
+received them. `Radeon3DWaitFence()` treats a nonzero timeout as a wall-clock
+budget, clamps it to 60 seconds, and returns when its EClock deadline expires.
+A zero timeout performs one nonblocking fence test.
 
 Interface-v5 diagnostic clients may use `Radeon3DInvalidateForTest()` only when
 `RADEON3D_CAP_TEST_INVALIDATE` is present. The capability is advertised only by
