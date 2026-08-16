@@ -81,6 +81,10 @@ struct AccelSurface {
     ULONG PitchOffset;
     ULONG StartOffset;
     ULONG EndOffset;
+    ULONG SurfaceOffset;
+    ULONG MemoryLimit;
+    ULONG Pitch;
+    ULONG BytesPerPixel;
     UWORD XBias;
     UWORD YBias;
 };
@@ -580,8 +584,52 @@ static enum SurfaceResult ValidateSurface(
                            (alignedGpuAddress >> 10);
     surface->StartOffset = rectangleStart;
     surface->EndOffset = rectangleEnd;
+    surface->SurfaceOffset = surfaceOffset;
+    surface->MemoryLimit = memoryLimit;
+    surface->Pitch = pitch;
+    surface->BytesPerPixel = bytesPerPixel;
     surface->XBias = (UWORD)xBias;
     surface->YBias = (UWORD)yBias;
+    return SURFACE_HARDWARE;
+}
+
+static enum SurfaceResult ValidateSameSurfaceRectangle(
+    WORD x, WORD y, WORD width, WORD height,
+    const struct AccelSurface *layout, struct AccelSurface *surface)
+{
+    ULONG lineEnd;
+    ULONG lastRowOffset;
+    ULONG remaining;
+    ULONG xEnd;
+    ULONG yEnd;
+
+    if (x < 0 || y < 0)
+        return SURFACE_SOFTWARE_ONBOARD;
+    xEnd = (ULONG)(UWORD)x + (UWORD)width;
+    yEnd = (ULONG)(UWORD)y + (UWORD)height;
+    if (xEnd - 1UL > ACCEL_MAX_COORD ||
+        yEnd - 1UL > ACCEL_MAX_COORD)
+        return SURFACE_SOFTWARE_ONBOARD;
+
+    lineEnd = xEnd * layout->BytesPerPixel;
+    if (lineEnd > layout->Pitch)
+        return SURFACE_REJECT;
+    lastRowOffset = (yEnd - 1UL) * layout->Pitch;
+    remaining = layout->MemoryLimit - layout->SurfaceOffset;
+    if (lineEnd > remaining ||
+        lastRowOffset > remaining - lineEnd)
+        return SURFACE_REJECT;
+    if ((ULONG)layout->XBias + (UWORD)x + (UWORD)width - 1UL >
+            ACCEL_MAX_COORD ||
+        (ULONG)layout->YBias + (UWORD)y + (UWORD)height - 1UL >
+            ACCEL_MAX_COORD)
+        return SURFACE_SOFTWARE_ONBOARD;
+
+    *surface = *layout;
+    surface->StartOffset = layout->SurfaceOffset +
+                           (ULONG)(UWORD)y * layout->Pitch +
+                           (ULONG)(UWORD)x * layout->BytesPerPixel;
+    surface->EndOffset = layout->SurfaceOffset + lastRowOffset + lineEnd;
     return SURFACE_HARDWARE;
 }
 
@@ -1677,8 +1725,12 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
     RDEBUG_OP_BEGIN();
     srcResult = ValidateSurface(bi, render, srcX, srcY, width, height,
                                 format, &source);
-    dstResult = ValidateSurface(bi, render, dstX, dstY, width, height,
-                                format, &destination);
+    if (srcResult == SURFACE_HARDWARE)
+        dstResult = ValidateSameSurfaceRectangle(
+            dstX, dstY, width, height, &source, &destination);
+    else
+        dstResult = ValidateSurface(bi, render, dstX, dstY, width, height,
+                                    format, &destination);
     if (srcResult == SURFACE_REJECT || dstResult == SURFACE_REJECT) {
         RDEBUG_OP_END(RADEON_DEBUG_OP_COPY);
         return;

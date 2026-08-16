@@ -295,6 +295,7 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi)
     volatile UBYTE *vram;
     UBYTE *memory;
     UBYTE saved;
+    UBYTE savedNext;
     ULONG start;
     ULONG index;
     BOOL success;
@@ -336,6 +337,19 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi)
     success = success && memory[0] == 0xa5U;
     *vram = saved;
     DebugNode->Stats.FallbackProbeSuccess = success;
+
+    savedNext = vram[64];
+    vram[0] = 0x5aU;
+    vram[64] = 0xa5U;
+    start = Clock();
+    for (index = 0; index < FALLBACK_PROBE_CALLS; ++index)
+        RadeonBlitRect(bi, &vramRender, 0, 0, 64, 0,
+                       1, 1, 0xffU, RGBFB_CLUT);
+    DebugNode->Stats.BlitRectProbeTicks = Clock() - start;
+    DebugNode->Stats.BlitRectProbeCalls = FALLBACK_PROBE_CALLS;
+    DebugNode->Stats.BlitRectBoundsSuccess = vram[64] == 0xa5U;
+    vram[0] = saved;
+    vram[64] = savedNext;
     FreeMem(memory, 64UL * 64UL);
 }
 

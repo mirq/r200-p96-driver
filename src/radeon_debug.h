@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 16UL
+#define RADEON_DEBUG_VERSION 17UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -201,11 +201,15 @@ struct RadeonDebugStats {
     ULONG FallbackProbeCalls;
     ULONG FallbackProbeTicks;
     ULONG FallbackProbeSuccess;
+    /* Version 17: destination-only same-surface bounds rejection. */
+    ULONG BlitRectBoundsSuccess;
+    ULONG BlitRectProbeCalls;
+    ULONG BlitRectProbeTicks;
 };
 
-#define RADEON_DEBUG_STATS_V16_SIZE 624UL
-typedef char RadeonDebugStatsV16SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V16_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V17_SIZE 636UL
+typedef char RadeonDebugStatsV17SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V17_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL

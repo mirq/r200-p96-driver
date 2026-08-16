@@ -6,7 +6,7 @@ Finding the block from the host:
     1. read the longword at 0x00000004                  -> SysBase
     2. read 16 bytes at SysBase + 392                   -> exec PortList,
                                                            lh_Type must be 4
-    3. walk ln_Succ from lh_Head, reading 658 bytes per node, until the
+    3. walk ln_Succ from lh_Head, reading 670 bytes per node, until the
        magic 'R92D' appears at node + 34 (= sizeof(struct MsgPort))
 
 Then paste the dump here:
@@ -109,7 +109,12 @@ FIELDS.extend([
     "FallbackProbeTicks", "FallbackProbeSuccess",
 ])
 
-KNOWN_VERSION = 16
+# Version 17
+FIELDS.extend([
+    "BlitRectBoundsSuccess", "BlitRectProbeCalls", "BlitRectProbeTicks",
+])
+
+KNOWN_VERSION = 17
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -229,6 +234,14 @@ def main():
                    per(values["FallbackProbeTicks"],
                        values["FallbackProbeCalls"]),
                    values["FallbackProbeSuccess"]))
+    if "BlitRectBoundsSuccess" in values:
+        print("BlitRect bounds    success=%d" %
+              values["BlitRectBoundsSuccess"])
+        if values.get("BlitRectProbeCalls"):
+            print("BlitRect validate  calls=%d %.3f us/call" %
+                  (values["BlitRectProbeCalls"],
+                   per(values["BlitRectProbeTicks"],
+                       values["BlitRectProbeCalls"])))
 
     # Each sampled interval brackets the work with two ReadEClock calls and so
     # carries roughly one call's latency; subtract it before reporting.
