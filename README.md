@@ -108,14 +108,21 @@ The default cross-compiler prefix is `/opt/amiga/bin/m68k-amigaos-`. A default
 build produces the matched `Radeon9200.chip` and `Prometheus.card` artifacts in
 the project root.
 
+`make FASTWAIT=1` produces the controlled experimental
+`Radeon9200-fastwait.chip` with a separate `build-fastwait/` object tree. It
+omits the destination-cache flush after FIFO-empty and engine-idle completion;
+the normal build retains the flush. Testing requires installing the experimental
+file as `Radeon9200.chip`; it uses the unchanged normal `Prometheus.card`.
+`make DEBUG=1 FASTWAIT=1` uses a separate `build-debug-fastwait/` tree.
+
 For serial/debug logging through `KPrintF`:
 
 ```sh
-make clean && make DEBUG=1
+make DEBUG=1
 ```
 
-Always clean when switching `DEBUG`, because both configurations use the same
-object and output paths.
+Release, DEBUG, FASTWAIT, and DEBUG+FASTWAIT configurations use separate object
+trees and chip filenames.
 
 Build the P96 screen test utility with:
 

@@ -232,6 +232,13 @@ static BOOL WaitIdleAndFlush(struct BoardInfo *bi)
                     data ? data->AccelPending : RADEON_PENDING_NONE);
         return FALSE;
     }
+#ifdef RADEON_FAST_WAIT
+    {
+        RDEBUG_WAIT(RADEON_DEBUG_WAIT_IDLE, count + 1UL, TRUE, status,
+                    data ? data->AccelPending : RADEON_PENDING_NONE);
+        return TRUE;
+    }
+#endif
 
     if (!RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
                        RADEON_RB2D_DC_FLUSH_ALL))
@@ -1270,7 +1277,7 @@ static ULONG ProbeMonoFromMemory(struct BoardInfo *bi)
 #endif
 
 BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
-                                  BOOL stageTemplates)
+                                   BOOL stageTemplates)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     ULONG location;

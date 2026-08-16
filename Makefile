@@ -1,9 +1,20 @@
 CROSS ?= /opt/amiga/bin/m68k-amigaos-
 DEBUG ?= 0
+FASTWAIT ?= 0
 CC := $(CROSS)gcc
 STRIP := $(CROSS)strip
 
+ifeq ($(FASTWAIT),1)
 ifeq ($(DEBUG),1)
+TARGET ?= Radeon9200-debug-fastwait.chip
+CARD_TARGET ?= Prometheus-debug.card
+BUILD_DIR ?= build-debug-fastwait
+else
+TARGET ?= Radeon9200-fastwait.chip
+CARD_TARGET ?= Prometheus.card
+BUILD_DIR ?= build-fastwait
+endif
+else ifeq ($(DEBUG),1)
 TARGET ?= Radeon9200-debug.chip
 CARD_TARGET ?= Prometheus-debug.card
 BUILD_DIR ?= build-debug
@@ -54,6 +65,9 @@ CPPFLAGS := \
 
 ifeq ($(DEBUG),1)
 CPPFLAGS += -DDEBUG
+endif
+ifeq ($(FASTWAIT),1)
+CPPFLAGS += -DRADEON_FAST_WAIT
 endif
 
 CFLAGS := \
@@ -214,5 +228,8 @@ $(CARD_BUILD_DIR)/%.o: $(CARD_DIR)/%.c
 -include $(OBJECTS:.o=.d) $(CARD_OBJECTS:.o=.d)
 
 clean:
-	rm -rf build build-debug Radeon9200.chip Radeon9200-debug.chip \
+	rm -rf build build-debug build-fastwait build-debug-fastwait \
+		Radeon9200.chip Radeon9200-debug.chip \
+		Radeon9200-fastwait.chip Radeon9200-debug-fastwait.chip \
+		Radeon9200.card Radeon9200-debug.card \
 		Prometheus.card Prometheus-debug.card

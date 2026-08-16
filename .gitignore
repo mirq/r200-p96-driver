@@ -1,10 +1,14 @@
 # Build outputs
 build/
 build-debug/
+build-fastwait/
+build-debug-fastwait/
 Radeon9200.card
 Radeon9200-debug.card
 Radeon9200.chip
 Radeon9200-debug.chip
+Radeon9200-fastwait.chip
+Radeon9200-debug-fastwait.chip
 Prometheus.card
 Prometheus-debug.card
 deploy-r200-phase0/
