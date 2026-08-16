@@ -6,7 +6,7 @@ Finding the block from the host:
     1. read the longword at 0x00000004                  -> SysBase
     2. read 16 bytes at SysBase + 392                   -> exec PortList,
                                                            lh_Type must be 4
-    3. walk ln_Succ from lh_Head, reading 652 bytes per node, until the
+    3. walk ln_Succ from lh_Head, reading 658 bytes per node, until the
        magic 'R92D' appears at node + 34 (= sizeof(struct MsgPort))
 
 Then paste the dump here:
@@ -103,7 +103,13 @@ FIELDS.extend([
     "CpFenceTimeoutSuccess", "CpFenceTimeoutTicks",
 ])
 
-KNOWN_VERSION = 15
+# Version 16
+FIELDS.extend([
+    "FallbackDrainSkipped", "FallbackDrainRequired", "FallbackProbeCalls",
+    "FallbackProbeTicks", "FallbackProbeSuccess",
+])
+
+KNOWN_VERSION = 16
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -213,6 +219,16 @@ def main():
         print("BoardLock          checks=%d current=%d other=%d unowned=%d" %
               (checks, values["BoardLockOwned"],
                values["BoardLockOwnedByOther"], unowned))
+    if "FallbackDrainSkipped" in values:
+        print("fallback drains     skipped=%d required=%d" %
+              (values["FallbackDrainSkipped"],
+               values["FallbackDrainRequired"]))
+        if values.get("FallbackProbeCalls"):
+            print("fallback probe      calls=%d %.3f us/call success=%d" %
+                  (values["FallbackProbeCalls"],
+                   per(values["FallbackProbeTicks"],
+                       values["FallbackProbeCalls"]),
+                   values["FallbackProbeSuccess"]))
 
     # Each sampled interval brackets the work with two ReadEClock calls and so
     # carries roughly one call's latency; subtract it before reporting.

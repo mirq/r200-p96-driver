@@ -72,7 +72,8 @@ static UBYTE LineLogged;
 
 enum SurfaceResult {
     SURFACE_REJECT,
-    SURFACE_SOFTWARE,
+    SURFACE_SOFTWARE_ONBOARD,
+    SURFACE_SOFTWARE_OFFBOARD,
     SURFACE_HARDWARE
 };
 
@@ -442,6 +443,44 @@ static ULONG HardwarePen(ULONG pen, RGBFTYPE format)
     }
 }
 
+static BOOL IsOffboardMemory(const struct BoardInfo *bi, const APTR memory)
+{
+    ULONG memoryBase;
+    ULONG memoryAddress;
+
+    if (!bi || !bi->MemoryBase || !bi->MemorySpaceSize || !memory)
+        return FALSE;
+    memoryBase = (ULONG)bi->MemoryBase;
+    memoryAddress = (ULONG)memory;
+    return memoryAddress < memoryBase ||
+           memoryAddress - memoryBase >= bi->MemorySpaceSize;
+}
+
+static enum SurfaceResult SoftwareSurfaceResult(
+    const struct BoardInfo *bi, const struct RenderInfo *render)
+{
+    return render && IsOffboardMemory(bi, render->Memory)
+               ? SURFACE_SOFTWARE_OFFBOARD
+               : SURFACE_SOFTWARE_ONBOARD;
+}
+
+static BOOL PrepareSoftwareFallback(struct BoardInfo *bi,
+                                    struct RadeonBoardData *data,
+                                    BOOL allOffboard)
+{
+    struct ExecBase *SysBase = bi->ExecBase;
+    BOOL software;
+
+    RDEBUG_FALLBACK_DRAIN(allOffboard);
+    if (allOffboard)
+        return data->AccelState != RADEON_ACCEL_UNSAFE;
+    ObtainSemaphore(&bi->BoardLock);
+    software = SynchronizeEngine(bi) &&
+               data->AccelState != RADEON_ACCEL_UNSAFE;
+    ReleaseSemaphore(&bi->BoardLock);
+    return software;
+}
+
 static enum SurfaceResult ValidateSurface(
     struct BoardInfo *bi, const struct RenderInfo *render,
     WORD x, WORD y, WORD width, WORD height, RGBFTYPE format,
@@ -472,11 +511,11 @@ static enum SurfaceResult ValidateSurface(
     (void)datatype;
     if (!data || !render || !render->Memory || !surface ||
         !bytesPerPixel || render->BytesPerRow <= 0)
-        return SURFACE_SOFTWARE;
+        return SoftwareSurfaceResult(bi, render);
     if (width <= 0 || height <= 0)
         return SURFACE_REJECT;
     if (x < 0 || y < 0)
-        return SURFACE_SOFTWARE;
+        return SoftwareSurfaceResult(bi, render);
 
     memoryBase = (ULONG)bi->MemoryBase;
     memoryAddress = (ULONG)render->Memory;
@@ -489,20 +528,20 @@ static enum SurfaceResult ValidateSurface(
 
     if (memoryAddress < memoryBase ||
         memoryAddress - memoryBase >= apertureLimit)
-        return SURFACE_SOFTWARE;
+        return SURFACE_SOFTWARE_OFFBOARD;
     surfaceOffset = memoryAddress - memoryBase;
     if (surfaceOffset >= memoryLimit)
         return SURFACE_REJECT;
 
     pitch = (ULONG)(UWORD)render->BytesPerRow;
     if ((pitch & 63UL) || pitch > ACCEL_MAX_PITCH)
-        return SURFACE_SOFTWARE;
+        return SURFACE_SOFTWARE_ONBOARD;
 
     xEnd = (ULONG)(UWORD)x + (UWORD)width;
     yEnd = (ULONG)(UWORD)y + (UWORD)height;
     if (xEnd - 1UL > ACCEL_MAX_COORD ||
         yEnd - 1UL > ACCEL_MAX_COORD)
-        return SURFACE_SOFTWARE;
+        return SURFACE_SOFTWARE_ONBOARD;
 
     lineEnd = xEnd * bytesPerPixel;
     if (lineEnd > pitch)
@@ -521,13 +560,13 @@ static enum SurfaceResult ValidateSurface(
     gpuAddress = data->FramebufferGpuBase + surfaceOffset;
     alignedGpuAddress = gpuAddress & ~1023UL;
     if (alignedGpuAddress > 0xfffffc00UL)
-        return SURFACE_SOFTWARE;
+        return SURFACE_SOFTWARE_ONBOARD;
     addressBias = gpuAddress - alignedGpuAddress;
     if (addressBias) {
         yBias = addressBias / pitch;
         addressBias -= yBias * pitch;
         if (addressBias % bytesPerPixel)
-            return SURFACE_SOFTWARE;
+            return SURFACE_SOFTWARE_ONBOARD;
         xBias = addressBias / bytesPerPixel;
     } else {
         xBias = 0;
@@ -535,7 +574,7 @@ static enum SurfaceResult ValidateSurface(
     }
     if (xBias + (UWORD)x + (UWORD)width - 1UL > ACCEL_MAX_COORD ||
         yBias + (UWORD)y + (UWORD)height - 1UL > ACCEL_MAX_COORD)
-        return SURFACE_SOFTWARE;
+        return SURFACE_SOFTWARE_ONBOARD;
 
     surface->PitchOffset = ((pitch >> 6) << 22) |
                            (alignedGpuAddress >> 10);
@@ -563,7 +602,7 @@ static enum SurfaceResult ValidateLineSurface(
     ULONG rows;
 
     if (!data || !render || !render->Memory || !surface)
-        return SURFACE_SOFTWARE;
+        return SoftwareSurfaceResult(bi, render);
 
     if (!LineSurface.Valid || LineSurface.Board != bi ||
         LineSurface.Memory != render->Memory ||
@@ -573,13 +612,13 @@ static enum SurfaceResult ValidateLineSurface(
         LineSurface.Datatype = HardwareDatatype(
             format, &LineSurface.BytesPerPixel);
         if (!LineSurface.BytesPerPixel || render->BytesPerRow <= 0)
-            return SURFACE_SOFTWARE;
+            return SoftwareSurfaceResult(bi, render);
 
         memoryBase = (ULONG)bi->MemoryBase;
         memoryAddress = (ULONG)render->Memory;
         if (memoryAddress < memoryBase ||
             memoryAddress - memoryBase >= bi->MemorySpaceSize)
-            return SURFACE_SOFTWARE;
+            return SURFACE_SOFTWARE_OFFBOARD;
         surfaceOffset = memoryAddress - memoryBase;
 
         memoryLimit = bi->MemorySize;
@@ -594,7 +633,7 @@ static enum SurfaceResult ValidateLineSurface(
         LineSurface.BytesPerRow = render->BytesPerRow;
         if (((ULONG)(UWORD)LineSurface.BytesPerRow & 63UL) ||
             (ULONG)(UWORD)LineSurface.BytesPerRow > ACCEL_MAX_PITCH)
-            return SURFACE_SOFTWARE;
+            return SURFACE_SOFTWARE_ONBOARD;
         LineSurface.MaxX = (ULONG)(UWORD)LineSurface.BytesPerRow /
                            LineSurface.BytesPerPixel;
         if (!LineSurface.MaxX)
@@ -614,18 +653,18 @@ static enum SurfaceResult ValidateLineSurface(
         gpuAddress = data->FramebufferGpuBase + surfaceOffset;
         alignedGpuAddress = gpuAddress & ~1023UL;
         if (alignedGpuAddress > 0xfffffc00UL)
-            return SURFACE_SOFTWARE;
+            return SURFACE_SOFTWARE_ONBOARD;
         addressBias = gpuAddress - alignedGpuAddress;
         LineSurface.YBias = addressBias /
                             (ULONG)(UWORD)LineSurface.BytesPerRow;
         addressBias -= (ULONG)LineSurface.YBias *
                        (ULONG)(UWORD)LineSurface.BytesPerRow;
         if (addressBias % LineSurface.BytesPerPixel)
-            return SURFACE_SOFTWARE;
+            return SURFACE_SOFTWARE_ONBOARD;
         LineSurface.XBias = addressBias / LineSurface.BytesPerPixel;
         if (LineSurface.XBias > ACCEL_MAX_COORD ||
             LineSurface.YBias > ACCEL_MAX_COORD)
-            return SURFACE_SOFTWARE;
+            return SURFACE_SOFTWARE_ONBOARD;
         if (LineSurface.MaxX > ACCEL_MAX_COORD - LineSurface.XBias)
             LineSurface.MaxX = ACCEL_MAX_COORD - LineSurface.XBias;
         if (LineSurface.MaxY > ACCEL_MAX_COORD - LineSurface.YBias)
@@ -641,7 +680,7 @@ static enum SurfaceResult ValidateLineSurface(
     }
 
     if (left < 0 || top < 0 || right < left || bottom < top)
-        return SURFACE_SOFTWARE;
+        return SoftwareSurfaceResult(bi, render);
     if ((ULONG)right > LineSurface.MaxX ||
         (ULONG)bottom > LineSurface.MaxY)
         return SURFACE_REJECT;
@@ -1413,10 +1452,8 @@ void RadeonFillRect(__REGA0(struct BoardInfo *bi),
         }
         RDEBUG_END_FILL();
     } else {
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, result == SURFACE_SOFTWARE_OFFBOARD);
     }
 
     if (software && bi->FillRectDefault &&
@@ -1463,10 +1500,8 @@ void RadeonInvertRect(__REGA0(struct BoardInfo *bi),
             ReleaseSemaphore(&bi->BoardLock);
         }
     } else {
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, result == SURFACE_SOFTWARE_OFFBOARD);
     }
 
     if (software && bi->InvertRectDefault &&
@@ -1530,10 +1565,9 @@ void RadeonBlitPattern(__REGA0(struct BoardInfo *bi),
             ReleaseSemaphore(&bi->BoardLock);
         }
     } else {
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, result == SURFACE_SOFTWARE_OFFBOARD &&
+                      IsOffboardMemory(bi, pattern->Memory));
     }
 
     if (software && bi->BlitPatternDefault &&
@@ -1607,10 +1641,9 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
             ReleaseSemaphore(&bi->BoardLock);
         }
     } else {
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, result == SURFACE_SOFTWARE_OFFBOARD && template &&
+                      IsOffboardMemory(bi, template->Memory));
     }
 
     if (software)
@@ -1679,10 +1712,9 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
             ReleaseSemaphore(&bi->BoardLock);
         }
     } else {
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, srcResult == SURFACE_SOFTWARE_OFFBOARD &&
+                      dstResult == SURFACE_SOFTWARE_OFFBOARD);
     }
 
     if (software && bi->BlitRectDefault &&
@@ -1805,10 +1837,9 @@ void RadeonBlitRectNoMaskComplete(
             ReleaseSemaphore(&bi->BoardLock);
         }
     } else {
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, srcResult == SURFACE_SOFTWARE_OFFBOARD &&
+                      dstResult == SURFACE_SOFTWARE_OFFBOARD);
     }
 
     if (software && bi->BlitRectNoMaskCompleteDefault &&
@@ -2042,10 +2073,8 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
         }
     } else {
 fallback:
-        ObtainSemaphore(&bi->BoardLock);
-        software = SynchronizeEngine(bi) &&
-                   data->AccelState != RADEON_ACCEL_UNSAFE;
-        ReleaseSemaphore(&bi->BoardLock);
+        software = PrepareSoftwareFallback(
+            bi, data, IsOffboardMemory(bi, render ? render->Memory : NULL));
     }
 
 complete:

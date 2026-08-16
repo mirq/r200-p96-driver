@@ -278,6 +278,7 @@ BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
     RadeonInstallCallbacks(
         bi, (features & PROM_RADEON_FEATURE_HWSPRITE) != 0,
         (features & PROM_RADEON_FEATURE_HWTEXT) != 0);
+    RDEBUG_FALLBACK_PROBE(bi);
     if (RadeonCpIsReady(bi)) {
         Radeon3DAdvanceGeneration(base);
         base->ServiceState = RADEON3D_SERVICE_READY;

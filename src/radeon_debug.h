@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 15UL
+#define RADEON_DEBUG_VERSION 16UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -195,11 +195,17 @@ struct RadeonDebugStats {
     ULONG CpFenceZeroPollTicks;
     ULONG CpFenceTimeoutSuccess;
     ULONG CpFenceTimeoutTicks;
+    /* Version 16: software fallbacks split by synchronization decision. */
+    ULONG FallbackDrainSkipped;
+    ULONG FallbackDrainRequired;
+    ULONG FallbackProbeCalls;
+    ULONG FallbackProbeTicks;
+    ULONG FallbackProbeSuccess;
 };
 
-#define RADEON_DEBUG_STATS_V15_SIZE 604UL
-typedef char RadeonDebugStatsV15SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V15_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V16_SIZE 624UL
+typedef char RadeonDebugStatsV16SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V16_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL
@@ -250,6 +256,8 @@ void RadeonDebugCompleteSubmit(ULONG success);
 ULONG RadeonDebugPhaseBegin(void);
 void RadeonDebugCompletePhase(ULONG phase, ULONG start);
 void RadeonDebugBoardLock(struct BoardInfo *bi);
+void RadeonDebugFallbackDrain(ULONG skipped);
+void RadeonDebugFallbackProbe(struct BoardInfo *bi);
 
 #define RADEON_DEBUG_COMPLETE_VALIDATE 0UL
 #define RADEON_DEBUG_COMPLETE_SUBMIT   1UL
@@ -294,6 +302,8 @@ void RadeonDebugBoardLock(struct BoardInfo *bi);
 #define RDEBUG_COMPLETE_PHASE(phase, start) \
     RadeonDebugCompletePhase((phase), (start))
 #define RDEBUG_BOARD_LOCK(bi) RadeonDebugBoardLock(bi)
+#define RDEBUG_FALLBACK_DRAIN(skipped) RadeonDebugFallbackDrain(skipped)
+#define RDEBUG_FALLBACK_PROBE(bi) RadeonDebugFallbackProbe(bi)
 
 #else
 
@@ -327,6 +337,8 @@ void RadeonDebugBoardLock(struct BoardInfo *bi);
 #define RDEBUG_PHASE_BEGIN() 0UL
 #define RDEBUG_COMPLETE_PHASE(phase, start) ((void)0)
 #define RDEBUG_BOARD_LOCK(bi) ((void)0)
+#define RDEBUG_FALLBACK_DRAIN(skipped) ((void)0)
+#define RDEBUG_FALLBACK_PROBE(bi) ((void)0)
 
 #endif
 

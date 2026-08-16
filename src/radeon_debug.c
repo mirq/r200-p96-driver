@@ -20,6 +20,7 @@
 #define VRAM_SMALL_BYTES  (8UL * 1024UL)
 #define VRAM_BURST_BYTES  (64UL * 1024UL)
 #define CP_PROBE_DWORDS    4096UL
+#define FALLBACK_PROBE_CALLS 8192UL
 
 ULONG RadeonDebugReads;
 ULONG RadeonDebugWrites;
@@ -274,6 +275,68 @@ void RadeonDebugBoardLock(struct BoardInfo *bi)
         ++DebugNode->Stats.BoardLockOwned;
     else if (bi->BoardLock.ss_Owner)
         ++DebugNode->Stats.BoardLockOwnedByOther;
+}
+
+void RadeonDebugFallbackDrain(ULONG skipped)
+{
+    if (!DebugNode)
+        return;
+    if (skipped)
+        ++DebugNode->Stats.FallbackDrainSkipped;
+    else
+        ++DebugNode->Stats.FallbackDrainRequired;
+}
+
+void RadeonDebugFallbackProbe(struct BoardInfo *bi)
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RenderInfo systemRender;
+    struct RenderInfo vramRender;
+    volatile UBYTE *vram;
+    UBYTE *memory;
+    UBYTE saved;
+    ULONG start;
+    ULONG index;
+    BOOL success;
+
+    if (!DebugNode || !SysBase || !bi->MemoryBase ||
+        !bi->FillRectDefault || !bi->BlitRectNoMaskCompleteDefault)
+        return;
+    memory = AllocMem(64UL * 64UL, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!memory)
+        return;
+    systemRender.Memory = memory;
+    systemRender.BytesPerRow = 64;
+    systemRender.pad = 0;
+    systemRender.RGBFormat = RGBFB_CLUT;
+
+    start = Clock();
+    for (index = 0; index < FALLBACK_PROBE_CALLS; ++index)
+        RadeonFillRect(bi, &systemRender,
+                       (WORD)(index & 63UL),
+                       (WORD)((index >> 6) & 63UL),
+                       1, 1, index, 0xffU, RGBFB_CLUT);
+    DebugNode->Stats.FallbackProbeTicks = Clock() - start;
+    DebugNode->Stats.FallbackProbeCalls = FALLBACK_PROBE_CALLS;
+    success = memory[0] == 0 && memory[1] == 1 && memory[63] == 63;
+
+    vram = (volatile UBYTE *)bi->MemoryBase;
+    saved = *vram;
+    vramRender.Memory = (APTR)vram;
+    vramRender.BytesPerRow = 64;
+    vramRender.pad = 0;
+    vramRender.RGBFormat = RGBFB_CLUT;
+    memory[0] = 0x5aU;
+    RadeonBlitRectNoMaskComplete(bi, &systemRender, &vramRender,
+                                 0, 0, 0, 0, 1, 1, 0x0cU, RGBFB_CLUT);
+    success = success && *vram == 0x5aU;
+    *vram = 0xa5U;
+    RadeonBlitRectNoMaskComplete(bi, &vramRender, &systemRender,
+                                 0, 0, 0, 0, 1, 1, 0x0cU, RGBFB_CLUT);
+    success = success && memory[0] == 0xa5U;
+    *vram = saved;
+    DebugNode->Stats.FallbackProbeSuccess = success;
+    FreeMem(memory, 64UL * 64UL);
 }
 
 void RadeonDebugClose(struct BoardInfo *bi)
