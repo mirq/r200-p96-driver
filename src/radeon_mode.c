@@ -35,6 +35,68 @@
 
 #define RADEON_SCANOUT_FORMATS \
     (RGBFF_CLUT | RGBFF_R5G6B5PC | RGBFF_B8G8R8A8)
+#define RADEON_DVI_MAX_CLOCK_HZ 165000000UL
+#define RADEON_VGA_MAX_CLOCK_HZ 230000000UL
+#define RADEON_CLOCK_STEP_HZ 250000UL
+/* Keep the advertised DVI maximum below the single-link limit after PLL
+ * quantisation (165 MHz requests can round up to 165.375 MHz). */
+#define RADEON_DVI_CLOCK_LADDER_MAX_HZ 164750000UL
+
+static BOOL DviActive(const struct RadeonBoardData *data)
+{
+    return data && data->RequestedOutput == PROM_RADEON_OUTPUT_DVI &&
+           data->DviInfo != NULL;
+}
+
+static BOOL SelectTmdsPll(const struct RadeonBoardData *data, ULONG clock,
+                          ULONG *value)
+{
+    UWORD index;
+    ULONG clock10KHz = (clock + 5000UL) / 10000UL;
+
+    if (!DviActive(data) || !value || clock > RADEON_DVI_MAX_CLOCK_HZ)
+        return FALSE;
+    for (index = 0; index < data->DviInfo->PllCount; ++index) {
+        const struct RadeonTmdsPll *pll = &data->DviInfo->Pll[index];
+        if (clock10KHz < pll->Limit10KHz) {
+            *value = pll->Value;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static ULONG RadeonClockMinimum(const struct RadeonBoardData *data)
+{
+    ULONG minimum = 12000000UL;
+
+    if (data && data->MinPllKHz)
+        minimum = ((ULONG)data->MinPllKHz * 1000UL + 15UL) / 16UL;
+    return ((minimum + RADEON_CLOCK_STEP_HZ - 1UL) /
+            RADEON_CLOCK_STEP_HZ) * RADEON_CLOCK_STEP_HZ;
+}
+
+static ULONG RadeonClockMaximum(const struct RadeonBoardData *data)
+{
+    ULONG maximum = RADEON_VGA_MAX_CLOCK_HZ;
+
+    if (data && data->MaxPllKHz &&
+        (ULONG)data->MaxPllKHz * 1000UL < maximum)
+        maximum = (ULONG)data->MaxPllKHz * 1000UL;
+    if (DviActive(data) && maximum > RADEON_DVI_CLOCK_LADDER_MAX_HZ)
+        maximum = RADEON_DVI_CLOCK_LADDER_MAX_HZ;
+    return maximum;
+}
+
+static ULONG RadeonClockCount(const struct RadeonBoardData *data)
+{
+    ULONG minimum = RadeonClockMinimum(data);
+    ULONG maximum = RadeonClockMaximum(data);
+
+    return maximum >= minimum ?
+               (maximum - minimum) / RADEON_CLOCK_STEP_HZ + 1UL :
+               0;
+}
 
 static BOOL RadeonSetSwitch(__REGA0(struct BoardInfo *bi),
                             __REGD0(BOOL state));
@@ -202,7 +264,7 @@ static const struct ModeInfo StartupModeTemplate = {
 };
 
 static BOOL CalculatePll(struct BoardInfo *bi, struct ModeInfo *mode,
-                         ULONG requested)
+                         ULONG requested, BOOL nearest)
 {
     static const UBYTE divisors[] = {16, 12, 8, 6, 4, 3, 2, 1};
     static const UBYTE codes[] = {5, 7, 3, 6, 2, 4, 1, 0};
@@ -221,6 +283,8 @@ static BOOL CalculatePll(struct BoardInfo *bi, struct ModeInfo *mode,
 
     if (!data || !mode || !requested || !data->RefClockKHz ||
         data->RefDivider < 2)
+        return FALSE;
+    if (DviActive(data) && requested > RADEON_DVI_MAX_CLOCK_HZ)
         return FALSE;
 
     targetKHz = (requested + 500UL) / 1000UL;
@@ -251,16 +315,15 @@ static BOOL CalculatePll(struct BoardInfo *bi, struct ModeInfo *mode,
     actualHz = (ULONG)((numerator + denominator / 2ULL) / denominator);
     difference = actualHz > requested ? actualHz - requested :
                                         requested - actualHz;
-    if ((unsigned long long)difference * 200ULL > requested)
+    if (!nearest && (unsigned long long)difference * 200ULL > requested)
+        return FALSE;
+    if (DviActive(data) && actualHz > RADEON_DVI_MAX_CLOCK_HZ)
         return FALSE;
 
     mode->pll1.Numerator = (UBYTE)(feedback & 0xffU);
     mode->pll2.Denominator =
         (UBYTE)(((feedback >> 8) & 0x07U) | ((code & 0x07U) << 3));
     mode->PixelClock = actualHz;
-    data->FeedbackDivider = feedback;
-    data->PostDivider = divisor;
-    data->PostDividerCode = code;
     return TRUE;
 }
 
@@ -349,23 +412,27 @@ static BOOL ProgramClock(struct BoardInfo *bi, struct ModeInfo *mode)
                            RADEON_PIXCLK_DAC_ALWAYS_ONb))
         return FALSE;
 
-    data->FeedbackDivider = feedback;
-    data->PostDividerCode = code;
     return TRUE;
+}
+
+static ULONG RadeonHSyncSize(UWORD size)
+{
+    return ((ULONG)size + 4UL) & ~7UL;
 }
 
 static BOOL ValidateMode(const struct ModeInfo *mode)
 {
     ULONG hsyncStart;
     ULONG hsyncEnd;
+    ULONG hsyncSize;
     ULONG vsyncStart;
     ULONG vsyncEnd;
 
     if (!mode || mode->Width < 8 || mode->Width > 4096 ||
         (mode->Width & 7U) || mode->HorTotal <= mode->Width ||
         mode->HorTotal > 8192 || (mode->HorTotal & 7U) ||
-        mode->HorSyncSize < 8 || mode->HorSyncSize > 504 ||
-        (mode->HorSyncSize & 7U) || !mode->Height ||
+        mode->HorSyncSize < 4 || mode->HorSyncSize > 504 ||
+        !mode->Height ||
         mode->Height > 2048 || mode->VerTotal <= mode->Height ||
         mode->VerTotal > 2048 || !mode->VerSyncSize ||
         mode->VerSyncSize > 31 ||
@@ -373,8 +440,9 @@ static BOOL ValidateMode(const struct ModeInfo *mode)
                         GMF_INTERLACE | GMF_DOUBLEVERTICAL)))
         return FALSE;
 
+    hsyncSize = RadeonHSyncSize(mode->HorSyncSize);
     hsyncStart = (ULONG)mode->Width + mode->HorSyncStart;
-    hsyncEnd = hsyncStart + mode->HorSyncSize;
+    hsyncEnd = hsyncStart + hsyncSize;
     vsyncStart = (ULONG)mode->Height + mode->VerSyncStart;
     vsyncEnd = vsyncStart + mode->VerSyncSize;
     return hsyncStart >= mode->Width && hsyncStart >= 8 &&
@@ -397,6 +465,16 @@ static void ApplyDisplayState(struct BoardInfo *bi)
     else if (data && data->DpmsLevel == DPMS_OFF)
         disabled |= RADEON_CRTC_HSYNC_DIS | RADEON_CRTC_VSYNC_DIS;
 
+    if (DviActive(data)) {
+        ULONG fp = RadeonRead32(bi, RADEON_FP_GEN_CNTL);
+        if (data->ModeValid && data->DisplayEnabled &&
+            data->DpmsLevel == DPMS_ON && data->DviTimingReady &&
+            data->DviFormatReady)
+            fp |= RADEON_FPON | RADEON_FP_TMDS_EN;
+        else
+            fp &= ~(RADEON_FPON | RADEON_FP_TMDS_EN);
+        RadeonWrite32(bi, RADEON_FP_GEN_CNTL, fp);
+    }
     RadeonMask32(bi, RADEON_CRTC_EXT_CNTL,
                  RADEON_CRTC_DISPLAY_DIS | RADEON_CRTC_HSYNC_DIS |
                      RADEON_CRTC_VSYNC_DIS,
@@ -427,6 +505,7 @@ static BOOL DisableUnsupportedBlocks(struct BoardInfo *bi)
 
 static BOOL ConfigureDac(struct BoardInfo *bi, RGBFTYPE format)
 {
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
     ULONG dac = RadeonRead32(bi, RADEON_DAC_CNTL);
     ULONG pixelWidth;
 
@@ -436,7 +515,9 @@ static BOOL ConfigureDac(struct BoardInfo *bi, RGBFTYPE format)
     dac &= RADEON_DAC_RANGE_CNTL_MASK | RADEON_DAC_BLANKING;
     dac |= RADEON_DAC_MASK_ALL | RADEON_DAC_8BIT_EN;
 
-    return RadeonWrite32(bi, RADEON_SURFACE_CNTL, 0) &&
+    if (data)
+        data->DviFormatReady = FALSE;
+    if (!(RadeonWrite32(bi, RADEON_SURFACE_CNTL, 0) &&
            RadeonMask32(bi, RADEON_DISP_OUTPUT_CNTL,
                         RADEON_DISP_DAC_SOURCE_MASK, 0) &&
            RadeonMask32(bi, RADEON_DAC_CNTL2,
@@ -451,8 +532,12 @@ static BOOL ConfigureDac(struct BoardInfo *bi, RGBFTYPE format)
            RadeonMask32(bi, RADEON_CRTC_GEN_CNTL,
                          RADEON_CRTC_PIX_WIDTH_MASK,
                          pixelWidth) &&
-           RadeonMask32(bi, RADEON_DISP_MERGE_CNTL,
-                         RADEON_DISP_RGB_OFFSET_EN, 0);
+            RadeonMask32(bi, RADEON_DISP_MERGE_CNTL,
+                         RADEON_DISP_RGB_OFFSET_EN, 0)))
+        return FALSE;
+    if (DviActive(data))
+        data->DviFormatReady = TRUE;
+    return TRUE;
 }
 
 static BOOL ProgramPalette(struct BoardInfo *bi, UWORD start, UWORD count,
@@ -493,6 +578,7 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     ULONG hsyncStart;
+    ULONG hsyncSize;
     ULONG vsyncStart;
     ULONG hTotalDisplay;
     ULONG hSync;
@@ -500,11 +586,15 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
     ULONG vSync;
     ULONG crtc;
     ULONG pixelWidth;
+    ULONG tmdsPll = 0;
+    ULONG ext;
 
     if (!data)
         return FALSE;
 
     data->ModeValid = FALSE;
+    data->DviTimingReady = FALSE;
+    data->DviFormatReady = FALSE;
     bi->ModeInfo = NULL;
     if (!RadeonMask32(bi, RADEON_CRTC_EXT_CNTL, 0,
                       RADEON_CRTC_DISPLAY_DIS |
@@ -514,12 +604,12 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
         !GetDepthPixelWidth(mode->Depth, &pixelWidth))
         return FALSE;
 
+    hsyncSize = RadeonHSyncSize(mode->HorSyncSize);
     hsyncStart = (ULONG)mode->Width + mode->HorSyncStart;
     vsyncStart = (ULONG)mode->Height + mode->VerSyncStart;
     hTotalDisplay = ((mode->HorTotal / 8UL) - 1UL) |
                     (((mode->Width / 8UL) - 1UL) << 16);
-    hSync = (hsyncStart - 8UL) |
-            (((ULONG)mode->HorSyncSize / 8UL) << 16);
+    hSync = (hsyncStart - 8UL) | ((hsyncSize / 8UL) << 16);
     vTotalDisplay = ((ULONG)mode->VerTotal - 1UL) |
                     (((ULONG)mode->Height - 1UL) << 16);
     vSync = (vsyncStart - 1UL) |
@@ -531,23 +621,48 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
 
     crtc = RADEON_CRTC_EXT_DISP_EN | RADEON_CRTC_EN |
            pixelWidth;
+    ext = RADEON_VGA_ATI_LINEAR | RADEON_XCRT_CNT_EN |
+          RADEON_CRTC_DISPLAY_DIS | RADEON_CRTC_HSYNC_DIS |
+          RADEON_CRTC_VSYNC_DIS;
+    if (!DviActive(data))
+        ext |= RADEON_CRTC_CRT_ON;
+    if (DviActive(data) && !SelectTmdsPll(data, mode->PixelClock, &tmdsPll))
+        return FALSE;
     if (!DisableUnsupportedBlocks(bi) ||
+        !RadeonMask32(bi, RADEON_FP_GEN_CNTL,
+                      ~(RADEON_FPON | RADEON_FP_TMDS_EN), 0) ||
         !RadeonMask32(bi, RADEON_CRTC2_GEN_CNTL, RADEON_CRTC2_EN,
                       RADEON_CRTC2_DISP_DIS |
                           RADEON_CRTC2_DISP_REQ_EN_B) ||
         !RadeonWrite32(bi, RADEON_CRTC_GEN_CNTL, crtc) ||
-        !RadeonWrite32(bi, RADEON_CRTC_EXT_CNTL,
-                       RADEON_VGA_ATI_LINEAR | RADEON_XCRT_CNT_EN |
-                           RADEON_CRTC_CRT_ON |
-                           RADEON_CRTC_DISPLAY_DIS |
-                           RADEON_CRTC_HSYNC_DIS |
-                           RADEON_CRTC_VSYNC_DIS) ||
+        !RadeonWrite32(bi, RADEON_CRTC_EXT_CNTL, ext) ||
         !RadeonWrite32(bi, RADEON_CRTC_H_TOTAL_DISP, hTotalDisplay) ||
         !RadeonWrite32(bi, RADEON_CRTC_H_SYNC_STRT_WID, hSync) ||
         !RadeonWrite32(bi, RADEON_CRTC_V_TOTAL_DISP, vTotalDisplay) ||
         !RadeonWrite32(bi, RADEON_CRTC_V_SYNC_STRT_WID, vSync) ||
         !RadeonWrite32(bi, RADEON_CRTC_OFFSET_CNTL, 0))
         return FALSE;
+
+    if (DviActive(data) &&
+        (!RadeonWrite32(bi, RADEON_FP_CRTC_H_TOTAL_DISP, hTotalDisplay) ||
+         !RadeonWrite32(bi, RADEON_FP_H_SYNC_STRT_WID, hSync) ||
+         !RadeonWrite32(bi, RADEON_FP_CRTC_V_TOTAL_DISP, vTotalDisplay) ||
+         !RadeonWrite32(bi, RADEON_FP_V_SYNC_STRT_WID, vSync) ||
+         !RadeonWrite32(bi, RADEON_FP_HORZ_STRETCH,
+                        ((ULONG)(mode->Width / 8U - 1U) << 16)) ||
+         !RadeonWrite32(bi, RADEON_FP_VERT_STRETCH,
+                        ((ULONG)(mode->Height - 1U) << 12)) ||
+         !RadeonWrite32(bi, RADEON_FP_HORZ_VERT_ACTIVE, 0) ||
+         !RadeonWrite32(bi, RADEON_TMDS_PLL_CNTL, tmdsPll) ||
+         !RadeonMask32(bi, RADEON_TMDS_TRANSMITTER_CNTL,
+                       ~RADEON_TMDS_PLLRST, RADEON_TMDS_PLLEN) ||
+         !RadeonWrite32(bi, RADEON_FP_GEN_CNTL,
+                        RADEON_FP_PANEL_FORMAT |
+                            RADEON_FP_DONT_SHADOW_VPAR |
+                            RADEON_FP_DONT_SHADOW_HEND)))
+        return FALSE;
+    if (DviActive(data))
+        data->DviTimingReady = TRUE;
 
     data->ModeValid = TRUE;
     bi->ModeInfo = mode;
@@ -718,11 +833,25 @@ static LONG RadeonResolvePixelClock(__REGA0(struct BoardInfo *bi),
                                     __REGD0(ULONG clock),
                                     __REGD7(RGBFTYPE format))
 {
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    ULONG minimum = RadeonClockMinimum(data);
+    ULONG count = RadeonClockCount(data);
+    ULONG index;
+
     if (!mode || !FormatMatchesDepth(format, mode->Depth) ||
-        !ValidateMode(mode) ||
-        !CalculatePll(bi, mode, clock))
+        !ValidateMode(mode) || !count)
         return -1;
-    return 0;
+    if (clock <= minimum)
+        index = 0;
+    else
+        index = (clock - minimum + RADEON_CLOCK_STEP_HZ / 2UL) /
+                RADEON_CLOCK_STEP_HZ;
+    if (index >= count)
+        index = count - 1UL;
+    clock = minimum + index * RADEON_CLOCK_STEP_HZ;
+    if (!CalculatePll(bi, mode, clock, TRUE))
+        return -1;
+    return (LONG)index;
 }
 
 static ULONG RadeonGetPixelClock(__REGA0(struct BoardInfo *bi),
@@ -730,10 +859,13 @@ static ULONG RadeonGetPixelClock(__REGA0(struct BoardInfo *bi),
                                   __REGD0(ULONG index),
                                   __REGD7(RGBFTYPE format))
 {
-    (void)bi;
-    return mode && FormatMatchesDepth(format, mode->Depth) && index == 0 ?
-               mode->PixelClock :
-               0;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    ULONG count = RadeonClockCount(data);
+
+    (void)mode;
+    if (!GetFormatInfo(format, NULL, NULL) || index >= count)
+        return 0;
+    return RadeonClockMinimum(data) + index * RADEON_CLOCK_STEP_HZ;
 }
 
 static void RadeonSetClock(__REGA0(struct BoardInfo *bi))
@@ -857,7 +989,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
         bi->MaxVerValue[index] = 2047;
         bi->MaxHorResolution[index] = 4096;
         bi->MaxVerResolution[index] = 2048;
-        bi->PixelClockCount[index] = 1;
+        bi->PixelClockCount[index] = RadeonClockCount(data);
     }
     bi->MaxBMWidth = 4096;
     bi->MaxBMHeight = 4096;
@@ -971,7 +1103,7 @@ BOOL RadeonShowStartupScreen(struct BoardInfo *bi)
     data->DisplayEnabled = FALSE;
     data->DpmsLevel = DPMS_ON;
     bi->RGBFormat = RGBFB_CLUT;
-    if (!CalculatePll(bi, mode, mode->PixelClock) ||
+    if (!CalculatePll(bi, mode, mode->PixelClock, FALSE) ||
         !ProgramTiming(bi, mode) || !ConfigureDac(bi, RGBFB_CLUT) ||
         !ProgramClock(bi, mode) ||
         !RadeonWrite32(bi, RADEON_CRTC_PITCH,

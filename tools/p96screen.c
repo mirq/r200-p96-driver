@@ -195,6 +195,27 @@ static ULONG ExpectedColor(RGBFTYPE format, ULONG color)
     return color;
 }
 
+static ULONG ExpectedMinterm(RGBFTYPE format, UBYTE opcode,
+                             ULONG source, ULONG destination)
+{
+    ULONG result = 0;
+
+    if (opcode & 0x01U)
+        result |= ~source & ~destination;
+    if (opcode & 0x02U)
+        result |= ~source & destination;
+    if (opcode & 0x04U)
+        result |= source & ~destination;
+    if (opcode & 0x08U)
+        result |= source & destination;
+
+    if (format == RGBFB_CLUT)
+        return result & 0xffUL;
+    if (format == RGBFB_R5G6B5PC)
+        return result & 0x00f8fcf8UL;
+    return result;
+}
+
 static BOOL TestInvert(struct RastPort *rastPort, RGBFTYPE format)
 {
     ULONG color = format == RGBFB_CLUT ? 0x5aUL : 0x00ff0000UL;
@@ -571,8 +592,8 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
     struct BitMap *destination = destinationPort->BitMap;
     struct BitMap *source;
     struct RastPort sourcePort;
-    ULONG colorA = format == RGBFB_CLUT ? 3UL : 0x00ff0000UL;
-    ULONG colorB = format == RGBFB_CLUT ? 4UL : 0x0000ffffUL;
+    ULONG colorA = format == RGBFB_CLUT ? 0x5aUL : 0x005aa55aUL;
+    ULONG colorB = format == RGBFB_CLUT ? 0x3cUL : 0x003cc33cUL;
     ULONG expectedA;
     ULONG expectedB;
     ULONG expectedXor;
@@ -649,6 +670,29 @@ static BOOL RunCompleteCopyTests(struct Screen *screen, RGBFTYPE format)
                           format, "complete-edge");
     success &= CheckPixel(&sourcePort, 20, 10, expectedA,
                           format, "complete-source");
+
+    /* P96 redirects FALSE and TRUE to FillRect rather than this callback. */
+    for (index = 1; index < 15; ++index) {
+        ULONG expectedOpcode = ExpectedMinterm(
+            format, (UBYTE)index, expectedA, expectedB);
+
+        TestFill(destinationPort, format, 490, 310, 573, 361, colorB);
+        WaitBlit();
+        printf("COMPLETECOPY opcode=%x\n", (unsigned int)index);
+        BltBitMap(source, 16, 8, destination, 500, 320,
+                  64, 32, (UBYTE)(index << 4), 0xff, NULL);
+        WaitBlit();
+        success &= CheckPixel(destinationPort, 500, 320,
+                              expectedOpcode, format,
+                              "minterm-start");
+        success &= CheckPixel(destinationPort, 563, 351,
+                              expectedOpcode, format,
+                              "minterm-end");
+        success &= CheckPixel(destinationPort, 499, 319, expectedB,
+                              format, "minterm-edge");
+        success &= CheckPixel(&sourcePort, 20, 10, expectedA,
+                              format, "minterm-source");
+    }
 
     if (eligible) {
         for (index = 0; index < 16; ++index) {

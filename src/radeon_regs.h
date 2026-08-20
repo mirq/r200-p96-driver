@@ -99,6 +99,24 @@
 #define RADEON_DAC_EXT_CNTL           0x0280UL
 #define RADEON_DAC_FORCE_BLANK_OFF_EN (1UL << 4)
 #define RADEON_DAC_FORCE_DATA_EN      (1UL << 5)
+#define RADEON_FP_CRTC_H_TOTAL_DISP    0x0250UL
+#define RADEON_FP_CRTC_V_TOTAL_DISP    0x0254UL
+#define RADEON_FP_HORZ_VERT_ACTIVE     0x0278UL
+#define RADEON_FP_GEN_CNTL             0x0284UL
+#define RADEON_FPON                    (1UL << 0)
+#define RADEON_FP_BLANK_EN             (1UL << 1)
+#define RADEON_FP_TMDS_EN              (1UL << 2)
+#define RADEON_FP_PANEL_FORMAT         (1UL << 3)
+#define RADEON_FP_DONT_SHADOW_VPAR     (1UL << 16)
+#define RADEON_FP_DONT_SHADOW_HEND     (1UL << 17)
+#define RADEON_FP_HORZ_STRETCH         0x028cUL
+#define RADEON_FP_VERT_STRETCH         0x0290UL
+#define RADEON_TMDS_TRANSMITTER_CNTL   0x02a4UL
+#define RADEON_TMDS_PLLEN              (1UL << 0)
+#define RADEON_TMDS_PLLRST             (1UL << 1)
+#define RADEON_TMDS_PLL_CNTL           0x02a8UL
+#define RADEON_FP_H_SYNC_STRT_WID      0x02c4UL
+#define RADEON_FP_V_SYNC_STRT_WID      0x02c8UL
 #define RADEON_DISPLAY2_BASE_ADDR     0x033cUL
 #define RADEON_CRTC2_GEN_CNTL         0x03f8UL
 #define RADEON_CRTC2_DISP_DIS         (1UL << 23)

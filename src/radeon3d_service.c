@@ -497,11 +497,6 @@ static BOOL ValidateBatch(struct Radeon3DDevice *device,
     return TRUE;
 }
 
-struct Radeon3DExecuteEmitter {
-    ULONG *Words;
-    ULONG Count;
-};
-
 struct Radeon3DExecuteState {
     struct Radeon3DSurfaceHandle *Color;
     struct Radeon3DSurfaceHandle *Depth;
@@ -528,6 +523,13 @@ struct Radeon3DExecuteState {
     ULONG Texture1Bytes;
     ULONG Phase6State;
     ULONG FogColor;
+};
+
+struct Radeon3DExecuteEmitter {
+    ULONG *Words;
+    ULONG Count;
+    struct Radeon3DExecuteState State;
+    BOOL StateValid;
 };
 
 static BOOL ExecuteEmitWord(struct Radeon3DExecuteEmitter *emitter,
@@ -1019,11 +1021,48 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
                                color->Pitch / SurfaceBytesPerPixel(color));
 }
 
+static BOOL SameExecuteState(const struct Radeon3DExecuteState *a,
+                             const struct Radeon3DExecuteState *b)
+{
+    return a->Color == b->Color && a->Depth == b->Depth &&
+           a->Texture == b->Texture && a->Texture1 == b->Texture1 &&
+           a->Options == b->Options && a->Left == b->Left &&
+           a->Top == b->Top && a->Right == b->Right &&
+           a->Bottom == b->Bottom && a->ClearDepth == b->ClearDepth &&
+           a->StateV4 == b->StateV4 && a->StateV5 == b->StateV5 &&
+           a->TextureOffset == b->TextureOffset &&
+           a->TextureWidth == b->TextureWidth &&
+           a->TextureHeight == b->TextureHeight &&
+           a->TextureState == b->TextureState &&
+           a->FragmentState == b->FragmentState &&
+           a->TextureBytes == b->TextureBytes &&
+           a->Texture1Offset == b->Texture1Offset &&
+           a->Texture1Width == b->Texture1Width &&
+           a->Texture1Height == b->Texture1Height &&
+           a->Texture1State == b->Texture1State &&
+           a->Texture1Bytes == b->Texture1Bytes &&
+           a->Phase6State == b->Phase6State &&
+           a->FogColor == b->FogColor;
+}
+
+static BOOL EmitExecuteStateCached(struct Radeon3DExecuteEmitter *emitter,
+                                   const struct Radeon3DExecuteState *state)
+{
+    if (emitter->StateValid && SameExecuteState(&emitter->State, state))
+        return TRUE;
+    if (!EmitExecuteState(emitter, state))
+        return FALSE;
+    emitter->State = *state;
+    emitter->StateValid = TRUE;
+    return TRUE;
+}
+
 static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                                  const ULONG *vertices, ULONG vertexCount,
                                  BOOL useDepth, BOOL textured, BOOL stateV4,
                                  BOOL stateV5, ULONG phase6State,
-                                 ULONG primitiveType)
+                                 ULONG primitiveType,
+                                 const struct Radeon3DSurfaceHandle *color)
 {
     ULONG dwordsPerVertex = 3UL + (useDepth ? 1UL : 0UL) +
                               (textured ? (stateV4 ? 2UL : 1UL) : 0UL) +
@@ -1047,8 +1086,27 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
     for (vertex = 0; vertex < vertexCount; ++vertex) {
         const ULONG *input = vertices + vertex *
             (stateV5 ? RADEON3D_EXEC_V5_VERTEX_DWORDS
-                     : RADEON3D_EXEC_VERTEX_DWORDS);
+                      : RADEON3D_EXEC_VERTEX_DWORDS);
 
+        if (color &&
+            (!ValidScreenCoordinate(input[0], color->Width) ||
+             !ValidScreenCoordinate(input[1], color->Height) ||
+             !ValidUnitFloat(input[2]) ||
+             (stateV4 && textured
+                  ? (!ValidTextureCoordinate(input[3]) ||
+                     !ValidTextureCoordinate(input[4]))
+                  : (!ValidUnitFloat(input[3]) ||
+                     !ValidUnitFloat(input[4]))) ||
+             (!textured && (input[3] || input[4])) ||
+             (stateV5 &&
+              (phase6State & RADEON3D_PHASE6_TEXTURE1
+                   ? (!ValidTextureCoordinate(input[6]) ||
+                      !ValidTextureCoordinate(input[7]))
+                   : (input[6] || input[7]))) ||
+             (stateV5 &&
+              (phase6State & RADEON3D_PHASE6_FOG
+                   ? !ValidUnitFloat(input[8]) : input[8] != 0))))
+            return FALSE;
         if (!ExecuteEmitWord(emitter, input[0]) ||
             !ExecuteEmitWord(emitter, input[1]))
             return FALSE;
@@ -1124,10 +1182,10 @@ static BOOL EmitExecuteClear(struct Radeon3DDevice *device,
     state.Right = record[9];
     state.Bottom = record[10];
     state.ClearDepth = (clearMask & RADEON3D_CLEAR_DEPTH) != 0;
-    return EmitExecuteState(emitter, &state) &&
+    return EmitExecuteStateCached(emitter, &state) &&
            EmitExecuteVertices(emitter, vertices, 6UL, depth != NULL,
-                                 FALSE, FALSE, FALSE, 0,
-                                 R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST);
+                               FALSE, FALSE, FALSE, 0,
+                               R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST, NULL);
 }
 
 static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
@@ -1143,7 +1201,6 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     ULONG options;
     ULONG vertexCount;
     const ULONG *vertices;
-    ULONG vertex;
     ULONG headerDwords;
     ULONG textureOffset = 0, textureWidth = 0, textureHeight = 0;
     ULONG textureState = 0, fragmentState = 0, textureBytes = 0;
@@ -1274,26 +1331,6 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
                        texture->Width *
                            (texture->Format == RADEON3D_FORMAT_B8G8R8A8
                                 ? 4UL : 2UL);
-    for (vertex = 0; vertex < vertexCount; ++vertex) {
-        const ULONG *input = vertices + vertex * vertexStride;
-
-        if (!ValidScreenCoordinate(input[0], color->Width) ||
-            !ValidScreenCoordinate(input[1], color->Height) ||
-            !ValidUnitFloat(input[2]) ||
-            (stateV4 && textured
-                  ? (!ValidTextureCoordinate(input[3]) ||
-                     !ValidTextureCoordinate(input[4]))
-                  : (!ValidUnitFloat(input[3]) || !ValidUnitFloat(input[4]))) ||
-            (!textured && (input[3] || input[4])) ||
-            (stateV5 &&
-             (textured1
-                  ? (!ValidTextureCoordinate(input[6]) ||
-                     !ValidTextureCoordinate(input[7]))
-                  : (input[6] || input[7]))) ||
-            (stateV5 &&
-             (fog ? !ValidUnitFloat(input[8]) : input[8] != 0)))
-            return FALSE;
-    }
     state.Color = color;
     state.Depth = depth;
     state.Texture = texture;
@@ -1319,10 +1356,10 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     state.Texture1Bytes = texture1Bytes;
     state.Phase6State = phase6State;
     state.FogColor = fogColor;
-    return EmitExecuteState(emitter, &state) &&
+    return EmitExecuteStateCached(emitter, &state) &&
            EmitExecuteVertices(emitter, vertices, vertexCount, useDepth,
-                                 textured, stateV4, stateV5, phase6State,
-                                 primitiveType);
+                               textured, stateV4, stateV5, phase6State,
+                               primitiveType, color);
 }
 
 static BOOL BuildExecuteStream(struct Radeon3DDevice *device,
@@ -1643,6 +1680,7 @@ BOOL Radeon3DExecute(
         trusted[index] = records[index];
     emitter.Words = generated;
     emitter.Count = 0;
+    emitter.StateValid = FALSE;
     result = BuildExecuteStream(device, trusted, recordDwords, &emitter);
     if (result)
         result = RadeonPrepare3D(bi);

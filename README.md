@@ -223,8 +223,10 @@ succeeds while preserving every allocation the earlier client may already hold.
 
 Use a recoverable setup with a working native display or serial console and a
 way to disable the driver on the next boot. Connect a VGA monitor that accepts
-`640x480@60`. `OUTPUT=VGA` is the only accepted output ToolType; omitting it
-also selects VGA.
+`640x480@60`; `OUTPUT=VGA` remains the default and safest first-test path.
+`OUTPUT=DVI` enables the internal-TMDS path only for the validated RV280
+COMBIOS profile; see [`tooltypes.md`](tooltypes.md) for its connector and clock
+limits.
 
 The validated Amiga needs approximately 100 seconds after a reboot before the
 AmigaBridge TCP service is reachable. Wait the full interval before treating a
@@ -239,12 +241,13 @@ initialization stage.
 ## Limits
 
 - Legacy COMBIOS only; ATOM BIOS cold initialization is rejected.
-- CRTC0 and the primary analog DAC only.
+- CRTC0 only. The primary analog DAC and the validated internal-TMDS route are
+  supported; CRTC1 remains unsupported.
 - The only direct-color layouts are `RGBFB_R5G6B5PC` and
   `RGBFB_B8G8R8A8`. There is no 15-bit, packed 24-bit, native-endian alias, or
   alternate channel ordering yet.
-- No DVI, TMDS, TV output, CRTC1, interrupts, or overlay. The hardware cursor
-  is limited to one 64x64 ARGB image on the single supported board instance.
+- No external-TMDS, TV output, interrupts, or overlay. The hardware cursor is
+  limited to one 64x64 ARGB image on the single supported board instance.
 - Pattern acceleration is limited to JAM2, heights up to eight rows, and
   16-pixel source rows whose two bytes are identical. Other patterns use P96
   software.

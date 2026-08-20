@@ -5,6 +5,12 @@
 
 #define PROM_RADEON_HANDOFF_MAGIC 0x50524d52UL
 
+/* Reserved is an existing UWORD in the handoff ABI. Keep output selection
+ * within it so Prometheus.card and Radeon9200.chip remain size-compatible. */
+#define PROM_RADEON_OUTPUT_MASK 0x0003U
+#define PROM_RADEON_OUTPUT_VGA  0x0000U
+#define PROM_RADEON_OUTPUT_DVI  0x0001U
+
 struct PrometheusRadeonHandoff {
     ULONG Magic;
     APTR Board;

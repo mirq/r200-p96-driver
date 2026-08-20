@@ -5,6 +5,7 @@
 #include <prometheus.h>
 
 #include <boardinfo.h>
+#include <prometheus_radeon.h>
 #include <radeon3d.h>
 
 #define RADEON_VENDOR_ATI 0x1002U
@@ -23,6 +24,20 @@ struct RadeonCursorState;
 #define RADEON3D_SERVICE_READY        3UL
 #define RADEON3D_SERVICE_DETACHING    4UL
 
+struct RadeonTmdsPll {
+    UWORD Limit10KHz;
+    UWORD Reserved;
+    ULONG Value;
+};
+
+struct RadeonDviInfo {
+    struct RadeonTmdsPll Pll[4];
+    UBYTE PllCount;
+    UBYTE ConnectorType;
+    UBYTE DdcType;
+    UBYTE Reserved;
+};
+
 struct RadeonBoardData {
     PCIBoard *Device;
     ULONG MmioSize;
@@ -37,21 +52,22 @@ struct RadeonBoardData {
     /* A staging buffer was hidden above bi->MemorySize for VRAM-staged
      * BlitTemplate expands; its offset is bi->MemorySize itself. */
     ULONG TemplateStaging : 1;
-    ULONG ReservedFlags : 25;
+    ULONG RequestedOutput : 2;
+    ULONG DviTimingReady : 1;
+    ULONG DviFormatReady : 1;
+    ULONG ReservedFlags : 21;
     ULONG RefClockKHz;
     ULONG MinPllKHz;
     ULONG MaxPllKHz;
     ULONG MemoryClockHz;
     struct RadeonCpState *CpState;
     UWORD RefDivider;
-    UWORD FeedbackDivider;
-    UBYTE PostDividerCode;
-    UBYTE PostDivider;
     UBYTE DpmsLevel;
     UBYTE AccelState;
     UBYTE Need2DRestore;
     ULONG FramebufferGpuBase;
     struct RadeonCursorState *CursorState;
+    struct RadeonDviInfo *DviInfo;
     BOOL ASM (*FreeCardMemDefault)(__REGA0(struct BoardInfo *bi),
                                    __REGA1(APTR memory));
 };

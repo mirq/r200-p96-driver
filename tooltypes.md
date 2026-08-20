@@ -26,9 +26,30 @@ case-insensitive, and an entry wrapped in parentheses remains inert.
 | `HWTEXT=<YES\|NO>` | on | Controls the hardware `BlitTemplate` host-data upload used for text. `NO` leaves text to rtg.library's CPU default, which is faster only for single-character `Text()`. See [`performance.md`](performance.md). |
 | `TEXTSTAGE=<YES\|NO>` | **off** | Experimental: stages the glyph bitmap in VRAM and colour-expands it from memory instead of streaming it through `HOST_DATA`. **Known broken** - it wedges the 2D engine on the reference machine and leaves the Amiga unresponsive. Do not enable outside diagnosis. |
 | `OUTPUT=VGA` | VGA | Selects the VGA output path. |
+| `OUTPUT=DVI` | VGA | Internal-TMDS path for the validated RV280 COMBIOS profile. It uses CRTC0, FP shadow timings, and the board's DFP/TMDS PLL table. |
 
-`OUTPUT=VGA` is retained as a documented no-op for existing monitor icons; VGA
-remains the only supported output.
+`OUTPUT=VGA` remains the safe default for unvalidated boards. `OUTPUT=DVI` is
+restricted to the validated internal-TMDS COMBIOS profile and falls back to the
+VGA path when the ROM does not describe a supported connector or TMDS PLL
+table. Retain a serial recovery path and use a conservative 640x480@60 mode for
+first boot on a new board.
+
+## RV280 DVI bring-up record
+
+`PrmScan` on the reference board reports ATI RV280 `1002:5964`, revision 1,
+with a 128 KiB option ROM. Its legacy COMBIOS revision 8 directory contains a
+connector-info table at ROM offset `0x0511` and DFP/TMDS table revision 4 at
+`0x057c`; the external-TMDS table is absent. This is the internal RV280 TMDS
+route. The DFP table must supply the transmitter PLL values for digital modes;
+do not substitute generic VGA PLL settings.
+
+Physical DVI output was validated on this board after a cold reboot: the
+1920x1080 Picasso96 Workbench is stable and visually correct. The programmable
+pixel-clock ladder was also validated through Picasso96Mode; 250 kHz clock
+steps are advertised from the BIOS-derived minimum to 164.75 MHz, keeping the
+actual single-link TMDS clock at or below the 165 MHz limit. Horizontal sync
+widths are rounded to the nearest 8-pixel CRTC character clock, allowing the
+44-pixel CEA-861 1080p60 hsync to be programmed as 48 pixels.
 
 ## Editing the icon
 

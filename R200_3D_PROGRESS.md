@@ -66,7 +66,7 @@ miscompile explicit `__reg()` library calls at `-O=2`, omitting argument-registe
 loads before the inline `jsr`; `-O=1` emits the required `a6`, address and data
 register setup.
 
-`Radeon3DInfo.MaxBatchDwords` is 4096 when the service opens successfully.
+`Radeon3DInfo.MaxBatchDwords` is 8192 when the service opens successfully.
 `RADEON3D_CAP_IMMD_TRI_LIST` identifies the constrained draw contract described
 in `RADEON3D_SUBMISSION.md`. It is not a general register-write capability.
 Clients must keep their `OpenLibrary` reference until every service session has
@@ -167,7 +167,7 @@ crash.
 
 ## Phase 1 Submission Slice
 
-The submission slice accepts one to 4096 exact `PACKET2` dwords plus the
+The submission slice accepts one to 8192 exact `PACKET2` dwords plus the
 documented untextured immediate triangle-list stream. It appends a service-owned
 cache flush, 2D/3D idle-clean wait and scratch fence to every accepted batch.
 Host dwords are copied once, validated from that trusted copy, then byte-swapped
@@ -509,7 +509,8 @@ the lost frame, reopens interface 5, reimports color/depth targets and lazily
 re-uploads texture CPU mirrors.
 
 The post-Phase-6 review added generated-stream budgeting in MiniGL, preventing
-record batches from expanding beyond the service's 4096-dword command buffer.
+record batches from expanding beyond the service's then-4096-dword command
+buffer.
 Driver recovery now reloads and self-tests the CP before moving Radeon3D from
 ATTACHED back to READY. The diagnostic invalidation hook uses that production
 path rather than generation-only invalidation. GCC/vbcc builds and ABI checks
@@ -597,4 +598,37 @@ identical-state triangle-list coalescing. Installed artifacts are:
 ```text
 LIBS:Picasso96/Radeon9200.chip size=49216 CRC32=047A2DB8
 LIBS:minigl.library size=44680 CRC32=A85E1481
+```
+
+## Interface 7 Execute Optimization
+
+Physical 68060/RV280 profiling on 17 August 2026 showed the semantic execute
+path walking every public vertex once for validation and again for command
+generation. Validation and emission now share one traversal. Invalid records
+still reject the complete private generated stream before any CP submission.
+
+The generated-stream emitter also retains the exact previous draw state within
+one `Radeon3DExecute()` call. Consecutive records omit state only when every
+surface pointer, option, scissor, texture, fragment, depth, fog and phase-6 field
+matches. The cache resets for every call, so it makes no assumption across
+submissions, clients, recovery or intervening 2D work.
+
+`MaxBatchDwords` is now 8192. Existing clients compiled for 4096 continue to
+clamp locally; the updated MiniGL frontend reduces the gears workload from seven
+submits to three per frame. A 16384-dword test reduced submits to two but changed
+the three-run mean only from 4.930 to 4.932 FPS while increasing execute ticks,
+so 8192 was retained for better board-lock fairness.
+
+The stable fullscreen gears command measured 4.919, 4.925 and 4.946 FPS, a
+4.930 FPS mean. The previous MiniGL-only checkpoint was 4.684 FPS. The rebuilt
+phase-1 probe passed malformed-input checks, fences, physical ring wrap and 70
+fenced 8192-dword batches (573,440 client dwords). Phase 4, Phase 5, Phase 6
+primitives and Phase 6 acceptance all passed on the final binaries:
+
+```text
+SYS:Libs/Picasso96/Radeon9200.chip size=52836 CRC32=1E15D4DC
+LIBS:minigl.library size=45892 CRC32=A8C19BCD
+R3DINFO max_batch_dwords=8192
+MINIGL_PHASE6 fog=linear,exp,exp2 multitex=pass scissor=pass points=pass lines=pass
+MINIGL_PHASE6_ACCEPT arrays=pass fastpath=v2 window=move,overlap resize=pass batch_budget=pass
 ```

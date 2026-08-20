@@ -1776,6 +1776,15 @@ void RadeonBlitRect(__REGA0(struct BoardInfo *bi),
     RDEBUG_OP_END(RADEON_DEBUG_OP_COPY);
 }
 
+/* P96 opcodes are four-bit source/destination truth tables. Radeon ROP3 uses
+ * the same low nibble for P=0 and high nibble for P=1. */
+static const ULONG P96CopyRop3[16] = {
+    0x00000000UL, 0x00110000UL, 0x00220000UL, 0x00330000UL,
+    0x00440000UL, 0x00550000UL, 0x00660000UL, 0x00770000UL,
+    0x00880000UL, 0x00990000UL, 0x00aa0000UL, 0x00bb0000UL,
+    0x00cc0000UL, 0x00dd0000UL, 0x00ee0000UL, 0x00ff0000UL
+};
+
 void RadeonBlitRectNoMaskComplete(
     __REGA0(struct BoardInfo *bi),
     __REGA1(struct RenderInfo *sourceRender),
@@ -1828,7 +1837,7 @@ void RadeonBlitRectNoMaskComplete(
                (disjoint || sourceRender->BytesPerRow ==
                                 destinationRender->BytesPerRow);
 #ifdef DEBUG
-    if (opcode != 0x06U && opcode != 0x0cU)
+    if (opcode >= 16U)
         debugFlags |= RDEBUG_COMPLETE_OPCODE_REJECT;
     if (srcResult != SURFACE_HARDWARE || dstResult != SURFACE_HARDWARE)
         debugFlags |= RDEBUG_COMPLETE_SURFACE_SOFTWARE;
@@ -1842,7 +1851,7 @@ void RadeonBlitRectNoMaskComplete(
         debugFlags |= RDEBUG_COMPLETE_ACCEL_UNAVAILABLE;
     RDEBUG_COMPLETE_CALL(debugFlags, opcode);
 #endif
-    if ((opcode == 0x06U || opcode == 0x0cU) &&
+    if (opcode < 16U &&
         copySafe && sourceRender &&
         destinationRender &&
         srcResult == SURFACE_HARDWARE &&
@@ -1873,8 +1882,7 @@ void RadeonBlitRectNoMaskComplete(
                                    destination.PitchOffset,
                                !disjoint && destination.StartOffset >
                                                 source.StartOffset,
-                               opcode == 0x06U ? RADEON_ROP3_S_XOR_D :
-                                                RADEON_ROP3_S);
+                               P96CopyRop3[opcode]);
 
         RDEBUG_COMPLETE_PHASE(RADEON_DEBUG_COMPLETE_SUBMIT, phaseStart);
 

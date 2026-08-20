@@ -129,6 +129,8 @@ static void RadeonFinishBoardRelease(struct RadeonChipBase *base,
     RDEBUG_CLOSE(bi);
 
     if (data) {
+        RadeonMask32(bi, RADEON_FP_GEN_CNTL,
+                     ~(RADEON_FPON | RADEON_FP_TMDS_EN), 0);
         RadeonShutdownCursor(bi);
         RadeonShutdownAcceleration(bi);
         if (data->Initialized)
@@ -143,6 +145,10 @@ static void RadeonFinishBoardRelease(struct RadeonChipBase *base,
             bi->ModeInfo = NULL;
         FreeMem(data->StartupMode, sizeof(*data->StartupMode));
         data->StartupMode = NULL;
+    }
+    if (data && data->DviInfo) {
+        FreeMem(data->DviInfo, sizeof(*data->DviInfo));
+        data->DviInfo = NULL;
     }
 
     if (data)
@@ -221,6 +227,7 @@ BOOL InitChip(__REGA0(struct BoardInfo *bi),
     ClearBoardData(data);
     data->Device = handoff.Board;
     data->DeviceId = handoff.DeviceId;
+    data->RequestedOutput = handoff.Reserved & PROM_RADEON_OUTPUT_MASK;
     data->MmioSize = handoff.MmioSize;
     PrometheusBase = base->PrometheusBase;
     bi->GraphicsControllerType = GCT_Radeon;
@@ -229,7 +236,9 @@ BOOL InitChip(__REGA0(struct BoardInfo *bi),
     bi->MemorySpaceBase = bi->MemoryBase;
     bi->MemorySpaceSize = handoff.FramebufferSize;
 
-    RLOG("Radeon9200: initializing device %lx\n", (ULONG)data->DeviceId);
+    RLOG("Radeon9200: initializing device %lx output=%s\n",
+         (ULONG)data->DeviceId,
+         data->RequestedOutput == PROM_RADEON_OUTPUT_DVI ? "DVI" : "VGA");
     if (!RadeonInitializeHardware(bi)) {
         (void)RadeonReleaseBoard(base, bi, TRUE);
         return FALSE;

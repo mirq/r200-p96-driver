@@ -37,11 +37,15 @@
 
 #define COMBIOS_ASIC_INIT_1 0x0cU
 #define COMBIOS_PLL_INFO    0x30U
+#define COMBIOS_DFP_INFO    0x34U
 #define COMBIOS_PLL_INIT    0x46U
 #define COMBIOS_MEM_CONFIG  0x48U
 #define COMBIOS_ASIC_INIT_2 0x4eU
+#define COMBIOS_CONNECTOR_INFO 0x50U
 #define COMBIOS_DYN_CLOCK   0x52U
+#define COMBIOS_EXT_TMDS_INFO 0x58U
 #define COMBIOS_MISC_INFO   0x5eU
+#define COMBIOS_I2C_INFO    0x70U
 
 #define TABLE_FLAG_MASK          0xe000U
 #define TABLE_INDEX_MASK         0x1fffU
@@ -346,6 +350,147 @@ static UWORD MiscTableOffset(const struct RadeonBios *bios, UWORD field)
         return 0;
     return offset;
 }
+
+/* Copy only the internal-TMDS data needed after the temporary ROM image is
+ * released. Unknown layouts intentionally leave OUTPUT=DVI on VGA. */
+static void LoadDviInfo(struct BoardInfo *bi, const struct RadeonBios *bios)
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    UWORD connector;
+    UWORD dfp;
+    UWORD index;
+    UWORD row;
+    UWORD previous = 0;
+    UBYTE revision;
+    UBYTE count;
+    UBYTE connectorType = 0;
+    UBYTE ddcType = 0;
+    struct RadeonDviInfo *info;
+
+    if (!SysBase || !data || data->RequestedOutput != PROM_RADEON_OUTPUT_DVI ||
+        TableOffset(bios, COMBIOS_EXT_TMDS_INFO))
+        return;
+    connector = TableOffset(bios, COMBIOS_CONNECTOR_INFO);
+    dfp = TableOffset(bios, COMBIOS_DFP_INFO);
+    if (!connector || !dfp || !BiosHas(bios, (ULONG)connector + 2UL, 2) ||
+        !BiosHas(bios, dfp, 6))
+        return;
+
+    for (index = 0; index < 4; ++index) {
+        UWORD value;
+        ULONG entry = (ULONG)connector + 2UL + (ULONG)index * 2UL;
+
+        if (!BiosHas(bios, entry, 2))
+            return;
+        value = Bios16(bios, entry);
+        if (!value)
+            break;
+        if (((value >> 12) & 0x0fU) == 3U ||
+            ((value >> 12) & 0x0fU) == 4U) {
+            connectorType = (UBYTE)((value >> 12) & 0x0fU);
+            ddcType = (UBYTE)((value >> 8) & 0x0fU);
+            break;
+        }
+    }
+    revision = Bios8(bios, dfp);
+    count = (UBYTE)(Bios8(bios, (ULONG)dfp + 5UL) + 1U);
+    if (!connectorType || (revision != 3 && revision != 4) || !count)
+        return;
+    if (count > 4)
+        count = 4;
+    info = AllocMem(sizeof(*info), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!info)
+        return;
+    row = dfp;
+    for (index = 0; index < count; ++index) {
+        ULONG value;
+        UWORD limit;
+
+        if (!BiosHas(bios, (ULONG)row + 8UL, 10))
+            break;
+        value = Bios32(bios, (ULONG)row + 8UL);
+        limit = Bios16(bios, (ULONG)row + 0x10UL);
+        if (!value || !limit || limit <= previous)
+            break;
+        info->Pll[info->PllCount].Limit10KHz = limit;
+        info->Pll[info->PllCount].Value = value;
+        ++info->PllCount;
+        previous = limit;
+        row = (UWORD)((ULONG)row +
+                      ((revision == 3 || index == 0) ? 10UL : 6UL));
+    }
+    if (!info->PllCount) {
+        FreeMem(info, sizeof(*info));
+        return;
+    }
+    info->ConnectorType = connectorType;
+    info->DdcType = ddcType;
+    data->DviInfo = info;
+    RLOG("Radeon9200: internal TMDS connector=%ld ddc=%ld pll-rows=%ld\n",
+         (ULONG)connectorType, (ULONG)ddcType, (ULONG)info->PllCount);
+}
+
+/* This only reports ROM data. It is deliberately kept separate from output
+ * programming so a DVI investigation cannot alter a working VGA display. */
+#ifdef DEBUG
+static void LogDviBiosInfo(const struct RadeonBios *bios)
+{
+    UWORD connector = TableOffset(bios, COMBIOS_CONNECTOR_INFO);
+    UWORD dfp = TableOffset(bios, COMBIOS_DFP_INFO);
+    UWORD external = TableOffset(bios, COMBIOS_EXT_TMDS_INFO);
+    UWORD i2c = TableOffset(bios, COMBIOS_I2C_INFO);
+    UWORD index;
+
+    RLOG("Radeon9200: COMBIOS DVI tables conn=%lx dfp=%lx ext=%lx i2c=%lx\n",
+         (ULONG)connector, (ULONG)dfp, (ULONG)external, (ULONG)i2c);
+    if (connector) {
+        for (index = 0; index < 4; ++index) {
+            ULONG entry = (ULONG)connector + 2UL + (ULONG)index * 2UL;
+            UWORD value;
+
+            if (!BiosHas(bios, entry, 2))
+                break;
+            value = Bios16(bios, entry);
+            if (!value)
+                break;
+            RLOG("Radeon9200: COMBIOS connector %ld raw=%lx type=%ld ddc=%ld dfp2=%ld crt2=%ld\n",
+                 (ULONG)index, (ULONG)value,
+                 (ULONG)((value >> 12) & 0x0fU),
+                 (ULONG)((value >> 8) & 0x0fU),
+                 (ULONG)((value >> 4) & 1U), (ULONG)(value & 1U));
+        }
+    }
+    if (dfp && BiosHas(bios, dfp, 6)) {
+        UBYTE revision = Bios8(bios, dfp);
+        UWORD count = (UWORD)Bios8(bios, (ULONG)dfp + 5UL) + 1U;
+        ULONG row = dfp;
+
+        if (count > 4)
+            count = 4;
+        RLOG("Radeon9200: COMBIOS DFP rev=%ld rows=%ld\n",
+             (ULONG)revision, (ULONG)count);
+        if (revision == 3 || revision == 4) {
+            for (index = 0; index < count; ++index) {
+                if (!BiosHas(bios, row + 8UL, 10))
+                    break;
+                RLOG("Radeon9200: COMBIOS TMDS PLL %ld freq=%ld value=%lx\n",
+                     (ULONG)index, (ULONG)Bios16(bios, row + 0x10UL),
+                     Bios32(bios, row + 8UL));
+                row += (revision == 3 || index == 0) ? 10UL : 6UL;
+            }
+        }
+    }
+    if (external && BiosHas(bios, external, 10))
+        RLOG("Radeon9200: COMBIOS ext TMDS rev=%ld slave8=%lx ddc=%ld flags=%lx\n",
+             (ULONG)Bios8(bios, external),
+             (ULONG)Bios8(bios, (ULONG)external + 6UL),
+             (ULONG)Bios8(bios, (ULONG)external + 7UL),
+             (ULONG)Bios8(bios, (ULONG)external + 9UL));
+}
+#else
+#define LogDviBiosInfo(bios) ((void)(bios))
+#endif
 
 static BOOL WaitPll(struct BoardInfo *bi, ULONG mask, BOOL set, UWORD count)
 {
@@ -805,6 +950,8 @@ BOOL RadeonInitializeHardware(struct BoardInfo *bi)
         ParseHeader(&bios)) {
         haveBios = TRUE;
         RLOG("Radeon9200: COMBIOS revision %ld\n", (ULONG)bios.Revision);
+        LoadDviInfo(bi, &bios);
+        LogDviBiosInfo(&bios);
     }
 
     if (haveBios)
