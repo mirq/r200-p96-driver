@@ -20,10 +20,10 @@ case-insensitive, and an entry wrapped in parentheses remains inert.
 
 | ToolType | Default | Effect |
 |---|---|---|
-| `DMASIZE=<n>[K\|M]` | none | Hides a 4096-byte-aligned tail of VRAM from Picasso96 for private driver use. Required by the CP ring. A malformed value is rejected non-fatally. See [`dmasize.md`](dmasize.md). |
-| `CP=YES` | off | Initializes the R200 command processor for future clients. Picasso96 2D still uses direct MMIO. |
+| `DMASIZE=<n>[K\|M]` | none | Reserves a 4096-byte-aligned shared Prometheus DMA arena at the high end of VRAM. A valid positive arena is required for Radeon initialization; invalid, zero, unavailable, or oversized requests fail initialization. |
+| `CP=YES` | off | Initializes the R200 command processor used by active Radeon3D clients. Picasso96 2D still uses direct MMIO. |
 | `HWSPRITE=<YES\|NO>` | on | Controls the 64x64 ARGB RV280 hardware cursor. `NO` disables it; allocation failure falls back to the software cursor. |
-| `HWTEXT=<YES\|NO>` | on | Controls the hardware `BlitTemplate` host-data upload used for text. `NO` leaves text to rtg.library's CPU default, which is faster only for single-character `Text()`. See [`performance.md`](performance.md). |
+| `HWTEXT=<YES\|NO>` | on | Controls the hardware `BlitTemplate` host-data upload used for text. `NO` leaves text to rtg.library's CPU default. Historical comparisons are in [`performance.md`](performance.md). |
 | `TEXTSTAGE=<YES\|NO>` | **off** | Experimental: stages the glyph bitmap in VRAM and colour-expands it from memory instead of streaming it through `HOST_DATA`. **Known broken** - it wedges the 2D engine on the reference machine and leaves the Amiga unresponsive. Do not enable outside diagnosis. |
 | `OUTPUT=VGA` | VGA | Selects the VGA output path. |
 | `OUTPUT=DVI` | VGA | Internal-TMDS path for the validated RV280 COMBIOS profile. It uses CRTC0, FP shadow timings, and the board's DFP/TMDS PLL table. |
@@ -33,6 +33,13 @@ restricted to the validated internal-TMDS COMBIOS profile and falls back to the
 VGA path when the ROM does not describe a supported connector or TMDS PLL
 table. Retain a serial recovery path and use a conservative 640x480@60 mode for
 first boot on a new board.
+
+`DMASIZE` accepts positive decimal bytes with an optional case-insensitive `K`
+or `M` suffix. The final occurrence wins, rounds up to 4096 bytes, and must
+leave at least 4 MiB for Picasso96. It is published for peer PCI bus masters;
+Radeon CP and cursor allocations are separate private reservations below it.
+If a peer created the fixed early arena first, Radeon adopts and excludes the
+existing arena when it satisfies the requested size.
 
 ## RV280 DVI bring-up record
 

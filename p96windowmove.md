@@ -8,7 +8,7 @@ The reference target is a physical Amiga with an RV280 card, not an emulator.
 Do not use emulator lifecycle or reset controls during deployment or recovery.
 
 For paired driver runs, switch both monitor ToolTypes before cold rebooting.
-Radeon9200 requires `BOARDTYPE=Radeon9200` together with
+Radeon9200 requires `BOARDTYPE=Prometheus` together with
 `SETTINGSFILE=SYS:Devs/Picasso96Settings.9200`; the closed `Radeon.card` must
 use its matching settings file. Changing only `BOARDTYPE` can leave Workbench
 on a native fallback screen and invalidate mode availability.
@@ -21,11 +21,11 @@ movement is measured in two states:
 - `empty`: the mover is the only window on the screen;
 - `overlap`: the mover crosses a populated 784x548 target window.
 
-Window creation and initial fill/text/bar drawing are outside the timed
-interval. Every `MoveWindow()` is followed by `WaitBlit()`. Each reported value
-is the median of seven trials after two warmups. The default trial performs four
-round trips, or eight individual moves. Across warmups and measured trials that
-is 72 moves per state and 144 moves total.
+Window creation and initial fill/text/bar drawing are outside the movement
+interval but are included in whole-process and stage reporting. Every
+`MoveWindow()` is followed by `WaitBlit()`. Version 7 reports the median of
+three trials with no warmups. Each trial performs one round trip (two moves),
+for six moves per state and twelve moves total.
 
 The earlier 24-round-trip default was excessive at this resolution: sustained
 smart-refresh work could monopolize the physical machine long enough for
@@ -44,22 +44,22 @@ Deploy `build/p96windowmove` and run:
 Work:p96windowmove >Work:p96windowmove-result.txt
 ```
 
-The optional argument changes the number of round trips per trial and is capped
-at four. Keep the default for driver comparisons. Compare `us_per_move`, the
+The optional cycle argument is retained for compatibility, but version 7 clamps
+it to the one-cycle default. Compare `us_per_move`, the
 overlap ratio, and the absolute overlap penalty using the exact same executable
 and display mode.
 The result includes Picasso96's numeric `RGBFormat`; paired runs should use the
 same format where both drivers advertise it.
 
-Version 4 also reports aggregate timing so stalls cannot be hidden by the
+The current version retains version 4's aggregate timing so stalls cannot be hidden by the
 median:
 
 - `TOTAL whole_us` covers mode lookup, screen/window setup, drawing, warmups,
   and both measured movement phases, ending immediately after the last move.
-- `TOTAL empty_us` and `overlap_us` include two warmups plus seven trials.
-- `empty_measured_us` and `overlap_measured_us` sum the seven reported trials.
-- `AVERAGE *_loop_us` is the average round-trip cycle across warmups and trials.
-- `AVERAGE *_trial_us` is the average of the seven measured trials.
+- `TOTAL empty_us` and `overlap_us` cover the configured movement phases.
+- `empty_measured_us` and `overlap_measured_us` sum the reported trials.
+- `AVERAGE *_loop_us` is the average round-trip cycle.
+- `AVERAGE *_trial_us` is the average measured trial.
 
 Version 5 adds `STAGES` timing for mode lookup, private-screen open, each
 window open, each initial `DrawWindow()`, and closing the empty-phase mover.
@@ -90,8 +90,9 @@ which Radeon9200 did not accelerate, plus physically overlapping surfaces.
 
 The validated fix maps opcode `$6` to Radeon ROP3 `S XOR D` and chooses copy
 direction from the absolute source/destination VRAM ranges when they overlap.
-Opcode `$C` source copy remains supported, and all other complete-copy opcodes
-still fall back. Release card CRC32 `B6239209`, 35,168 bytes, produced three
+Opcode `$C` source copy remained supported at that checkpoint. The current
+driver maps all 16 four-bit complete-copy minterms. Release card CRC32
+`B6239209`, 35,168 bytes, produced three
 separate byte-identical runs:
 
 | Metric | Before | Fixed release | Devil's Cut |

@@ -125,6 +125,22 @@ same headers, state, and vertex layouts as triangle records, but accept any
 vertex count from 3 through 255 and emit the corresponding native R200
 primitive. Earlier interface versions reject these opcodes.
 
+Interface-v8 sessions with `RADEON3D_CAP_NATIVE_QUAD_LISTS` may use
+`RADEON3D_EXEC_DRAW_QUADS`. It uses the same headers, state, and vertex layouts
+as triangle records. `vertexCount` is divisible by four, from 4 through 252
+for legacy/v4 and v5 records; the limit keeps both the public and generated
+streams within `MaxBatchDwords`. Each consecutive
+group of four vertices is one native R200 quad. The vertex order is the
+R200/Mesa quad order whose triangles are `(0,1,3)` and `(1,2,3)`. Earlier
+interface versions reject this opcode.
+
+Interface-v8 sessions may also set `RADEON3D_PHASE6_PERSPECTIVE` in a v5
+record's `phase6State`. Perspective and fog are mutually exclusive because both
+use the final public vertex dword. With perspective enabled, dword 8 is a
+finite positive homogeneous W value no greater than 65536; with fog enabled it
+is `fogAmount` as described below. Earlier interface versions reject the
+perspective bit.
+
 The only options are:
 
 ```text
@@ -179,15 +195,17 @@ texture1State
 phase6State
 fog color in low 24-bit RGB
 
-per vertex: X, Y, Z, S0, T0, packed RGBA, S1, T1, fogAmount
+per vertex: X, Y, Z, S0, T0, packed RGBA, S1, T1, fogAmount or W
 ```
 
-`phase6State` contains only `RADEON3D_PHASE6_FOG` and
-`RADEON3D_PHASE6_TEXTURE1`. Inactive texture-1 header fields and S1/T1 must be
-zero. An inactive fog color and every inactive fog amount must be zero. Active
-S1/T1 must be finite texture coordinates; active fog amounts must be finite in
-`[0,1]`, where zero preserves the fragment and one selects the fog color. The
-fog color high byte is always zero.
+`phase6State` contains `RADEON3D_PHASE6_FOG`,
+`RADEON3D_PHASE6_TEXTURE1`, and, for interface-v8 sessions,
+`RADEON3D_PHASE6_PERSPECTIVE`. Inactive texture-1 header fields and S1/T1 must
+be zero. An inactive fog color and every inactive final vertex dword must be
+zero. Fog and perspective cannot be combined. Active S1/T1 must be finite
+texture coordinates; active fog amounts must be finite in `[0,1]`, where zero
+preserves the fragment and one selects the fog color. Perspective W values must
+be finite and in `(0,65536]`. The fog color high byte is always zero.
 
 Texture 1 uses the same validated sampler, environment, mip-level and backing
 rules as texture 0, and its complete imported backing must not overlap color or
@@ -195,7 +213,7 @@ depth. Distinct texture surfaces must not partially overlap; the same imported
 surface may be sampled by both units. The service routes unit 1 to STQ1 and emits stage 1 as
 replace or modulation of the stage-0 R0 result. Fog uses discrete per-vertex
 fog and the supplied packed fog color. The trusted immediate hardware order is
-X/Y, optional Z, optional fog, diffuse color, optional ST0, optional ST1.
+X/Y, optional Z, optional W or fog, diffuse color, optional ST0, optional ST1.
 
 Bilinear and alpha blending require texturing. Alpha blending is fixed to
 source alpha / one-minus-source-alpha. Depth writes require `DEPTH_LESS` and a

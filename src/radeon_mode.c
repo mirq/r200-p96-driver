@@ -422,10 +422,13 @@ static ULONG RadeonHSyncSize(UWORD size)
 
 static BOOL ValidateMode(const struct ModeInfo *mode)
 {
+    ULONG displayHeight;
+    ULONG verticalTotal;
+    ULONG vsyncStart;
+    ULONG vsyncSize;
     ULONG hsyncStart;
     ULONG hsyncEnd;
     ULONG hsyncSize;
-    ULONG vsyncStart;
     ULONG vsyncEnd;
 
     if (!mode || mode->Width < 8 || mode->Width > 4096 ||
@@ -436,18 +439,37 @@ static BOOL ValidateMode(const struct ModeInfo *mode)
         mode->Height > 2048 || mode->VerTotal <= mode->Height ||
         mode->VerTotal > 2048 || !mode->VerSyncSize ||
         mode->VerSyncSize > 31 ||
-        (mode->Flags & (GMF_DOUBLECLOCK | GMF_DOUBLESCAN |
-                        GMF_INTERLACE | GMF_DOUBLEVERTICAL)))
+        (mode->Flags & (GMF_DOUBLECLOCK | GMF_INTERLACE |
+                        GMF_DOUBLEVERTICAL)))
+        return FALSE;
+
+    displayHeight = mode->Height;
+    verticalTotal = mode->VerTotal;
+    if (mode->Flags & GMF_DOUBLESCAN) {
+        /* The CRTC timing counters remain 11-bit after the logical
+         * framebuffer height is expanded to a line-doubled raster. */
+        if (displayHeight > 1024UL || verticalTotal > 1024UL)
+            return FALSE;
+        displayHeight *= 2UL;
+        verticalTotal *= 2UL;
+        vsyncStart = (ULONG)mode->VerSyncStart * 2UL;
+        vsyncSize = (ULONG)mode->VerSyncSize * 2UL;
+    } else {
+        vsyncStart = mode->VerSyncStart;
+        vsyncSize = mode->VerSyncSize;
+    }
+
+    if (vsyncSize > 31UL)
         return FALSE;
 
     hsyncSize = RadeonHSyncSize(mode->HorSyncSize);
     hsyncStart = (ULONG)mode->Width + mode->HorSyncStart;
     hsyncEnd = hsyncStart + hsyncSize;
-    vsyncStart = (ULONG)mode->Height + mode->VerSyncStart;
-    vsyncEnd = vsyncStart + mode->VerSyncSize;
+    vsyncStart += displayHeight;
+    vsyncEnd = vsyncStart + vsyncSize;
     return hsyncStart >= mode->Width && hsyncStart >= 8 &&
-           hsyncStart <= 0x2007UL && hsyncEnd <= mode->HorTotal &&
-           vsyncStart >= mode->Height && vsyncEnd <= mode->VerTotal;
+            hsyncStart <= 0x2007UL && hsyncEnd <= mode->HorTotal &&
+            vsyncStart >= displayHeight && vsyncEnd <= verticalTotal;
 }
 
 static void ApplyDisplayState(struct BoardInfo *bi)
@@ -579,7 +601,10 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     ULONG hsyncStart;
     ULONG hsyncSize;
+    ULONG displayHeight;
+    ULONG verticalTotal;
     ULONG vsyncStart;
+    ULONG vsyncSize;
     ULONG hTotalDisplay;
     ULONG hSync;
     ULONG vTotalDisplay;
@@ -606,21 +631,36 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
 
     hsyncSize = RadeonHSyncSize(mode->HorSyncSize);
     hsyncStart = (ULONG)mode->Width + mode->HorSyncStart;
-    vsyncStart = (ULONG)mode->Height + mode->VerSyncStart;
+    displayHeight = mode->Height;
+    verticalTotal = mode->VerTotal;
+    if (mode->Flags & GMF_DOUBLESCAN) {
+        displayHeight *= 2UL;
+        verticalTotal *= 2UL;
+        vsyncStart = (ULONG)mode->VerSyncStart * 2UL;
+        vsyncSize = (ULONG)mode->VerSyncSize * 2UL;
+    } else {
+        vsyncStart = mode->VerSyncStart;
+        vsyncSize = mode->VerSyncSize;
+    }
+    vsyncStart += displayHeight;
     hTotalDisplay = ((mode->HorTotal / 8UL) - 1UL) |
                     (((mode->Width / 8UL) - 1UL) << 16);
     hSync = (hsyncStart - 8UL) | ((hsyncSize / 8UL) << 16);
-    vTotalDisplay = ((ULONG)mode->VerTotal - 1UL) |
-                    (((ULONG)mode->Height - 1UL) << 16);
+    vTotalDisplay = (verticalTotal - 1UL) |
+                    ((displayHeight - 1UL) << 16);
     vSync = (vsyncStart - 1UL) |
-            ((ULONG)mode->VerSyncSize << 16);
+            (vsyncSize << 16);
     if (mode->Flags & GMF_HPOLARITY)
         hSync |= RADEON_CRTC_H_SYNC_POL;
     if (mode->Flags & GMF_VPOLARITY)
         vSync |= RADEON_CRTC_V_SYNC_POL;
 
-    crtc = RADEON_CRTC_EXT_DISP_EN | RADEON_CRTC_EN |
-           pixelWidth;
+    crtc = RADEON_CRTC_EXT_DISP_EN | RADEON_CRTC_EN | pixelWidth;
+    /* P96 supplies logical framebuffer dimensions.  Expand the CRTC and DVI
+     * timings to the physical line-doubled raster, then have the CRTC repeat
+     * each framebuffer row. */
+    if (mode->Flags & GMF_DOUBLESCAN)
+        crtc |= RADEON_CRTC_DBL_SCAN_EN;
     ext = RADEON_VGA_ATI_LINEAR | RADEON_XCRT_CNT_EN |
           RADEON_CRTC_DISPLAY_DIS | RADEON_CRTC_HSYNC_DIS |
           RADEON_CRTC_VSYNC_DIS;
@@ -629,8 +669,12 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
     if (DviActive(data) && !SelectTmdsPll(data, mode->PixelClock, &tmdsPll))
         return FALSE;
     if (!DisableUnsupportedBlocks(bi) ||
+        /* Preserve BIOS-selected panel/transmitter configuration while the
+         * timing and pixel format are being changed. */
         !RadeonMask32(bi, RADEON_FP_GEN_CNTL,
-                      ~(RADEON_FPON | RADEON_FP_TMDS_EN), 0) ||
+                      RADEON_FPON | RADEON_FP_TMDS_EN |
+                          RADEON_FP_BLANK_EN,
+                      0) ||
         !RadeonMask32(bi, RADEON_CRTC2_GEN_CNTL, RADEON_CRTC2_EN,
                       RADEON_CRTC2_DISP_DIS |
                           RADEON_CRTC2_DISP_REQ_EN_B) ||
@@ -648,15 +692,18 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
          !RadeonWrite32(bi, RADEON_FP_H_SYNC_STRT_WID, hSync) ||
          !RadeonWrite32(bi, RADEON_FP_CRTC_V_TOTAL_DISP, vTotalDisplay) ||
          !RadeonWrite32(bi, RADEON_FP_V_SYNC_STRT_WID, vSync) ||
-         !RadeonWrite32(bi, RADEON_FP_HORZ_STRETCH,
-                        ((ULONG)(mode->Width / 8U - 1U) << 16)) ||
-         !RadeonWrite32(bi, RADEON_FP_VERT_STRETCH,
-                        ((ULONG)(mode->Height - 1U) << 12)) ||
+          !RadeonWrite32(bi, RADEON_FP_HORZ_STRETCH,
+                         ((ULONG)(mode->Width / 8U - 1U) << 16)) ||
+          !RadeonWrite32(bi, RADEON_FP_VERT_STRETCH,
+                         ((displayHeight - 1UL) << 12)) ||
          !RadeonWrite32(bi, RADEON_FP_HORZ_VERT_ACTIVE, 0) ||
          !RadeonWrite32(bi, RADEON_TMDS_PLL_CNTL, tmdsPll) ||
          !RadeonMask32(bi, RADEON_TMDS_TRANSMITTER_CNTL,
-                       ~RADEON_TMDS_PLLRST, RADEON_TMDS_PLLEN) ||
-         !RadeonWrite32(bi, RADEON_FP_GEN_CNTL,
+                       RADEON_TMDS_PLLRST, RADEON_TMDS_PLLEN) ||
+         !RadeonMask32(bi, RADEON_FP_GEN_CNTL,
+                       RADEON_FP_BLANK_EN | RADEON_FP_PANEL_FORMAT |
+                           RADEON_FP_DONT_SHADOW_VPAR |
+                           RADEON_FP_DONT_SHADOW_HEND,
                         RADEON_FP_PANEL_FORMAT |
                             RADEON_FP_DONT_SHADOW_VPAR |
                             RADEON_FP_DONT_SHADOW_HEND)))
@@ -667,6 +714,7 @@ static BOOL ProgramTiming(struct BoardInfo *bi, struct ModeInfo *mode)
     data->ModeValid = TRUE;
     bi->ModeInfo = mode;
     bi->Depth = mode->Depth;
+    RadeonRefreshCursorPosition(bi);
     return TRUE;
 }
 
@@ -995,6 +1043,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
     bi->MaxBMHeight = 4096;
     bi->MaxPlanarMemory = 0;
     bi->Flags &= ~(BIF_HARDWARESPRITE | BIF_HASSPRITEBUFFER |
+                   BIF_DBLSCANDBLSPRITEY |
                    BIF_VBLANKINTERRUPT | BIF_VGASCREENSPLIT |
                    BIF_FLICKERFIXER | BIF_BLITTER |
                    BIF_INDISPLAYCHAIN | BIF_PALETTESWITCH |
@@ -1034,7 +1083,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
         bi->SetSpriteImage = RadeonSetSpriteImage;
         bi->SetSpriteColor = RadeonSetSpriteColor;
         bi->EnableSoftSprite = RadeonEnableSoftSprite;
-        bi->Flags |= BIF_HARDWARESPRITE;
+        bi->Flags |= BIF_HARDWARESPRITE | BIF_DBLSCANDBLSPRITEY;
         RLOG("Radeon9200: RV280 hardware cursor enabled\n");
     }
 

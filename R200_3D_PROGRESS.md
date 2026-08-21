@@ -1,13 +1,17 @@
 # R200 3D Implementation Progress
 
-Branch: `feature/r200-3d-minigl`
+This is a chronological engineering and physical-validation log. Older phase
+descriptions are preserved as historical checkpoints and may be superseded by
+later sections.
 
-This branch has completed Phase 0, a bounded Phase 1 hardware triangle probe,
-and physical windowed/fullscreen presentation milestones in `r200test`. The
-service does not expose general client-controlled register writes or draw
-packets.
+Current status: `Radeon9200.chip` 3.0 exposes Radeon3D interface 7 with bounded
+submission, semantic execution, CLUT8/RGB565/BGRA surface support, recovery,
+and native triangle-list/strip/fan primitives. It does not expose general
+client-controlled register writes. The latest recorded fullscreen gears result
+is a 4.967 FPS mean with an 8192-dword maximum batch; exact artifacts appear at
+the end of this file.
 
-## Implemented
+## Initial implementation checkpoint (historical)
 
 - `Radeon9200.chip` version 2 with append-only LVOs for an opaque version-1
   discovery session: open, close and query info.
@@ -72,13 +76,13 @@ in `RADEON3D_SUBMISSION.md`. It is not a general register-write capability.
 Clients must keep their `OpenLibrary` reference until every service session has
 been closed.
 
-The current lock rule is `BoardLock` before `ServiceLock` when both are needed.
-Runtime recovery already invalidates the service while holding `BoardLock`.
-Service metadata paths therefore release `ServiceLock` before any operation
-that may acquire `BoardLock`; a future submit path must acquire `BoardLock`
-first, validate the session under `ServiceLock`, then release `ServiceLock`
-before touching hardware. DEBUG telemetry records whether Picasso96 already
-owns `BoardLock` on callback entry.
+The lock rule established at this checkpoint is `BoardLock` before
+`ServiceLock` when both are needed. Runtime recovery invalidates the service
+while holding `BoardLock`. Service metadata paths release `ServiceLock` before
+an operation that may acquire `BoardLock`; the subsequently implemented submit
+path acquires `BoardLock` first, validates the session under `ServiceLock`, then
+releases `ServiceLock` before touching hardware. DEBUG telemetry records
+whether Picasso96 already owns `BoardLock` on callback entry.
 
 ## Build
 
@@ -95,7 +99,7 @@ named `Radeon9200-debug.chip` and `Prometheus-debug.card`, so it cannot silently
 replace the release artifacts. The DEBUG card opens
 `Picasso96/Radeon9200-debug.chip` explicitly.
 
-## First Hardware Validation
+## First hardware validation (historical interface 1)
 
 1. Install the matching version-2 chip and card together. For measurement runs,
    install `Radeon9200-debug.chip` beside the release chip and install
@@ -188,10 +192,10 @@ cleanup, and rejected a normal planar bitmap. Afterwards `rtg.library` returned
 to open count zero, the chip returned to owner-only count one, and no crash was
 recorded.
 
-The last physically installed build reports caps `0x0000003f`. The new
-host-built dynamic-contract release reports `0x0000007f`; it has not yet been
-installed because the physical bridge was unreachable. Both report
-`max_batch_dwords=4096`.
+At this checkpoint the last physically installed build reported caps
+`0x0000003f`. A then-uninstalled host-built dynamic-contract release reported
+`0x0000007f`; both reported `max_batch_dwords=4096`. Later sections supersede
+this installation and batch-limit status.
 
 ### Hardware Triangle Result - 68060 / RV280 5964
 
@@ -381,8 +385,9 @@ Work:r200test size=24408 CRC32=4EFFEDCB
 SHA-256=fc9567a2e0e6a6785fa439fd0ea3a64ba67c812501d44fe6c090e86921d7e916
 ```
 
-Explicit forced stale-generation rejection remains a Phase 1 follow-up; no
-stale-generation use occurred during the Phase 2 acceptance runs.
+Explicit forced stale-generation rejection was still a Phase 1 follow-up at
+this checkpoint; later session and recovery acceptance tests cover stale
+handles and generation changes.
 
 ## Phase 3 Independent MiniGL_R200 Bootstrap
 
@@ -514,7 +519,8 @@ buffer.
 Driver recovery now reloads and self-tests the CP before moving Radeon3D from
 ATTACHED back to READY. The diagnostic invalidation hook uses that production
 path rather than generation-only invalidation. GCC/vbcc builds and ABI checks
-pass; physical verification of this recovery revision is pending.
+passed; the physical acceptance results below subsequently verified context
+loss recovery.
 
 Physical acceptance results:
 
@@ -631,4 +637,34 @@ LIBS:minigl.library size=45892 CRC32=A8C19BCD
 R3DINFO max_batch_dwords=8192
 MINIGL_PHASE6 fog=linear,exp,exp2 multitex=pass scissor=pass points=pass lines=pass
 MINIGL_PHASE6_ACCEPT arrays=pass fastpath=v2 window=move,overlap resize=pass batch_budget=pass
+```
+
+## Interface 8 Native Quad Lists
+
+Interface 8 advertises `RADEON3D_CAP_NATIVE_QUAD_LISTS` and accepts
+`RADEON3D_EXEC_DRAW_QUADS` records containing 4 through 252 vertices in groups
+of four. The service emits the R200 native quad-list primitive (`0x0d`) and
+rejects the opcode for interface-7 sessions. MiniGL uses the Mesa/R200 order
+`0,1,3,2` to preserve the two triangles of each four-vertex triangle strip and
+coalesces up to 63 independent quads per semantic record.
+
+Physical 68060/RV280 validation on 21 August 2026 followed a cold reboot with
+the release driver. The interface probe reported version 8 and caps
+`000077ff`. `radeon3dformats` passed 8/16/32-bit targets, two native quads with
+independent color readback, and interface-5/interface-7 rejection. MiniGL's
+65-quad boundary/order smoke test passed with four draw records. Phase 4,
+Phase 5, Phase 6 primitives, cull/shade, windowed acceptance, and fullscreen
+Phase 4/Phase 6/acceptance all passed.
+
+Two consecutive fullscreen 640x480x16 gears profiles measured 4.971 and 4.963
+FPS. Relative to the immediately preceding instrumented 4.692-FPS build, quad
+coalescing changed the per-frame workload from 3320 to 2760 submitted vertices,
+27 to 25 draw records, 20336 to 16946 semantic record dwords, and 21834 to
+18338 generated CP dwords. Installed artifacts were:
+
+```text
+LIBS:Picasso96/Radeon9200.chip size=55016 CRC32=B0FE2D03
+LIBS:minigl.library size=75468 CRC32=BD7E94CA
+R3DQUADS count=2 first=0000ff00 second=00ff0000
+R200_QUAD_LIST status=ok caps=000077ff attempts=65 used=65 draw_records=4
 ```

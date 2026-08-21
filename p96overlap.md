@@ -32,7 +32,11 @@ Work:p96overlap >Work:p96overlap-result.txt
 The optional argument changes the render iterations per trial. The default is
 12; use the default for driver comparisons.
 
-## Current Baseline
+## Historical baseline
+
+These results predate Radeon9200.chip 3.0 and are retained for attribution. A
+current baseline must follow the metadata and repetition rules in
+[`performance.md`](performance.md).
 
 Safe Radeon9200 card `5E6FE3A3`, `1024x768x8` Workbench, benchmark screen
 `640x480x16`, 12 iterations:
@@ -70,11 +74,10 @@ fragmentation. Its advantage is a broadly cheaper rendering workload, not a
 different overlap dispatch.
 
 The Radeon9200 numbers were produced by the previous executable CRC32
-`560250BA`. The only timed-path-independent changes in `66A1614D` are accepting
-the closed driver's board name and saturating a negative displayed delta at
-zero. Re-run Radeon9200 with `66A1614D` before treating small differences as a
-release decision; the approximately 20 percent gap is much larger than the
-observed variance or those changes.
+`560250BA`. The timed-path-independent changes in `66A1614D` were accepting the
+closed driver's board name and saturating a negative displayed delta at zero.
+The comparison is historical and must not be used for a current release
+decision.
 
 ### Version 2 attribution
 
@@ -94,8 +97,9 @@ is 31.3 percent slower empty and 29.3 percent slower overlapped. Its full fills
 are 5.2 and 11.9 percent slower, while narrow fills are 22.9 and 25.1 percent
 slower. The text gap is 58.96 ms empty and 68.77 ms overlapped, accounting for
 essentially all of the 58.94 ms empty combined gap and about 91 percent of the
-75.82 ms overlap combined gap. `BlitTemplate` is therefore the primary next
-optimization target; rectangle submission is secondary.
+75.82 ms overlap combined gap. At that checkpoint `BlitTemplate` was the
+primary optimization target; the repeated-`HOST_DATA0` work below was later
+adopted by the driver.
 
 ### Repeated `HOST_DATA0` prototype
 

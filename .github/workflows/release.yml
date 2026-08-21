@@ -34,7 +34,7 @@ jobs:
             exit 1
           fi
           grep -Fx "# Radeon9200 Prometheus integration $version" RELEASE_NOTES.md
-          grep -F 'Radeon9200.chip 1.0 (' src/library.c
+          grep -Eq 'Radeon9200\.chip [0-9]+\.[0-9]+ \(' src/library.c
           grep -F 'Prometheus.card 7.602 ' Prometheus/PrometheusCard/vbcc_libinit.c
 
       - name: Verify toolchain
@@ -52,6 +52,8 @@ jobs:
           mkdir -p dist
           cp Radeon9200.chip dist/Radeon9200.chip
           cp Prometheus.card dist/Prometheus.card
+          cp R200_MICROCODE_LICENSE.txt dist/R200_MICROCODE_LICENSE.txt
+          cp THIRD_PARTY_NOTICES.txt dist/THIRD_PARTY_NOTICES.txt
 
       - name: List artifacts
         run: ls -la dist
@@ -63,6 +65,8 @@ jobs:
           path: |
             dist/Radeon9200.chip
             dist/Prometheus.card
+            dist/R200_MICROCODE_LICENSE.txt
+            dist/THIRD_PARTY_NOTICES.txt
           if-no-files-found: error
 
   release:
@@ -90,3 +94,5 @@ jobs:
           files: |
             artifacts/Radeon9200.chip
             artifacts/Prometheus.card
+            artifacts/R200_MICROCODE_LICENSE.txt
+            artifacts/THIRD_PARTY_NOTICES.txt

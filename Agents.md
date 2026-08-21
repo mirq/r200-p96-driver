@@ -1,148 +1,94 @@
 # Radeon9200.chip Development Notes
 
-The reference test target is a physical Amiga, not an emulator. Never use
-emulator lifecycle, reset, pause, or state-management commands for it.
-The primary AmigaBridge endpoint is `192.168.1.21:2345`. Try it first. The old
-`192.168.100.50:2345` and `192.168.100.47:2345` endpoints are no longer
-accessible.
-A physical Amiga reboot takes approximately 100 seconds before the bridge is
-available again.
-Run AmigaBridge file transfers and filesystem copies sequentially. Concurrent
-copy requests can report or use the wrong destination path.
+## Target and safety
 
-Switching card drivers requires changing both active monitor ToolTypes before
-the cold reboot. `BOARDTYPE=Prometheus` must be paired with
-`SETTINGSFILE=SYS:Devs/Picasso96Settings.9200`; changing only `BOARDTYPE`
-loads the card but leaves Workbench on the native fallback screen. Restore the
-matching Radeon settings-file ToolType when switching back to `Radeon.card`.
+The reference target is a physical 68060 Amiga, not an emulator. Do not use
+emulator reset, pause, state, or lifecycle commands. The primary AmigaBridge
+endpoint is `192.168.1.21:2345`; the old `192.168.100.*` endpoints are no
+longer accessible. A cold reboot takes about 100 seconds before the bridge is
+available.
 
-## Goal
+Run AmigaBridge transfers and filesystem copies sequentially. Concurrent copy
+requests can use or report the wrong destination. Keep a native display or
+serial recovery path available for hardware tests.
 
-Build a small, pure-C Picasso96 chip driver for desktop RV280 Radeon 9200
-boards behind Prometheus.card. The first hardware target is a
-Prometheus or FireBird bridge and VGA output through CRTC0 and the primary
-DAC.
+Switch both monitor ToolTypes before a cold reboot:
 
-R200 3D service, standalone `r200test`, and independent `MiniGL_R200` work must
-follow the authoritative roadmap at
-`/home/mirek/r200_minigl/MINIGL_R200_PLAN.md`. Consult that plan before changing
-the 3D service ABI or starting MiniGL work. Current implementation and physical
-hardware results are tracked in `R200_3D_PROGRESS.md`.
+```text
+BOARDTYPE=Prometheus
+SETTINGSFILE=SYS:Devs/Picasso96Settings.9200
+```
 
-## Hard Constraints
+Changing only `BOARDTYPE` can leave Workbench on the native fallback screen.
 
-- Target `prometheus.library` version 2 or newer for PCI ownership,
-  configuration, address translation, interrupts, and DMA allocation.
-- Use Picasso96 CardDevelop 3.6 structures and callback ABI.
-- Keep the driver in C. Small 68k entry stubs are acceptable only if an ABI
-  cannot be expressed safely in C.
-- Initial PCI IDs are ATI `1002:5960`, `1002:5961`, and `1002:5964`.
-- Initial display output is VGA only. DVI, TMDS, CRTC1, TV output, overlays,
-  and interrupts are later milestones. The current hardware-cursor subset is a
-  64x64 ARGB RV280 cursor backed by the Prometheus DMA arena.
-- Do not inspect or copy code from
-  `/home/mirek/warp3d-r9200/Prometheus/PrometheusCard`; it is not a valid
-  reference for this driver.
-- Test on real hardware. Do not add mocked or simulated hardware tests.
+## Architecture
 
-## Prometheus Rules
+- `Prometheus.card` owns PCI enumeration, board claiming, configuration,
+  address translation, interrupt registration, and the shared DMA arena.
+- `Radeon9200.chip` owns RV280 initialization, display, cursor, 2D callbacks,
+  and the Radeon3D service. It must not enumerate independently.
+- Prometheus passes its handoff in `BoardInfo.CardData`; Radeon per-board state
+  belongs in `BoardInfo.ChipData`. Library bases contain only library-lifetime
+  state.
+- `InitChip` publishes chip metadata. `InitRadeonFeatures` validates the
+  Prometheus handoff and installs only callbacks that are safe for the
+  advertised formats.
+- BAR0 is the framebuffer aperture and BAR2 is RV280 MMIO. Validate ownership,
+  type, address, and size before using either.
+- Radeon registers are little-endian. Use `SWAPWORD()`/`SWAPLONG()` at mapped
+  MMIO boundaries; do not swap PCI configuration values or addresses.
+- Mapped, endian-correct volatile aperture access is required on the hot path;
+  per-register PCI-library calls are too expensive on the target bridge.
+- Do not disable or alter an unclaimed Radeon board.
 
-- `Prometheus.card` owns enumeration, board claiming, interrupt registration,
-  and the shared DMA arena. `Radeon9200.chip` must not enumerate independently.
-- Use BAR0 for the framebuffer aperture and BAR2 for RV280 MMIO only after
-  validating their type, address, and size.
-- Use Prometheus for discovery, ownership, configuration space, and bridge setup.
-  After BAR type, size, and ownership validation, mapped Radeon framebuffer and
-  MMIO apertures may use endian-correct volatile CPU accesses. This is required
-  for the validated hot path; per-register `pci_in*()`/`pci_out*()` library
-  calls are prohibitively expensive on the target bridge.
-- Radeon registers are little-endian. Use `SWAPWORD()` and `SWAPLONG()` at the
-  MMIO boundary; do not swap PCI configuration values or addresses.
-- Do not disable or alter unclaimed Radeon boards.
+Use the complete supplied Picasso96 CardDevelop 3.6 `BoardInfo`; never replace
+or clear it wholesale. Preserve existing flags and callbacks unless the chip
+deliberately replaces them. Callbacks are entered without the chip library base
+guaranteed in A6.
 
-## Picasso96 Rules
+## Supported hardware policy
 
-- Use the complete supplied `struct BoardInfo`; never replace it with a local
-  shortened definition or clear the whole structure.
-- `FindCard` receives `BoardInfo` in A0. `InitCard` receives `BoardInfo` in A0
-  and the NULL-terminated ToolTypes array in A1.
-- Keep per-board state in `BoardInfo.CardData`. The card library base may hold
-  only library-lifetime bookkeeping.
-- Preserve existing `BoardInfo.Flags` bits and callbacks unless this driver
-  intentionally implements and replaces them.
-- Callbacks are entered without the card library base guaranteed in A6.
-- Do not return success from `InitCard` until all callbacks required by the
-  advertised formats and flags are installed and safe.
+Initial PCI IDs are ATI `1002:5960`, `1002:5961`, and `1002:5964`. CRTC0 with
+the primary VGA DAC is the conservative path. Internal TMDS/DVI is supported
+only for a validated COMBIOS connector and transmitter table. CRTC1, external
+TMDS, TV output, overlays, and interrupts remain out of scope.
 
-## DMA Policy
+The 64x64 ARGB cursor and CP ring use private VRAM reservations. `DMASIZE` is a
+separate page-aligned high-VRAM arena excluded from Picasso96 and Radeon
+graphics, then published through Prometheus's existing DMA vectors for peer bus
+masters. A valid positive arena is required for Radeon initialization.
 
-`DMASIZE` is a page-aligned region at the high end of VRAM, excluded from
-Picasso96 and all Radeon graphics operations, then published through the
-existing Prometheus DMA vectors for peer PCI bus masters such as RTL8139.
-Radeon-private resources must be reserved separately below this shared region.
+## Acceleration and 3D
 
-## Acceleration Policy
+Picasso96 2D uses bounded direct MMIO even when the CP is active. The hardware
+subset includes `FillRect`, `InvertRect`, `BlitRect`, `DrawLine`, supported
+JAM1/JAM2 templates and patterns, and complete copies for every four-bit P96
+minterm. All surfaces and arithmetic must be validated before MMIO. Unsupported
+or unsafe work drains as required and uses the saved P96 software callback.
 
-The CP ring may remain initialized for future 3D work, but all current
-Picasso96 2D operations use direct MMIO. Explicit FIFO and idle polls are
-bounded; solid fills follow the validated hardware-backpressure path and do not
-pre-poll the FIFO. Timeout recovery invalidates current 3D sessions, resets the
-engine, reloads and self-tests the CP, then re-arms hardware acceleration. A
-failed recovery routes the session to software or blocks unsafe VRAM rendering
-through the wrappers.
+FIFO and idle waits are bounded. Recovery invalidates 3D sessions, resets the
+engine, reloads and self-tests the CP, and invalidates cached 2D state before
+acceleration resumes. Failed recovery must not permit unsafe VRAM rendering.
 
-The validated hardware subset is `FillRect` and destination-only `InvertRect`
-in CLUT8/RGB565PC/BGRA32 (including CLUT8 partial masks), same-`RenderInfo`
-`BlitRect` in all three formats, and cross-surface
-`BlitRectNoMaskComplete` for opcode `$C` (source copy) and `$6` (source XOR
-destination) between on-board surfaces with independently validated pitches.
-Overlapping surfaces select direction from their absolute VRAM ranges, matching
-the smart-refresh backing-store workload. Surface bases are rebased to a 1 KiB
-GPU address with checked X/Y bias so ordinary 16-byte P96 allocations remain
-usable.
+The Radeon3D API is an active bounded service, not a future raw-register path.
+Do not expose unrestricted packets or client-controlled register writes. Follow
+[`RADEON3D_SUBMISSION.md`](RADEON3D_SUBMISSION.md) and the authoritative MiniGL
+roadmap at `/home/mirek/r200_minigl/MINIGL_R200_PLAN.md` before changing the ABI.
+Results are tracked in [`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
 
-The validated subset also includes JAM1/JAM2 `BlitTemplate` and JAM2
-`BlitPattern` for 1/2/4/8-row patterns
-whose 16-bit rows contain identical bytes. Hardware activity is established by
-the P96Speed pattern increase from 37 to 1387 operations/second; 8/16/32/8
-readback tests pass every accepted height, phase, edge, and overdraw guard.
-CLUT8 partial-mask patterns and synchronized software fallback for a rejected
-16-pixel pattern also pass.
-Planar, unsupported patterns, and complete-copy opcodes other than `$6` and
-`$C` remain software fallbacks.
+## Sources, build, and validation
 
-## Source Priorities
+Prefer, in order: local Picasso96 CardDevelop headers/examples for ABI;
+Prometheus headers/source for card ownership; Mesa R200 sources for formats and
+registers; and NetBSD `radeonfb` sources for portable ROM and modesetting
+algorithms. Do not inspect or copy
+`/home/mirek/warp3d-r9200/Prometheus/PrometheusCard`. Retain applicable notices
+when adapting third-party material.
 
-1. Local Picasso96 CardDevelop 3.6 headers and examples for ABI and ownership.
-2. Local OpenPCI 2.1 headers, autodocs, and examples for all PCI access.
-3. Mesa R200 sources for PCI IDs, formats, and register definitions.
-4. NetBSD `radeonfb` and `radeonfb_bios` for portable ROM, PLL, reset, and
-   modesetting algorithms.
+Build with `make` using `/opt/amiga/bin/m68k-amigaos-gcc`. Keep
+`src/startup.c` and `src/library.c` first in link order so `_start` and resident
+data remain in the first code hunk. Treat warnings as defects.
 
-Do not transplant code without retaining applicable notices and adapting its
-bus access to OpenPCI 2.1.
-
-## Milestones
-
-1. Compilable resident card library with safe discovery, ownership, BAR
-   validation, cleanup, and endian-safe register helpers.
-2. Bounded ROM loading and legacy Radeon BIOS parsing.
-3. Cold RV280 reset and memory-controller initialization.
-4. Conservative CRTC0 VGA modesetting, starting at 640x480 at 60 Hz.
-5. Minimal Picasso96 callbacks and verified CLUT8 framebuffer operation.
-6. Verified 16-bit and 32-bit formats, panning, palette, and DPMS.
-7. Private `DMASIZE` reservation, followed separately by proven OpenPCI 2.1
-   inter-card DMA behavior if a provider path is deliberately added.
-8. Completed first 2D subset: fills and overlap-safe same-surface copies in all
-   advertised formats. Additional operations remain separate milestones.
-9. CP initialization retained for future 3D while Picasso96 2D uses MMIO, plus
-   a private-VRAM RV280 hardware cursor with per-board state.
-
-## Build And Verification
-
-- Build with `make` using `/opt/amiga/bin/m68k-amigaos-gcc`.
-- Keep `src/startup.c` and `src/library.c` first in link order so `_start` is
-  the first code and the resident data remains in the first code hunk.
-- Treat compiler warnings as defects.
-- A successful build is not a hardware validation. Record each real-hardware
-  test, bridge type, CPU, board ID, cold/warm boot state, and observed output.
+A successful build is not hardware validation. Record commit, dirty state,
+artifact hashes, CPU, bridge, board ID/revision, VRAM/ROM, ToolTypes, mode,
+cold/warm state, and exact tests for every physical run.

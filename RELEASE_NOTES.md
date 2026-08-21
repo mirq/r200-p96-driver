@@ -1,69 +1,54 @@
-# Radeon9200 Prometheus integration 0.20
+# Radeon9200 Prometheus integration 0.21
 
-Version 0.20 moves Radeon board ownership and shared DMA publication into
-`Prometheus.card`, with `Radeon9200.chip` handling RV280 initialization and
-Picasso96 graphics operations.
+Release 0.21 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
+The chip reports `$VER: Radeon9200.chip 3.0 (15.8.2026)` and exposes Radeon3D
+interface 8.
 
 ## Highlights
 
-- Ships the matched `Prometheus.card` and `Radeon9200.chip` runtime pair.
-- Reserves `DMASIZE` at the high end of VRAM and excludes it from Picasso96 and
-  Radeon graphics operations.
-- Publishes the reserved pages through the existing Prometheus DMA vectors for
-  peer PCI bus-master devices such as RTL8139.
-- Keeps Radeon cursor and optional CP resources in separate private VRAM below
-  the shared DMA aperture.
-- Requires a valid positive `DMASIZE` reservation before Radeon card
-  initialization succeeds.
-- Extracts complete monochrome template words with one 68020 `bfextu`.
-- Uses an endian-correct raw host-data store with Radeon MSB-first consumption,
-  removing software bit reversal from the upload loop.
-- Advances source and row pointers directly instead of recalculating template
-  offsets for every uploaded word.
-- Caches stable template engine state and reserves available FIFO capacity for
-  the complete upload when possible.
-- Retains bounded extraction for partial final words and software fallback for
-  unsupported CLUT write masks.
-- Enables the hardware cursor by default; `HWSPRITE=NO` remains available for
-  an explicit software-cursor fallback.
-- Accelerates disjoint cross-surface source copies with independent source and
-  destination pitches, removing the layer backing-store software fallback for
-  overlapping windows.
-- Accelerates cross-surface source-XOR-destination (opcode `$6`) and selects
-  reverse copy direction for physically overlapping surfaces. This removes the
-  generic P96 backing-store path that made a smart-refresh window take about
-  9.6 seconds to open over another window; the validated release takes 11.7 ms.
-- Adds DEBUG version 4 template workload counters and focused wide-template and
-  `Text()` benchmarks to `p96screen`.
-- Extends the DEBUG block to version 5 with cross-surface copy path, unequal
-  pitch, and fallback-reason counters.
-- Extends the DEBUG block to version 6 with calls, hardware/software split, and
-  timing for every 2D callback, so interactive work can be attributed instead
-  of only `RectFill`.
-- Adds `HWTEXT` to select between the hardware `BlitTemplate` upload and
-  rtg.library's CPU default. The hardware path remains the default: it is 1.8x
-  faster on eight-character `Text()` and 3.8x faster on a 64-pixel template.
-- Reserves template host-data FIFO entries in bursts instead of once per glyph
-  row, cutting FIFO polling from 14.5 to 3.76 reads per template blit and the
-  whole blit by 11.9 percent.
-- Adds an experimental VRAM-staged `BlitTemplate` expand behind `TEXTSTAGE`.
-  It is **off by default and known broken**: it wedges the 2D engine on the
-  reference machine. The shipping text path is unchanged.
-- Adds DEBUG version 7/8 probes that measure framebuffer-aperture write cost
-  against MMIO register write cost, and confirm on real hardware that the 2D
-  engine can colour-expand a monochrome source read from VRAM. Both are
-  DEBUG-only; the release card is byte-identical without them.
+- Keeps Prometheus responsible for Radeon discovery, PCI ownership, bridge
+  setup, and publication of the shared high-VRAM DMA arena.
+- Supports CRTC0 VGA output and the validated RV280 internal-TMDS DVI route,
+  including BIOS-derived transmitter clocks up to the 165 MHz single-link
+  limit. A 1920x1080 Workbench was physically validated.
+- Supports CLUT8, RGB565PC, and B8G8R8A8 scanout, palette, panning, DPMS, and a
+  64x64 ARGB hardware cursor.
+- Accelerates fills, inversion, same-surface copies, lines, supported patterns
+  and templates, and complete copies for all 16 four-bit Picasso96 minterms.
+  On-board surface extents and arithmetic are checked before submission;
+  overlapping ranges select a safe copy direction.
+- Uses cached 2D state, pipelined submissions, hardware FIFO backpressure, and
+  skips unnecessary drains for safe off-board software fallbacks.
+- Provides bounded Radeon3D sessions, trusted command staging, fences, P96
+  surface import, recovery, and semantic execution. Interface 7 adds native
+  triangle-strip and triangle-fan records; interface 8 adds native quad-list
+  records and perspective-correct v5 draws. The batch cap remains 8192 dwords.
+- Invalidates stale sessions on detach or recovery and restores a safe direct
+  MMIO baseline before later Picasso96 work.
+- Includes GCC/vbcc ABI fixtures and runtime probes for discovery, sessions,
+  submissions, fences, imported formats, and recovery.
 
-## Text Performance
+## Configuration
 
-P96Speed 1.2 Text performance increased from approximately 4400 to 6300
-operations/second on the development system, a gain of about 43 percent. The
-focused `p96screen` `Text("P96Speed")` benchmark improved from 40 to 30 ticks.
+Monitor icons use `BOARDTYPE=Prometheus` together with
+`SETTINGSFILE=SYS:Devs/Picasso96Settings.9200`. A valid positive `DMASIZE` is
+required. `CP=YES` enables the active Radeon3D service; Picasso96 2D remains on
+the direct-MMIO path. `OUTPUT=VGA` is the conservative default and
+`OUTPUT=DVI` requires a supported internal-TMDS COMBIOS profile.
 
-## Development Status
+See `tooltypes.md` for complete semantics and recovery precautions.
 
-This remains an early-development driver. The release candidate was tested on
-the target Amiga before tagging; no additional release-only test pass was run.
+## Validation and performance
 
-The library reports `$VER: Radeon9200.chip 1.0 (12.8.2026)`. Version 1.0 is
-loaded by `Prometheus.card`; monitor icons use `BOARDTYPE=Prometheus`.
+The current source has extensive physical 2D/3D correctness records, but no
+complete version-3.0 2D benchmark baseline. Older P96Speed figures are not
+promoted as release performance. `performance.md` defines the reproducible
+baseline procedure and required artifact metadata.
+
+The latest identified 3D checkpoint averaged 4.967 FPS in fullscreen textured
+gears on the 50 MHz 68060/RV280 reference machine and passed the Phase 1 and
+MiniGL Phase 4-6 suites. That number applies only to the hashes recorded in
+`R200_3D_PROGRESS.md`.
+
+This remains an experimental driver. Use a recoverable setup for first boot on
+new hardware.

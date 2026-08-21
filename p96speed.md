@@ -76,7 +76,12 @@ For the validated P96Speed window, `amiga_list_gadgets` reported:
 Coordinates are more useful for the page tabs and ASL requester because their
 child controls are not all exposed with descriptive gadget text.
 
-## Validated Automated Run
+## Historical automated runs
+
+The following files validate the automation procedure, not current driver
+performance. They predate Radeon9200.chip 3.0 and lack the complete artifact
+metadata now required by [`performance.md`](performance.md). Do not use their
+scores as a release baseline.
 
 The first fully automated run was saved as `Work:P96Speed_09pipe.txt`:
 
@@ -90,5 +95,5 @@ The validated pattern-acceleration result is
 
 - Size: 1889 bytes
 - CRC32: `70D67A67`
-- RectFill: 2593 operations/second after a focused repeat
+- RectFill: 2593 operations/second after a focused repeat (an observed outlier)
 - RectFill Pattern: 1387 operations/second

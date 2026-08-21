@@ -136,6 +136,11 @@ static void UpdateCursorPosition(struct BoardInfo *bi)
             yOrigin = CURSOR_HEIGHT - 1U;
         y = 0;
     }
+    /* The cursor image and clipping origin remain in logical framebuffer
+     * rows.  Only the cursor's on-screen position uses physical raster rows
+     * when CRTC double-scan repeats each framebuffer row. */
+    if (bi->ModeInfo && (bi->ModeInfo->Flags & GMF_DOUBLESCAN))
+        y *= 2;
 
     (void)RadeonWrite32(bi, RADEON_CUR_HORZ_VERT_OFF,
                         RADEON_CUR_LOCK | (xOrigin << 16) | yOrigin);
@@ -143,6 +148,11 @@ static void UpdateCursorPosition(struct BoardInfo *bi)
                         RADEON_CUR_LOCK | ((ULONG)x << 16) | (ULONG)y);
     (void)RadeonWrite32(bi, RADEON_CUR_OFFSET,
                         cursor->Offset + yOrigin * CURSOR_STRIDE);
+}
+
+void RadeonRefreshCursorPosition(struct BoardInfo *bi)
+{
+    UpdateCursorPosition(bi);
 }
 
 BOOL RadeonInitializeCursor(struct BoardInfo *bi)

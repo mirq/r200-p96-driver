@@ -1,273 +1,137 @@
 # Radeon9200.chip for Prometheus.card
 
-Experimental pure-C Picasso96 chip driver for desktop RV280 Radeon 9200 PCI
-boards behind `Prometheus.card`.
+Pure-C Picasso96 chip driver for desktop RV280 Radeon 9200 PCI boards behind
+`Prometheus.card`.
 
-## Current Status
+## Status
 
-The current milestone builds a resident chip library, produces VGA output,
-and opens Picasso96-managed screens. It implements:
+The current library is `Radeon9200.chip 3.0` and exposes Radeon3D interface 8.
+It has been validated on a physical 50 MHz 68060 Amiga with a
+Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB COMBIOS board, and a
+64 MiB linear aperture. Supported device IDs are `1002:5960`, `1002:5961`, and
+`1002:5964`.
 
-- Picasso96 CardDevelop 3.6 library and callback ABI.
-- Prometheus discovery and ownership for ATI `1002:5960`, `1002:5961`, and
-  `1002:5964` display devices.
-- BAR0 framebuffer and BAR2 MMIO validation, Prometheus configuration access,
-  and endian-safe mapped MMIO access.
-- Bounded PCI option-ROM loading and selection of a checksummed x86 image.
-- Legacy COMBIOS parsing and cold-card ASIC, PLL, SDRAM, and memory-controller
-  initialization.
-- CRTC0 and primary-DAC setup for an initial `640x480@60` CLUT8 VGA screen.
-- A startup test pattern with black, red, green, blue, cyan, magenta, yellow,
-  and white vertical bars.
-- CLUT8, little-endian RGB565 (`RGBFB_R5G6B5PC`), and four-byte
-  BGRA/XRGB8888 (`RGBFB_B8G8R8A8`) scanout.
-- Picasso96 callbacks for modesetting, format-aware pitch and panning,
-  indexed and identity-LUT palette updates, display blanking, vertical sync,
-  and DPMS.
-- Strict `DMASIZE` parsing and a transactional, 4 KiB-aligned shared
-  Prometheus DMA arena reserved from the high end of usable VRAM.
-- Bounded direct-MMIO 2D engine initialization, synchronization, reset, and
-  timeout fallback.
-- Hardware rectangle fills in all three formats, including CLUT8 partial write
-  masks, overlap-safe same-surface rectangle copies, and cross-surface
-  source-copy (`opcode $C`) rectangle copies between disjoint Picasso96
-  surfaces with independently validated pitches.
-- Hardware JAM2 monochrome patterns with 1, 2, 4, or 8 rows when each 16-bit
-  source row repeats the same eight horizontal pixels.
+Implemented display and 2D features include:
 
-`InitCard` returns success only after hardware initialization and startup
-screen setup have completed. Version 0.12 is validated from a cold boot on a
-real 68060 Amiga with a Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB
-COMBIOS board, and `rtg.library` 43.538. The tested configuration provides a
-64 MiB linear aperture and boots a `1024x768x8` Workbench on the Radeon. With
-`DMASIZE=2048k`, Picasso96 receives 62 MiB and the shared high 2 MiB remains
-outside its allocator and Radeon graphics operations.
+- CRTC0 output through the primary VGA DAC and the validated internal-TMDS DVI
+  route. The DVI path has driven a stable 1920x1080 Workbench at up to the
+  165 MHz single-link limit.
+- CLUT8, little-endian RGB565 (`RGBFB_R5G6B5PC`), and four-byte BGRA/XRGB8888
+  (`RGBFB_B8G8R8A8`) scanout, with panning, palette, blanking, vertical sync,
+  and DPMS callbacks.
+- Bounded ROM selection, legacy COMBIOS parsing, cold-card initialization, and
+  endian-safe mapped MMIO.
+- Hardware `FillRect`, `InvertRect`, `BlitRect`, `DrawLine`, JAM1/JAM2
+  `BlitTemplate`, constrained JAM2 `BlitPattern`, and
+  `BlitRectNoMaskComplete` for all 16 P96 minterms. Copies validate complete
+  source and destination extents and select a safe direction for overlapping
+  on-board ranges.
+- A 64x64 ARGB hardware cursor, enabled by default.
+- A page-aligned shared Prometheus DMA arena at the high end of VRAM, separate
+  from Radeon-private CP and cursor storage.
+- Bounded command-processor submission, recovery, fences, imported P96
+  surfaces, and semantic 3D execution. The public contract is documented in
+  [`RADEON3D_SUBMISSION.md`](RADEON3D_SUBMISSION.md); physical validation is
+  recorded chronologically in [`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
 
-Picasso96 API tests repeatedly open and close `640x480` screens in all three
-advertised formats. Their measured pitches are 640, 1280, and 2560 bytes.
-Tests cover rectangle edges, direct-color fills, right/down overlapping copies,
-cross-surface disjoint copies with equal and unequal pitches, unaligned P96
-surface addresses, and CLUT8 partial masks. P96 pixel readback returns the
-expected RGB565-quantized colors and exact 32-bit `00RRGGBB` colors. No crash is
-recorded after an 8/16/32/8 transition sequence. Pattern tests cover phase,
-rectangle edges, overdraw guards, complete row ordering for all four accepted
-heights, CLUT8 partial
-masks, and synchronized fallback for unsupported 16-pixel patterns.
-
-In an earlier hardware milestone on the validated `640x480x8` surface, 256
-full-screen fills dropped from 627 DOS ticks through the software path to 17-23
-ticks in hardware. The matching 256 half-screen copies dropped from 718 ticks
-to 16-22 ticks. These runs were approximately 27-37 times faster for fills and
-33-45 times faster for copies; the final timings are recorded in
-[`performance.md`](performance.md).
-Cross-surface `BlitBitMap` and `BlitBitMapRastPort` improved from 242/237
-ops/s to 3483/2573 ops/s (roughly 14x and 11x) in P96Speed 640x480x16 tests.
-The validated monochrome pattern path improved `RectFill Pattern` from 37 to
-1387 ops/s (37.5x). Version 0.12 reaches 10688 RectFill ops/s, 2.07x the
-pre-optimization 5167 result and within 10.1 percent of the closed driver's
-11881 result. Direct volatile MMIO and overflow-safe 32-bit surface validation
-account for the gain.
-
-### P96Speed 0.13 Results
-
-The version 0.13 development driver produced the following P96Speed 1.2 result
-on an Amiga 4000 with a 50 MHz 68060. The test used `640x480x16` and a five
-second test length. The saved report was 1,889 bytes with CRC32 `17945E8D`.
-
-| Test | Operations/second |
-|---|---:|
-| `RectFill()` | 10145 |
-| `RectFill()` Pattern | 9409 |
-| `WritePixel()` | 132152 |
-| `WriteChunkyPixels()` | 133 |
-| `WritePixelArray8()` | 132 |
-| `WritePixelLine8()` | 9084 |
-| `DrawEllipse()` | 6514 |
-| `DrawCircle()` | 7565 |
-| `Draw()` | 17421 |
-| `Draw()` Hor/Ver | 18733 |
-| `ScrollRaster()` X | 1203 |
-| `ScrollRaster()` Y | 1255 |
-| `PutText()` | 6409 |
-| `BlitBitMap()` | 9761 |
-| `BlitBitMapRastPort()` | 5460 |
-| `BitMapScale()` | 57 |
-| `OpenWindow()` | 73 |
-| `MoveWindow()` | 379 |
-| `SizeWindow()` | 107 |
-| `CON-Output` | 534 |
-| `ScreenToFront()` | 16 |
+Hardware acceleration falls back to the P96 defaults when an operation or
+surface cannot be represented safely. Timeout recovery invalidates current 3D
+sessions, resets the engine, reloads and self-tests the CP, and re-arms safe
+acceleration.
 
 ## Build
 
 ```sh
 make clean && make
-```
-
-The default cross-compiler prefix is `/opt/amiga/bin/m68k-amigaos-`. A default
-build produces the matched `Radeon9200.chip` and `Prometheus.card` artifacts in
-the project root.
-
-`make FASTWAIT=1` produces the controlled experimental
-`Radeon9200-fastwait.chip` with a separate `build-fastwait/` object tree. It
-omits the destination-cache flush after FIFO-empty and engine-idle completion;
-the normal build retains the flush. Testing requires installing the experimental
-file as `Radeon9200.chip`; it uses the unchanged normal `Prometheus.card`.
-`make DEBUG=1 FASTWAIT=1` uses a separate `build-debug-fastwait/` tree.
-
-For serial/debug logging through `KPrintF`:
-
-```sh
-make DEBUG=1
-```
-
-Release, DEBUG, FASTWAIT, and DEBUG+FASTWAIT configurations use separate object
-trees and chip filenames.
-
-Build the P96 screen test utility with:
-
-```sh
 make tools
+make abi-check
+make r3d-tools
 ```
 
-The result is `build/p96screen`. Its AmigaDOS syntax is:
+The default cross-compiler prefix is `/opt/amiga/bin/m68k-amigaos-`. A normal
+build produces the matched `Radeon9200.chip` and `Prometheus.card` files in the
+repository root. Warnings are treated as errors for the chip and tools.
 
-```text
-p96screen [8|16|32] [seconds] [test]
+Other configurations use independent object trees and output names:
+
+```sh
+make DEBUG=1       # serial logging and Radeon9200.Debug statistics
+make FASTWAIT=1    # controlled cache-flush experiment
+make DEBUG=1 FASTWAIT=1
 ```
 
-It selects the `Radeon9200` board, opens a `640x480` screen, draws eight color
-bars, reads direct-color pixels back through Picasso96, and closes the screen.
-The optional `test` argument also runs fill, pattern, overlap-copy, and
-CLUT8-mask readback checks, plus fill/copy timing in the selected format.
+`FASTWAIT=1` omits the destination-cache flush after FIFO-empty and engine-idle
+completion. It is an experiment, not the default release configuration.
 
-See [`p96speed.md`](p96speed.md) for the verified MCP procedure that selects
-the 640x480x16 mode, runs all 21 P96Speed tests, waits for completion, and saves
-the ASCII result without manual input.
+## Installation
 
-See [`performance.md`](performance.md) for benchmark comparisons, accepted and
-rejected optimizations, hardware-validation records, and ordered follow-up
-work.
+Install `Radeon9200.chip` and `Prometheus.card` as a matched pair. The active
+monitor icon is `DEVS:Monitors/Radeon.info`; an icon beside the chip library is
+not used. Preserve its binary `DiskObject` by editing it with Workbench
+**Information**.
 
-## Picasso96 Configuration
-
-The monitor icon must use `BOARDTYPE=Prometheus`. The corresponding entry in
-`DEVS:Picasso96Settings` must select the Prometheus board while retaining the
-Radeon mode definitions. Load `DEVS:Monitors/Radeon` before `IPrefs` if startup
-does not run `LoadMonDrvs`.
-
-### Monitor Icon ToolTypes
-
-`InitCard` receives its ToolTypes from the active monitor icon
-`DEVS:Monitors/Radeon.info`, not from an icon beside
-`LIBS:Picasso96/Radeon9200.chip`. The `.info` file is a binary Amiga
-`DiskObject`; do not create or edit it as a text file.
-
-The validated ToolTypes are:
+The validated active ToolTypes are:
 
 ```text
 BOARDTYPE=Prometheus
+SETTINGSFILE=SYS:Devs/Picasso96Settings.9200
 OUTPUT=VGA
 DMASIZE=2M
 CP=YES
 HWSPRITE=YES
 ```
 
-`BOARDTYPE` selects this card driver. `OUTPUT=VGA` makes the supported output
-explicit, although VGA is also the default. `DMASIZE` reserves a VRAM-backed
-shared DMA arena solely for peer PCI devices such as RTL8139. The 1 MiB Radeon
-CP ring is a separate private reservation and does not affect `DMASIZE`.
-`CP=YES` opts into CP initialization so the ring remains available for future
-3D work. Picasso96 2D fill, pattern, and copy callbacks use direct MMIO even
-while the CP is active. `HWSPRITE=YES` enables the RV280 64x64 ARGB hardware
-cursor; allocation or initialization failure leaves Picasso96's software cursor
-active. Hardware cursor support is enabled by default; use `HWSPRITE=NO` to
-disable it explicitly.
+`BOARDTYPE` and `SETTINGSFILE` must be switched together. Use `OUTPUT=VGA` for
+the first boot on an unvalidated board. `OUTPUT=DVI` is restricted to a
+supported internal-TMDS COMBIOS profile. See [`tooltypes.md`](tooltypes.md) for
+the complete option semantics and DVI validation record.
 
-To create the icon, copy a valid Picasso96 monitor icon to
-`DEVS:Monitors/Radeon.info`, then use Workbench **Information** to preserve its
-existing Picasso96 options and add the five active entries above. Inactive
-Workbench ToolTypes are parenthesized and do not reach the driver as active
-options. Back up the previous icon, save the new one, and cold-reboot so
-Picasso96 calls `InitCard` with the new ToolType array.
+`DMASIZE` is required for Radeon initialization. It accepts positive decimal
+bytes with an optional `K` or `M` suffix, rounds up to 4096 bytes, and must
+leave at least 4 MiB for Picasso96. The reserved tail is published through the
+Prometheus DMA vectors for peer PCI bus masters. Invalid, zero, unavailable,
+or oversized requests fail initialization.
 
-Back up an existing settings file before editing it. The validated target has
-`640x480` modes for depths 8, 16, and 32; the 32-bit mode uses the standard
-25.175 MHz `640x480@60` timing.
+## Tests and performance
 
-## DMASIZE
-
-`DMASIZE` accepts decimal bytes with an optional `K` or `M` suffix, without
-whitespace or trailing text. The key and suffix are case-insensitive. Examples:
+`build/p96screen` opens a `640x480` screen, draws and reads back test content,
+and optionally runs format-specific fill, pattern, template, text, copy, mask,
+and overlap checks:
 
 ```text
-DMASIZE=0
-DMASIZE=64K
-DMASIZE=2M
+p96screen [8|16|32] [seconds] [test]
 ```
 
-The final `DMASIZE` occurrence wins. Invalid, zero, overflowing, unavailable,
-or oversized values prevent Radeon card initialization. Positive requests
-round up to 4096 bytes and must leave at least 4 MiB for Picasso96. The reserved
-tail is published by `Prometheus.card` through its DMA allocation vectors for
-peer PCI devices; Radeon-private cursor and CP storage is allocated separately
-below it.
+Run the complete `8/16/32/8` sequence before accepting a build. Additional
+procedures are in [`p96speed.md`](p96speed.md),
+[`p96overlap.md`](p96overlap.md), and
+[`p96windowmove.md`](p96windowmove.md).
 
-If another PCI driver requests DMA before Picasso96 initializes the Radeon,
-`Prometheus.card` creates its 2 MiB early arena first. A smaller positive
-`DMASIZE` request accepts that existing arena and excludes the full 2 MiB from
-Picasso96. This keeps boot order from deciding whether Radeon initialization
-succeeds while preserving every allocation the earlier client may already hold.
-
-## First Hardware Test
-
-Use a recoverable setup with a working native display or serial console and a
-way to disable the driver on the next boot. Connect a VGA monitor that accepts
-`640x480@60`; `OUTPUT=VGA` remains the default and safest first-test path.
-`OUTPUT=DVI` enables the internal-TMDS path only for the validated RV280
-COMBIOS profile; see [`tooltypes.md`](tooltypes.md) for its connector and clock
-limits.
-
-The validated Amiga needs approximately 100 seconds after a reboot before the
-AmigaBridge TCP service is reachable. Wait the full interval before treating a
-failed reconnect as a boot failure.
-
-Record the bridge model, CPU, exact PCI device ID, VRAM size, ROM type, and
-whether the card was cold or already posted. A successful first test should
-show eight equal-width vertical color bars. A debug build reports posted/cold
-state, COMBIOS revision, PLL parameters, usable VRAM, and the failing
-initialization stage.
+The repository does not claim an up-to-date 2D baseline for version 3.0: the
+recorded P96Speed figures predate the latest state-shadowing, pipelining,
+backpressure, DVI, and complete-copy changes. [`performance.md`](performance.md)
+defines the metadata and reruns required before publishing new comparisons.
+The latest recorded 3D checkpoint is a dated, artifact-identified 4.967 FPS
+mean for fullscreen textured gears; it is not a general 2D score.
 
 ## Limits
 
 - Legacy COMBIOS only; ATOM BIOS cold initialization is rejected.
-- CRTC0 only. The primary analog DAC and the validated internal-TMDS route are
-  supported; CRTC1 remains unsupported.
-- The only direct-color layouts are `RGBFB_R5G6B5PC` and
-  `RGBFB_B8G8R8A8`. There is no 15-bit, packed 24-bit, native-endian alias, or
-  alternate channel ordering yet.
-- No external-TMDS, TV output, interrupts, or overlay. The hardware cursor is
-  limited to one 64x64 ARGB image on the single supported board instance.
-- Pattern acceleration is limited to JAM2, heights up to eight rows, and
-  16-pixel source rows whose two bytes are identical. Other patterns use P96
-  software.
-- Planar conversion, unsupported templates, and cross-surface operations with
-  overlap or non-copy opcodes still use P96 software.
+- CRTC0 only. External TMDS, CRTC1, TV output, interrupts, overlays, and
+  border/overscan programming are not implemented.
+- Direct color is limited to RGB565PC and B8G8R8A8; no 15-bit, packed 24-bit,
+  native-endian alias, or alternate channel ordering is advertised.
+- Pattern acceleration is limited to supported JAM2 patterns. Planar conversion
+  and unsupported templates or surfaces use P96 software.
 - Linear scanout is limited to the lower 64 MiB aperture.
-- Horizontal panning is quantized to 8 pixels in CLUT8, 4 pixels in RGB565,
-  and 2 pixels in BGRA32 because CRTC offsets have eight-byte granularity.
-- Border/overscan programming is not implemented; modes are borderless.
-- One Radeon board instance per library load.
-- Failure and unload restore PCI command ownership state and leave output
-  blank, but do not restore every pre-existing Radeon register.
-
-The `DMASIZE` reservation is exposed through the established
-`prometheus.library` DMA API rather than as an OpenPCI memory provider.
+- Horizontal panning follows the CRTC's eight-byte granularity.
+- One Radeon board instance is supported per chip-library load.
+- Shutdown restores PCI command ownership and blanks output but does not restore
+  every pre-existing Radeon register.
 
 ## Licensing
 
-The R200 command-processor microcode is distributed under the notice in
+R200 command-processor microcode is distributed under
 [`R200_MICROCODE_LICENSE.txt`](R200_MICROCODE_LICENSE.txt). Additional
-inherited-code attribution and binary redistribution terms are in
-[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt). Both notices remain in
-the tagged source archive generated by GitHub.
+attribution and binary redistribution terms are in
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).

@@ -46,7 +46,7 @@ jobs:
           CROSS: m68k-amigaos-
 
       - name: Stage debug artifact
-        run: cp Radeon9200.chip dist/Radeon9200-debug.chip
+        run: cp Radeon9200-debug.chip dist/Radeon9200-debug.chip
 
       - name: Build tools
         run: make clean && make tools

@@ -49,13 +49,21 @@ ABI_CHECK(Radeon3DTestInvalidateCapability,
 ABI_CHECK(Radeon3DColorTargetCapability,
           RADEON3D_CAP_COLOR_TARGET_FORMATS == (1UL << 12));
 ABI_CHECK(Radeon3DNativePrimitiveCapability,
-          RADEON3D_CAP_NATIVE_TRI_PRIMITIVES == (1UL << 13));
+           RADEON3D_CAP_NATIVE_TRI_PRIMITIVES == (1UL << 13));
+ABI_CHECK(Radeon3DNativeQuadCapability,
+          RADEON3D_CAP_NATIVE_QUAD_LISTS == (1UL << 14));
 ABI_CHECK(Radeon3DInterfaceVersion,
-          RADEON3D_IFACE_VERSION == 7UL);
+           RADEON3D_IFACE_VERSION == 8UL);
 ABI_CHECK(Radeon3DTriangleStripOpcode,
           RADEON3D_EXEC_DRAW_TRI_STRIP == 3UL);
 ABI_CHECK(Radeon3DTriangleFanOpcode,
-          RADEON3D_EXEC_DRAW_TRI_FAN == 4UL);
+           RADEON3D_EXEC_DRAW_TRI_FAN == 4UL);
+ABI_CHECK(Radeon3DQuadOpcode,
+          RADEON3D_EXEC_DRAW_QUADS == 5UL);
+ABI_CHECK(Radeon3DQuadVertexLimit,
+          RADEON3D_IMMD_MAX_QUAD_VERTICES == 252UL);
+ABI_CHECK(Radeon3DQuadV5VertexLimit,
+          RADEON3D_IMMD_MAX_QUAD_VERTICES_V5 == 252UL);
 ABI_CHECK(Radeon3DV4Options,
           RADEON3D_DRAW_OPTIONS_V4 == 0x000001ffUL);
 ABI_CHECK(Radeon3DV4StateOption,
@@ -65,7 +73,7 @@ ABI_CHECK(Radeon3DV5StateOption,
 ABI_CHECK(Radeon3DV5Options,
           RADEON3D_DRAW_OPTIONS == 0x000003ffUL);
 ABI_CHECK(Radeon3DPhase6StateMask,
-          RADEON3D_PHASE6_STATE_MASK == 0x00000003UL);
+           RADEON3D_PHASE6_STATE_MASK == 0x00000007UL);
 ABI_CHECK(Radeon3DExecuteClearSize,
            RADEON3D_EXEC_CLEAR_DWORDS == 11UL);
 ABI_CHECK(Radeon3DExecuteDrawSize,

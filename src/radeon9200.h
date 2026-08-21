@@ -197,6 +197,7 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
                             BOOL hardwareText);
 BOOL RadeonInitializeCursor(struct BoardInfo *bi);
 void RadeonShutdownCursor(struct BoardInfo *bi);
+void RadeonRefreshCursorPosition(struct BoardInfo *bi);
 BOOL RadeonSetSprite(__REGA0(struct BoardInfo *bi),
                      __REGD0(BOOL active),
                      __REGD7(RGBFTYPE format));

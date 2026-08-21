@@ -202,6 +202,8 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
         info->Caps |= RADEON3D_CAP_COLOR_TARGET_FORMATS;
     if (interfaceVersion >= 7UL)
         info->Caps |= RADEON3D_CAP_NATIVE_TRI_PRIMITIVES;
+    if (interfaceVersion >= 8UL)
+        info->Caps |= RADEON3D_CAP_NATIVE_QUAD_LISTS;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -381,8 +383,9 @@ static BOOL ValidateTriangleBatch(struct Radeon3DDevice *device,
 {
     struct Radeon3DSurfaceHandle *target;
     ULONG seControl = R200_BFACE_SOLID | R200_FFACE_SOLID |
-                      R200_DIFFUSE_SHADE_GOURAUD |
-                      R200_VTX_PIX_CENTER_OGL |
+                       R200_DIFFUSE_SHADE_GOURAUD |
+                       R200_ALPHA_SHADE_GOURAUD |
+                       R200_VTX_PIX_CENTER_OGL |
                       R200_ROUND_MODE_ROUND |
                       R200_ROUND_PREC_4TH_PIX;
     ULONG index = 0;
@@ -693,7 +696,7 @@ static BOOL ValidTextureTargetV4(struct Radeon3DSurfaceHandle *surface,
             return FALSE;
         for (level = 0; level < levels; ++level) {
             ULONG rowBytes = levelWidth * bytesPerPixel;
-            ULONG stride = (rowBytes + 31UL) & ~31UL;
+            ULONG stride = (rowBytes + 63UL) & ~63UL;
             ULONG levelBytes;
             if (levelHeight > 0xffffffffUL / stride)
                 return FALSE;
@@ -708,6 +711,14 @@ static BOOL ValidTextureTargetV4(struct Radeon3DSurfaceHandle *surface,
     }
     *usedBytes = needed;
     return needed && needed <= allocationBytes - offset;
+}
+
+static BOOL UsesPowerOfTwoTexturePath(ULONG width, ULONG height, ULONG state)
+{
+    ULONG levels = ((state & RADEON3D_TEX_LEVELS_MASK) >>
+                    RADEON3D_TEX_LEVELS_SHIFT) + 1UL;
+    return IsPowerOfTwo(width) && IsPowerOfTwo(height) &&
+           (levels > 1UL || width >= 16UL);
 }
 
 static BOOL EmitExecuteTexture(struct Radeon3DExecuteEmitter *emitter,
@@ -725,7 +736,7 @@ static BOOL EmitExecuteTexture(struct Radeon3DExecuteEmitter *emitter,
     ULONG multiReg = unit ? R200_PP_TXMULTI_CTL_1 : R200_PP_TXMULTI_CTL_0;
     ULONG offsetReg = unit ? R200_PP_TXOFFSET_1 : R200_PP_TXOFFSET_0;
     ULONG textureFormat = R200_TXFORMAT_NON_POWER2;
-    ULONG filter = R200_CLAMP_S_CLAMP_LAST | R200_CLAMP_T_CLAMP_LAST;
+    ULONG filter = 0;
     ULONG textureSize = (texture->Width - 1UL) |
                         ((texture->Height - 1UL) << 16);
     ULONG texturePitch = texture->Pitch - 32UL;
@@ -756,12 +767,18 @@ static BOOL EmitExecuteTexture(struct Radeon3DExecuteEmitter *emitter,
         textureAddress += textureOffset;
         textureSize = (textureWidth - 1UL) |
                       ((textureHeight - 1UL) << 16);
-        if (levels > 1UL) {
+        /* Power-of-two layout is independent of whether the current min
+         * filter actually samples mip levels. The NPOT path always clamps on
+         * R200, so treating a POT texture with GL_LINEAR as NPOT breaks
+         * GL_REPEAT (notably Quake world textures). */
+        if (UsesPowerOfTwoTexturePath(textureWidth, textureHeight,
+                                     textureState)) {
             for (scan = textureWidth; scan > 1UL; scan >>= 1) ++logWidth;
             for (scan = textureHeight; scan > 1UL; scan >>= 1) ++logHeight;
             textureFormat = (logWidth << R200_TXFORMAT_WIDTH_SHIFT) |
                             (logHeight << R200_TXFORMAT_HEIGHT_SHIFT);
-            filter |= (levels - 1UL) << R200_MAX_MIP_LEVEL_SHIFT;
+            if (levels > 1UL)
+                filter |= (levels - 1UL) << R200_MAX_MIP_LEVEL_SHIFT;
             textureSize = 0;
             texturePitch = 0;
         }
@@ -780,7 +797,7 @@ static BOOL EmitExecuteTexture(struct Radeon3DExecuteEmitter *emitter,
         filter |= R200_MAG_FILTER_LINEAR | R200_MIN_FILTER_LINEAR;
     return ExecuteEmitRegister(emitter, filterReg, filter) &&
            ExecuteEmitRegister(emitter, formatReg, textureFormat) &&
-           ExecuteEmitRegister(emitter, formatXReg, 0) &&
+           ExecuteEmitRegister(emitter, formatXReg, R200_TEXCOORD_PROJ) &&
            ExecuteEmitRegister(emitter, sizeReg, textureSize) &&
            ExecuteEmitRegister(emitter, pitchReg, texturePitch) &&
            ExecuteEmitRegister(emitter, multiReg, 0) &&
@@ -840,12 +857,19 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
     BOOL textured1 = stateV5 &&
                      (phase6State & RADEON3D_PHASE6_TEXTURE1) != 0;
     BOOL fog = stateV5 && (phase6State & RADEON3D_PHASE6_FOG) != 0;
+    BOOL perspective = stateV5 &&
+                       (phase6State & RADEON3D_PHASE6_PERSPECTIVE) != 0;
+    BOOL denormalized = textured && stateV4 &&
+                        UsesPowerOfTwoTexturePath(textureWidth, textureHeight,
+                                                 textureState);
     BOOL useDepth = depth != NULL;
     ULONG depthFunc = (options & RADEON3D_DRAW_DEPTH_FUNC_MASK) >>
                       RADEON3D_DRAW_DEPTH_FUNC_SHIFT;
 
     if (useDepth)
         format0 |= R200_VTX_Z0;
+    if (perspective)
+        format0 |= R200_VTX_W0;
     if (textured) {
         format0 &= ~(3UL << R200_VTX_COLOR_0_SHIFT);
         if (stateV4)
@@ -854,6 +878,9 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
         ppControl |= R200_TEX_0_ENABLE;
     }
     if (textured1) {
+        denormalized = denormalized &&
+            UsesPowerOfTwoTexturePath(texture1Width, texture1Height,
+                                      texture1State);
         format1 |= 2UL << R200_VTX_TEX1_COMP_CNT_SHIFT;
         ppControl |= R200_TEX_1_ENABLE | R200_TEX_BLEND_1_ENABLE;
     }
@@ -931,10 +958,16 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
 
     if (!ExecuteEmitRegister(emitter, R200_SE_VAP_CNTL_STATUS, 0) ||
         !ExecuteEmitRegister(emitter, R200_SE_VAP_CNTL,
-                             R200_VAP_FORCE_W_TO_ONE |
+                              (perspective ? 0UL : R200_VAP_FORCE_W_TO_ONE) |
                                  (9UL << R200_VAP_VF_MAX_VTX_NUM_SHIFT)) ||
-        !ExecuteEmitRegister(emitter, R200_SE_VTX_STATE_CNTL, 0) ||
-        !ExecuteEmitRegister(emitter, R200_SE_VTE_CNTL, 0) ||
+        !ExecuteEmitRegister(emitter, R200_SE_VTX_STATE_CNTL,
+                              R200_VSC_UPDATE_USER_COLOR_0_ENABLE) ||
+         !ExecuteEmitRegister(emitter, R200_SE_VTE_CNTL,
+                               (denormalized ? R200_VTX_ST_DENORMALIZED : 0) |
+                                   (perspective
+                                        ? R200_VTX_XY_FMT | R200_VTX_Z_FMT |
+                                              R200_VTX_W0_FMT
+                                        : 0)) ||
         !ExecuteEmitRegister(emitter, R200_SE_VTX_FMT_0, format0) ||
         !ExecuteEmitRegister(emitter, R200_SE_VTX_FMT_1, format1) ||
         !ExecuteEmitRegister(emitter, R200_SE_CNTL, seControl) ||
@@ -951,12 +984,8 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
                              R200_TXC_CLAMP_0_1 |
                                  R200_TXC_OUTPUT_REG_R0) ||
         !ExecuteEmitRegister(emitter, R200_PP_TXABLEND_0,
-                              textured && stateV4 &&
-                                      (textureState & RADEON3D_TEX_MODULATE)
-                                  ? R200_TXA_ARG_A_R0_ALPHA |
-                                        R200_TXA_ARG_B_DIFFUSE_ALPHA
-                              : textured ? R200_TXA_ARG_C_R0_ALPHA
-                                       : R200_TXA_ARG_C_DIFFUSE_ALPHA) ||
+                               textured ? R200_TXA_ARG_C_R0_ALPHA
+                                        : R200_TXA_ARG_C_DIFFUSE_ALPHA) ||
         !ExecuteEmitRegister(emitter, R200_PP_TXABLEND2_0,
                               R200_TXA_CLAMP_0_1 |
                                   R200_TXA_OUTPUT_REG_R0) ||
@@ -970,10 +999,7 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
                                R200_TXC_CLAMP_0_1 |
                                    R200_TXC_OUTPUT_REG_R0) ||
           !ExecuteEmitRegister(emitter, R200_PP_TXABLEND_1,
-                                (texture1State & RADEON3D_TEX_MODULATE)
-                                    ? R200_TXA_ARG_A_R1_ALPHA |
-                                          R200_TXA_ARG_B_R0_ALPHA
-                                    : R200_TXA_ARG_C_R1_ALPHA) ||
+                                 R200_TXA_ARG_C_R1_ALPHA) ||
           !ExecuteEmitRegister(emitter, R200_PP_TXABLEND2_1,
                                R200_TXA_CLAMP_0_1 |
                                    R200_TXA_OUTPUT_REG_R0))) ||
@@ -1004,7 +1030,8 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
 
     return ExecuteEmitRegister(emitter, R200_RE_AUX_SCISSOR_CNTL, 0) &&
            ExecuteEmitRegister(emitter, R200_RE_CNTL,
-                               R200_SCISSOR_ENABLE) &&
+                               R200_SCISSOR_ENABLE |
+                                   (perspective ? R200_PERSPECTIVE_ENABLE : 0)) &&
            ExecuteEmitRegister(emitter, R200_RE_TOP_LEFT,
                                left | (top << 16)) &&
            ExecuteEmitRegister(emitter, R200_RE_WIDTH_HEIGHT,
@@ -1065,6 +1092,9 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                                  const struct Radeon3DSurfaceHandle *color)
 {
     ULONG dwordsPerVertex = 3UL + (useDepth ? 1UL : 0UL) +
+                               ((stateV5 &&
+                                 (phase6State & RADEON3D_PHASE6_PERSPECTIVE))
+                                    ? 1UL : 0UL) +
                               (textured ? (stateV4 ? 2UL : 1UL) : 0UL) +
                               ((stateV5 &&
                                 (phase6State & RADEON3D_PHASE6_FOG))
@@ -1104,13 +1134,20 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                       !ValidTextureCoordinate(input[7]))
                    : (input[6] || input[7]))) ||
              (stateV5 &&
-              (phase6State & RADEON3D_PHASE6_FOG
-                   ? !ValidUnitFloat(input[8]) : input[8] != 0))))
+               (phase6State & RADEON3D_PHASE6_FOG
+                    ? !ValidUnitFloat(input[8])
+                    : (phase6State & RADEON3D_PHASE6_PERSPECTIVE)
+                          ? input[8] == 0 ||
+                                !ValidScreenCoordinate(input[8], 65536UL)
+                          : input[8] != 0))))
             return FALSE;
         if (!ExecuteEmitWord(emitter, input[0]) ||
             !ExecuteEmitWord(emitter, input[1]))
             return FALSE;
         if (useDepth && !ExecuteEmitWord(emitter, input[2]))
+            return FALSE;
+        if (stateV5 && (phase6State & RADEON3D_PHASE6_PERSPECTIVE) &&
+            !ExecuteEmitWord(emitter, input[8]))
             return FALSE;
         if (stateV5 && (phase6State & RADEON3D_PHASE6_FOG) &&
             !ExecuteEmitWord(emitter, input[8]))
@@ -1213,6 +1250,7 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     BOOL textured;
     BOOL textured1;
     BOOL fog;
+    BOOL perspective;
     BOOL useDepth;
     BOOL stateV4;
     BOOL stateV5;
@@ -1268,6 +1306,8 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     textured1 = stateV5 &&
                 (phase6State & RADEON3D_PHASE6_TEXTURE1) != 0;
     fog = stateV5 && (phase6State & RADEON3D_PHASE6_FOG) != 0;
+    perspective = stateV5 &&
+                  (phase6State & RADEON3D_PHASE6_PERSPECTIVE) != 0;
     if ((options & ~RADEON3D_DRAW_OPTIONS) ||
         (stateV5 && (!stateV4 || device->InterfaceVersion < 5UL)) ||
         (!stateV5 && (options & ~RADEON3D_DRAW_OPTIONS_V4)) ||
@@ -1283,6 +1323,9 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
                      sourceBlend > RADEON3D_BLEND_SRC_ALPHA_SATURATE ||
                      destinationBlend > RADEON3D_BLEND_ONE_MINUS_DST_ALPHA)) ||
         (stateV5 && ((phase6State & ~RADEON3D_PHASE6_STATE_MASK) ||
+                      ((phase6State & RADEON3D_PHASE6_PERSPECTIVE) &&
+                       device->InterfaceVersion < 8UL) ||
+                      (fog && perspective) ||
                      (texture1State & ~RADEON3D_TEX_STATE_MASK) ||
                      minFilter1 >
                          RADEON3D_TEX_MIN_LINEAR_MIPMAP_LINEAR ||
@@ -1293,9 +1336,16 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
          !(options & RADEON3D_DRAW_DEPTH_LESS)) ||
         (options & RADEON3D_DRAW_DEPTH_WRITE &&
          !(options & RADEON3D_DRAW_DEPTH_LESS)) ||
-        vertexCount < 3UL || vertexCount > RADEON3D_IMMD_MAX_VERTICES ||
+        vertexCount < 3UL ||
+        (primitiveType != R200_CP_VC_CNTL_PRIM_TYPE_QUADS &&
+         vertexCount > RADEON3D_IMMD_MAX_VERTICES) ||
         (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST &&
-         vertexCount % 3UL) ||
+          vertexCount % 3UL) ||
+        (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_QUADS &&
+         (vertexCount < 4UL ||
+          vertexCount > (stateV5 ? RADEON3D_IMMD_MAX_QUAD_VERTICES_V5
+                                 : RADEON3D_IMMD_MAX_QUAD_VERTICES) ||
+          vertexCount % 4UL)) ||
         length != headerDwords + vertexCount * vertexStride ||
         !ValidColorTarget(device, color) ||
         (useDepth ? !ValidDepthTarget(depth, color) : record[3] != 0) ||
@@ -1394,6 +1444,11 @@ static BOOL BuildExecuteStream(struct Radeon3DDevice *device,
                    records[index] == RADEON3D_EXEC_DRAW_TRI_FAN) {
             if (!EmitExecuteDraw(device, emitter, records + index, length,
                                  R200_CP_VC_CNTL_PRIM_TYPE_TRI_FAN))
+                return FALSE;
+        } else if (device->InterfaceVersion >= 8UL &&
+                   records[index] == RADEON3D_EXEC_DRAW_QUADS) {
+            if (!EmitExecuteDraw(device, emitter, records + index, length,
+                                 R200_CP_VC_CNTL_PRIM_TYPE_QUADS))
                 return FALSE;
         } else
             return FALSE;
