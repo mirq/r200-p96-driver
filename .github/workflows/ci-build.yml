@@ -9,9 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # stefanreinauer/amiga-gcc provides m68k-amigaos-gcc at /opt/amiga/bin
-    # Pinned explicitly — also available: gcc-v6.5.0b, gcc-v15.2, gcc-v16.1
-    container: stefanreinauer/amiga-gcc:gcc-v13.4
+    # Match the pinned toolchain used for release artifacts. Newer images do
+    # not provide the freestanding memcpy/memset runtime used by this driver.
+    container: stefanreinauer/amiga-gcc:gcc-v6.5.0b-20251124@sha256:11b06254ed512d9a8f65fb13eeb723d5e33cacc1880b80df9f63c29e95fc879a
 
     steps:
       - uses: actions/checkout@v4
