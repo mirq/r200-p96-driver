@@ -43,7 +43,8 @@ SOURCES := \
 	src/radeon_cursor.c \
 	src/radeon_accel.c \
 	src/radeon_bios.c \
-	src/radeon_mode.c
+	src/radeon_mode.c \
+	src/runtime_shim.c
 OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
 CARD_DIR := Prometheus/PrometheusCard

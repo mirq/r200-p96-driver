@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   8UL
+#define RADEON3D_IFACE_VERSION   9UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -14,19 +14,20 @@
 #define RADEON3D_CAP_BITMAP_IMPORT  (1UL << 5)
 #define RADEON3D_CAP_IMMD_TRI_LIST  (1UL << 6)
 #define RADEON3D_CAP_PHASE2_EXECUTE (1UL << 7)
-#define RADEON3D_CAP_PHASE4_DEPTH_FUNCS (1UL << 8)
-#define RADEON3D_CAP_PHASE5_TEXTURE_STATE (1UL << 9)
-#define RADEON3D_CAP_PHASE6_FOG_MULTITEX   (1UL << 10)
+#define RADEON3D_CAP_DEPTH_FUNCS        (1UL << 8)
+#define RADEON3D_CAP_TEXTURE_STATE      (1UL << 9)
+#define RADEON3D_CAP_FOG_MULTITEX       (1UL << 10)
 /* Diagnostic builds only; the ABI vector remains present in release builds. */
 #define RADEON3D_CAP_TEST_INVALIDATE        (1UL << 11)
 #define RADEON3D_CAP_COLOR_TARGET_FORMATS   (1UL << 12)
 #define RADEON3D_CAP_NATIVE_TRI_PRIMITIVES  (1UL << 13)
 #define RADEON3D_CAP_NATIVE_QUAD_LISTS      (1UL << 14)
+#define RADEON3D_CAP_HW_TRANSFORM_CLIP      (1UL << 15)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
 #define RADEON3D_IMMD_MAX_QUAD_VERTICES 252UL
-#define RADEON3D_IMMD_MAX_QUAD_VERTICES_V5 252UL
+#define RADEON3D_IMMD_MAX_EXTENDED_QUAD_VERTICES 252UL
 #define RADEON3D_IMMD_VERTEX_DWORDS 3UL
 
 #define RADEON3D_SUBMIT_FENCE (1UL << 0)
@@ -37,6 +38,10 @@
 #define RADEON3D_EXEC_DRAW_TRI_STRIP 3UL
 #define RADEON3D_EXEC_DRAW_TRI_FAN   4UL
 #define RADEON3D_EXEC_DRAW_QUADS     5UL
+#define RADEON3D_EXEC_DRAW_POINTS    6UL
+#define RADEON3D_EXEC_DRAW_LINES     7UL
+#define RADEON3D_EXEC_DRAW_LINE_STRIP 8UL
+#define RADEON3D_EXEC_DRAW_LINE_LOOP 9UL
 
 #define RADEON3D_CLEAR_COLOR (1UL << 0)
 #define RADEON3D_CLEAR_DEPTH (1UL << 1)
@@ -59,11 +64,13 @@
 #define RADEON3D_DEPTH_ALWAYS    7UL
 #define RADEON3D_DRAW_DEPTH_FUNC(value) \
     ((value) << RADEON3D_DRAW_DEPTH_FUNC_SHIFT)
-#define RADEON3D_DRAW_STATE_V4       (1UL << 8)
-#define RADEON3D_DRAW_STATE_V5       (1UL << 9)
-#define RADEON3D_DRAW_OPTIONS_V3     0x000000ffUL
-#define RADEON3D_DRAW_OPTIONS_V4     0x000001ffUL
-#define RADEON3D_DRAW_OPTIONS        0x000003ffUL
+#define RADEON3D_DRAW_FRAGMENT_STATE (1UL << 8)
+#define RADEON3D_DRAW_EXTENDED_VERTEX (1UL << 9)
+#define RADEON3D_DRAW_HW_TCL         (1UL << 10)
+#define RADEON3D_DRAW_OPTIONS_BASIC  0x000000ffUL
+#define RADEON3D_DRAW_OPTIONS_FRAGMENT 0x000001ffUL
+#define RADEON3D_DRAW_OPTIONS_PRE_TCL 0x000003ffUL
+#define RADEON3D_DRAW_OPTIONS        0x000007ffUL
 
 #define RADEON3D_TEX_MODULATE        (1UL << 0)
 #define RADEON3D_TEX_REPEAT_S        (1UL << 1)
@@ -79,6 +86,8 @@
 #define RADEON3D_TEX_MIN_LINEAR                  1UL
 #define RADEON3D_TEX_MIN_NEAREST_MIPMAP_NEAREST 2UL
 #define RADEON3D_TEX_MIN_LINEAR_MIPMAP_NEAREST  3UL
+/* Semantic values: the service maps these last two to raw R200 filter
+ * encodings 6 and 7, as in Mesa's r200SetTexFilter(). */
 #define RADEON3D_TEX_MIN_NEAREST_MIPMAP_LINEAR  4UL
 #define RADEON3D_TEX_MIN_LINEAR_MIPMAP_LINEAR   5UL
 
@@ -94,10 +103,25 @@
 #define RADEON3D_FRAGMENT_DST_MASK         (15UL << 21)
 #define RADEON3D_FRAGMENT_STATE_MASK       0x01ffffffUL
 
-#define RADEON3D_PHASE6_FOG                 (1UL << 0)
-#define RADEON3D_PHASE6_TEXTURE1            (1UL << 1)
-#define RADEON3D_PHASE6_PERSPECTIVE          (1UL << 2)
-#define RADEON3D_PHASE6_STATE_MASK           0x00000007UL
+#define RADEON3D_VERTEX_FOG                  (1UL << 0)
+#define RADEON3D_VERTEX_TEXTURE1             (1UL << 1)
+/* Extended vertex dword 8 is positive finite clip W. Perspective is
+ * independent of texture unit 1 and mutually exclusive with fog. S/T are
+ * homogeneous clip x/y/z/w and raw S/T, following Mesa hardware projection. */
+#define RADEON3D_VERTEX_CLIP_COORDINATES     (1UL << 2)
+#define RADEON3D_VERTEX_STATE_MASK            0x00000007UL
+
+/* Hardware transform/clip state. The front-face convention is OpenGL's
+ * pre-viewport convention; Radeon9200.chip owns the hardware Y inversion. */
+#define RADEON3D_TRANSFORM_CULL_FRONT        (1UL << 0)
+#define RADEON3D_TRANSFORM_CULL_BACK         (1UL << 1)
+#define RADEON3D_TRANSFORM_FRONT_CCW         (1UL << 2)
+#define RADEON3D_TRANSFORM_FLAT_SHADE        (1UL << 3)
+#define RADEON3D_TRANSFORM_POLYGON_LINE      (1UL << 4)
+#define RADEON3D_TRANSFORM_POLYGON_POINT     (1UL << 5)
+#define RADEON3D_TRANSFORM_POINT_SIZE_SHIFT  8UL
+#define RADEON3D_TRANSFORM_POINT_SIZE_MASK   (0x0fffUL << 8)
+#define RADEON3D_TRANSFORM_STATE_MASK        0x000fff3fUL
 
 #define RADEON3D_BLEND_ZERO                0UL
 #define RADEON3D_BLEND_ONE                 1UL
@@ -113,10 +137,20 @@
 
 #define RADEON3D_EXEC_CLEAR_DWORDS       11UL
 #define RADEON3D_EXEC_DRAW_HEADER_DWORDS 11UL
-#define RADEON3D_EXEC_DRAW_V4_HEADER_DWORDS 15UL
-#define RADEON3D_EXEC_DRAW_V5_HEADER_DWORDS 21UL
+#define RADEON3D_EXEC_DRAW_FRAGMENT_HEADER_DWORDS 15UL
+#define RADEON3D_EXEC_DRAW_EXTENDED_HEADER_DWORDS 21UL
+#define RADEON3D_EXEC_DRAW_HW_TCL_HEADER_DWORDS 44UL
 #define RADEON3D_EXEC_VERTEX_DWORDS       6UL
-#define RADEON3D_EXEC_V5_VERTEX_DWORDS    9UL
+#define RADEON3D_EXEC_EXTENDED_VERTEX_DWORDS 9UL
+#define RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS 10UL
+
+/* Basic/fragment: x,y,z,s0,t0,packedColor.
+ * Extended: x,y,z,s0,t0,packedColor,s1,t1,fog-or-w.
+ * HW TCL: object x,y,z,w,packedARGBColor,s0,t0,s1,t1,fog.
+ * packedARGBColor is (alpha<<24)|(red<<16)|(green<<8)|blue, the same packing
+ * and byte order the non-TCL paths use.
+ * HW TCL header dwords 21..36 are an OpenGL column-major MVP matrix; dwords
+ * 37..42 are viewport X/Y/Z scale and offset pairs; dword 43 is TCL state. */
 
 struct Radeon3DDevice;
 struct BitMap;

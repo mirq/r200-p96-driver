@@ -125,17 +125,17 @@ same headers, state, and vertex layouts as triangle records, but accept any
 vertex count from 3 through 255 and emit the corresponding native R200
 primitive. Earlier interface versions reject these opcodes.
 
-Interface-v8 sessions with `RADEON3D_CAP_NATIVE_QUAD_LISTS` may use
+Interface 8 sessions with `RADEON3D_CAP_NATIVE_QUAD_LISTS` may use
 `RADEON3D_EXEC_DRAW_QUADS`. It uses the same headers, state, and vertex layouts
 as triangle records. `vertexCount` is divisible by four, from 4 through 252
-for legacy/v4 and v5 records; the limit keeps both the public and generated
+for basic, fragment-state, and extended-vertex records; the limit keeps both the public and generated
 streams within `MaxBatchDwords`. Each consecutive
 group of four vertices is one native R200 quad. The vertex order is the
 R200/Mesa quad order whose triangles are `(0,1,3)` and `(1,2,3)`. Earlier
 interface versions reject this opcode.
 
-Interface-v8 sessions may also set `RADEON3D_PHASE6_PERSPECTIVE` in a v5
-record's `phase6State`. Perspective and fog are mutually exclusive because both
+Interface 8 sessions may also set `RADEON3D_VERTEX_CLIP_COORDINATES` in an
+extended-vertex record's `vertexState`. Perspective and fog are mutually exclusive because both
 use the final public vertex dword. With perspective enabled, dword 8 is a
 finite positive homogeneous W value no greater than 65536; with fog enabled it
 is `fogAmount` as described below. Earlier interface versions reject the
@@ -157,8 +157,8 @@ with `RADEON3D_DRAW_DEPTH_FUNC()`. The values are `LESS`, `LEQUAL`, `EQUAL`,
 existing interface-v2 records retain their exact behavior. Interface-v2
 sessions must leave the comparison bits zero.
 
-Interface-v4 sessions with `RADEON3D_CAP_PHASE5_TEXTURE_STATE` may set
-`RADEON3D_DRAW_STATE_V4`. Such a draw uses a 15-dword header: the original 11
+Interface 4 sessions with `RADEON3D_CAP_TEXTURE_STATE` may set
+`RADEON3D_DRAW_FRAGMENT_STATE`. Such a draw uses a 15-dword header: the original 11
 dwords followed by texture byte offset, packed texture width/height,
 `textureState`, and `fragmentState`. The record retains the same six public
 dwords per vertex. The service validates all state enums and backing ranges,
@@ -169,12 +169,13 @@ nearest/linear magnification, all six minification filters, and one through 12
 packed POT mip levels. Mip trees use consecutive 32-byte-aligned rows and must
 fit completely inside the imported backing surface. `fragmentState` selects an
 eight-way alpha test plus reference and validated source/destination blend
-factors. Untextured v4 records may use fragment state; clients requiring no
-Phase 5 state should continue emitting the original header.
+factors. Untextured fragment-state records may use fragment state; clients
+requiring none of this state should continue emitting the original header.
 
-Interface-v5 sessions with `RADEON3D_CAP_PHASE6_FOG_MULTITEX` may set both
-`RADEON3D_DRAW_STATE_V4` and `RADEON3D_DRAW_STATE_V5`. Setting v5 without v4 is
-invalid. A v5 draw uses a 21-dword header and nine dwords per public vertex:
+Interface 5 sessions with `RADEON3D_CAP_FOG_MULTITEX` may set both
+`RADEON3D_DRAW_FRAGMENT_STATE` and `RADEON3D_DRAW_EXTENDED_VERTEX`. Setting
+extended vertices without fragment state is invalid. An extended draw uses a
+21-dword header and nine dwords per public vertex:
 
 ```text
 opcode, 21 + vertexCount * 9
@@ -192,15 +193,15 @@ texture 1 handle or zero
 texture 1 byte offset
 texture 1 packed (width - 1) | ((height - 1) << 16)
 texture1State
-phase6State
+vertexState
 fog color in low 24-bit RGB
 
 per vertex: X, Y, Z, S0, T0, packed RGBA, S1, T1, fogAmount or W
 ```
 
-`phase6State` contains `RADEON3D_PHASE6_FOG`,
-`RADEON3D_PHASE6_TEXTURE1`, and, for interface-v8 sessions,
-`RADEON3D_PHASE6_PERSPECTIVE`. Inactive texture-1 header fields and S1/T1 must
+`vertexState` contains `RADEON3D_VERTEX_FOG`,
+`RADEON3D_VERTEX_TEXTURE1`, and, for interface 8 sessions,
+`RADEON3D_VERTEX_CLIP_COORDINATES`. Inactive texture-1 header fields and S1/T1 must
 be zero. An inactive fog color and every inactive final vertex dword must be
 zero. Fog and perspective cannot be combined. Active S1/T1 must be finite
 texture coordinates; active fog amounts must be finite in `[0,1]`, where zero
@@ -214,6 +215,29 @@ surface may be sampled by both units. The service routes unit 1 to STQ1 and emit
 replace or modulation of the stage-0 R0 result. Fog uses discrete per-vertex
 fog and the supplied packed fog color. The trusted immediate hardware order is
 X/Y, optional Z, optional W or fog, diffuse color, optional ST0, optional ST1.
+
+Interface 9 sessions with `RADEON3D_CAP_HW_TRANSFORM_CLIP` may additionally
+set `RADEON3D_DRAW_HW_TCL`. Fragment state and extended vertices are mandatory
+for these records. The header grows to 44 dwords and each object-space vertex
+uses ten dwords:
+
+```text
+header dwords 21..36: OpenGL column-major model-projection matrix
+header dwords 37..42: viewport X/Y/Z scale and offset pairs
+header dword 43: culling, winding, shading, polygon mode, and point size
+per vertex: X, Y, Z, W, packedARGBColor, S0, T0, S1, T1, fogAmount
+```
+
+`packedARGBColor` is `(alpha<<24)|(red<<16)|(green<<8)|blue`, the same packing
+and byte order as the non-TCL vertex colour dword.
+
+The service validates all matrix, viewport, and vertex floats, transposes the
+matrix into the R200 row-vector upload order, enables hardware transform and
+homogeneous clipping, and emits native point, line, triangle, and quad
+primitives. `RADEON3D_EXEC_DRAW_POINTS`, `RADEON3D_EXEC_DRAW_LINES`,
+`RADEON3D_EXEC_DRAW_LINE_STRIP`, and `RADEON3D_EXEC_DRAW_LINE_LOOP` are
+available only to interface 9 sessions. There is no CPU transform or clipping
+fallback in the service.
 
 Bilinear and alpha blending require texturing. Alpha blending is fixed to
 source alpha / one-minus-source-alpha. Depth writes require `DEPTH_LESS` and a

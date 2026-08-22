@@ -261,6 +261,10 @@
 #define R200_RB3D_COLORPITCH                0x1c48UL
 #define R200_COLORPITCH_MASK                 0x00001ff8UL
 #define R200_SE_CNTL                        0x1c4cUL
+#define R200_FFACE_CULL_CW                  0x00000000UL
+#define R200_FFACE_CULL_CCW                 0x00000001UL
+#define R200_RE_POINTSIZE                   0x2648UL
+#define R200_SE_LINE_WIDTH                  0x1db8UL
 #define R200_RE_CNTL                        0x1c50UL
 #define R200_PERSPECTIVE_ENABLE             0x00000008UL
 #define R200_RB3D_PLANEMASK                 0x1d84UL
@@ -271,6 +275,7 @@
 #define R200_ALPHA_BLEND_ENABLE              (1UL << 0)
 #define R200_Z_ENABLE                        (1UL << 8)
 #define R200_SE_VAP_CNTL                    0x2080UL
+#define R200_VAP_TCL_ENABLE                 0x00000001UL
 #define R200_VAP_FORCE_W_TO_ONE             0x00010000UL
 #define R200_VAP_VF_MAX_VTX_NUM_SHIFT       18
 #define R200_SE_VTX_FMT_0                   0x2088UL
@@ -282,7 +287,21 @@
 #define R200_SE_VTX_FMT_1                   0x208cUL
 #define R200_VTX_TEX0_COMP_CNT_SHIFT        0
 #define R200_VTX_TEX1_COMP_CNT_SHIFT        3
+#define R200_SE_TCL_OUTPUT_VTX_FMT_0        0x2090UL
+#define R200_SE_TCL_OUTPUT_VTX_FMT_1        0x2094UL
 #define R200_SE_VTE_CNTL                    0x20b0UL
+#define R200_SE_VPORT_XSCALE                0x1d98UL
+#define R200_SE_VPORT_XOFFSET               0x1d9cUL
+#define R200_SE_VPORT_YSCALE                0x1da0UL
+#define R200_SE_VPORT_YOFFSET               0x1da4UL
+#define R200_SE_VPORT_ZSCALE                0x1da8UL
+#define R200_SE_VPORT_ZOFFSET               0x1dacUL
+#define R200_VPORT_X_SCALE_ENA              0x00000001UL
+#define R200_VPORT_X_OFFSET_ENA             0x00000002UL
+#define R200_VPORT_Y_SCALE_ENA              0x00000004UL
+#define R200_VPORT_Y_OFFSET_ENA             0x00000008UL
+#define R200_VPORT_Z_SCALE_ENA              0x00000010UL
+#define R200_VPORT_Z_OFFSET_ENA             0x00000020UL
 #define R200_VTX_XY_FMT                     0x00000100UL
 #define R200_VTX_Z_FMT                      0x00000200UL
 #define R200_VTX_W0_FMT                     0x00000400UL
@@ -290,6 +309,45 @@
 #define R200_SE_VAP_CNTL_STATUS             0x2140UL
 #define R200_SE_VTX_STATE_CNTL              0x2180UL
 #define R200_VSC_UPDATE_USER_COLOR_0_ENABLE 0x00010000UL
+#define R200_SE_TCL_VECTOR_INDX_REG         0x2200UL
+#define R200_SE_TCL_VECTOR_DATA_REG         0x2204UL
+#define R200_VEC_INDX_OCTWORD_STRIDE_SHIFT  16
+#define R200_SE_TCL_SCALAR_INDX_REG         0x2208UL
+#define R200_SE_TCL_SCALAR_DATA_REG         0x220cUL
+#define R200_SCAL_INDX_DWORD_STRIDE_SHIFT   16
+#define R200_SS_VERT_GUARD_CLIP_ADJ_ADDR    0x00000080UL
+#define R200_SE_TCL_MATRIX_SEL_2            0x2238UL
+#define R200_SE_TCL_OUTPUT_VTX_COMP_SEL     0x2250UL
+#define R200_OUTPUT_XYZW                    (1UL << 0)
+#define R200_OUTPUT_COLOR_0                 (1UL << 8)
+#define R200_OUTPUT_TEX_0                   (1UL << 16)
+#define R200_OUTPUT_TEX_1                   (1UL << 17)
+#define R200_OUTPUT_DISCRETE_FOG            (1UL << 24)
+#define R200_SE_TCL_INPUT_VTX_VECTOR_ADDR_0 0x2254UL
+#define R200_SE_TCL_INPUT_VTX_VECTOR_ADDR_1 0x2258UL
+#define R200_SE_TCL_INPUT_VTX_VECTOR_ADDR_2 0x225cUL
+#define R200_SE_TCL_INPUT_VTX_VECTOR_ADDR_3 0x2260UL
+#define R200_SE_TCL_LIGHT_MODEL_CTL_0       0x2268UL
+#define R200_SE_TCL_LIGHT_MODEL_CTL_1       0x226cUL
+#define R200_SE_TCL_PER_LIGHT_CTL_0         0x2270UL
+#define R200_SE_TCL_PER_LIGHT_CTL_1         0x2274UL
+#define R200_SE_TCL_PER_LIGHT_CTL_2         0x2278UL
+#define R200_SE_TCL_PER_LIGHT_CTL_3         0x227cUL
+#define R200_SE_TCL_TEX_PROC_CTL_2          0x22a8UL
+#define R200_SE_TCL_TEX_PROC_CTL_3          0x22acUL
+#define R200_SE_TCL_TEX_PROC_CTL_0          0x22b0UL
+#define R200_SE_TCL_TEX_PROC_CTL_1          0x22b4UL
+#define R200_SE_TC_TEX_CYL_WRAP_CTL         0x22b8UL
+#define R200_SE_TCL_STATE_FLUSH             0x2284UL
+#define R200_SE_TCL_UCP_VERT_BLEND_CTL      0x22c0UL
+#define R200_UCP_IN_CLIP_SPACE              (1UL << 0)
+#define R200_CULL_FRONT_IS_CCW              (1UL << 28)
+#define R200_CULL_FRONT                     (1UL << 29)
+#define R200_CULL_BACK                      (1UL << 30)
+#define R200_VF_TCL_OUTPUT_VTX_ENABLE       0x00000200UL
+#define R200_VF_COLOR_ORDER_RGBA            0x00000040UL
+#define R200_VTX_FP_RGBA                    3UL
+#define R200_VS_MATRIX_2_MVP                0x00000088UL
 #define R200_RE_TOP_LEFT                    0x26c0UL
 #define R200_RE_AUX_SCISSOR_CNTL            0x26f0UL
 #define R200_SCISSOR_ENABLE                 0x00000002UL
@@ -368,7 +426,16 @@
 #define R200_DISC_FOG_SHADE_GOURAUD         (2UL << 24)
 #define R200_BFACE_SOLID                    (3UL << 1)
 #define R200_FFACE_SOLID                    (3UL << 3)
+#define R200_BFACE_LINE                     (1UL << 1)
+#define R200_FFACE_LINE                     (1UL << 3)
+#define R200_BFACE_POINT                    (2UL << 1)
+#define R200_FFACE_POINT                    (2UL << 3)
 #define R200_DIFFUSE_SHADE_GOURAUD          (2UL << 8)
+#define R200_ALPHA_SHADE_GOURAUD            (2UL << 10)
+#define R200_SPECULAR_LIGHTS                 (1UL << 5)
+#define R200_DIFFUSE_SPECULAR_COMBINE       (1UL << 6)
+#define R200_LOCAL_LIGHT_VEC_GL              (1UL << 8)
+#define R200_FLAT_SHADE_VTX_LAST             (3UL << 6)
 #define R200_ALPHA_SHADE_GOURAUD            (2UL << 10)
 #define R200_VTX_PIX_CENTER_OGL             (1UL << 27)
 #define R200_ROUND_MODE_ROUND               (1UL << 28)
@@ -396,14 +463,21 @@
 
 #define RADEON_CP_PACKET0(reg, count) \
     (((ULONG)(count) << 16) | ((ULONG)(reg) >> 2))
+#define RADEON_CP_PACKET0_ONE_REG_WR        0x00008000UL
+#define RADEON_CP_PACKET0_ONE(reg, count) \
+    (RADEON_CP_PACKET0((reg), (count)) | RADEON_CP_PACKET0_ONE_REG_WR)
 #define RADEON_CP_PACKET2                   0x80000000UL
 #define RADEON_CP_PACKET3(packet, count) \
     (0xc0000000UL | (ULONG)(packet) | ((ULONG)(count) << 16))
 #define R200_CP_CMD_3D_DRAW_IMMD_2          0x00003500UL
+#define R200_CP_VC_CNTL_PRIM_TYPE_POINT_LIST 0x00000001UL
+#define R200_CP_VC_CNTL_PRIM_TYPE_LINE_LIST  0x00000002UL
+#define R200_CP_VC_CNTL_PRIM_TYPE_LINE_STRIP 0x00000003UL
 #define R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST  0x00000004UL
 #define R200_CP_VC_CNTL_PRIM_TYPE_TRI_FAN   0x00000005UL
 #define R200_CP_VC_CNTL_PRIM_TYPE_TRI_STRIP 0x00000006UL
 #define R200_CP_VC_CNTL_PRIM_TYPE_QUADS      0x0000000dUL
+#define R200_CP_VC_CNTL_PRIM_TYPE_LINE_LOOP  0x0000000cUL
 #define R200_CP_VC_CNTL_PRIM_WALK_RING      0x00000030UL
 #define RADEON_CNTL_PAINT_MULTI             0x00009a00UL
 
