@@ -27,6 +27,7 @@
 #define RADEON3D_CAP_HW_NORMALS             (1UL << 17)
 #define RADEON3D_CAP_HW_LIGHTING            (1UL << 18)
 #define RADEON3D_CAP_HW_SPHERE_MAP          (1UL << 19)
+#define RADEON3D_CAP_COMPACT_TCL_VERTEX     (1UL << 20)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
@@ -74,10 +75,15 @@
 #define RADEON3D_DRAW_TEXGEN         (1UL << 11)
 #define RADEON3D_DRAW_NORMALS        (1UL << 12)
 #define RADEON3D_DRAW_LIGHTING       (1UL << 13)
+/* Hardware-TCL records only: vertices omit the unit-1 texture and fog
+ * dwords entirely instead of carrying zeros (stride 10 with normals,
+ * 7 without). Requires RADEON3D_CAP_COMPACT_TCL_VERTEX and is rejected
+ * when RADEON3D_VERTEX_TEXTURE1 or RADEON3D_VERTEX_FOG is set. */
+#define RADEON3D_DRAW_COMPACT_VERTEX (1UL << 14)
 #define RADEON3D_DRAW_OPTIONS_BASIC  0x000000ffUL
 #define RADEON3D_DRAW_OPTIONS_FRAGMENT 0x000001ffUL
 #define RADEON3D_DRAW_OPTIONS_PRE_TCL 0x000003ffUL
-#define RADEON3D_DRAW_OPTIONS        0x00003fffUL
+#define RADEON3D_DRAW_OPTIONS        0x00007fffUL
 
 #define RADEON3D_TEX_MODULATE        (1UL << 0)
 #define RADEON3D_TEX_REPEAT_S        (1UL << 1)

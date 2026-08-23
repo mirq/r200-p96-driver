@@ -296,6 +296,8 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
                       RADEON3D_CAP_HW_LIGHTING;
     if (interfaceVersion >= 12UL)
         info->Caps |= RADEON3D_CAP_HW_SPHERE_MAP;
+    if (interfaceVersion >= 12UL)
+        info->Caps |= RADEON3D_CAP_COMPACT_TCL_VERTEX;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -1720,12 +1722,17 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                                   BOOL useDepth, BOOL textured,
                                   BOOL fragmentStatePresent,
                                   BOOL extendedVertex, BOOL hardwareTcl,
-                                  BOOL normalVertex, ULONG vertexState,
+                                  BOOL normalVertex, BOOL compactVertex,
+                                  ULONG vertexState,
                                   ULONG primitiveType,
                                   const struct Radeon3DSurfaceHandle *color)
 {
     BOOL perspective=hardwareTcl || (extendedVertex &&
                      (vertexState & RADEON3D_VERTEX_CLIP_COORDINATES));
+    ULONG tclStride = hardwareTcl ?
+        (compactVertex ? (normalVertex ? 10UL : 7UL) :
+         normalVertex ? RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
+                        RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS) : 0UL;
     ULONG dwordsPerVertex = hardwareTcl ?
         5UL + (normalVertex ? 3UL : 0UL) +
               (textured ? 2UL : 0UL) +
@@ -1750,14 +1757,13 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
          * record: 0..9 textured with normals, 0..7 unlit with normals,
          * 0..6 textured without normals. Validate every dword once, then
          * block-copy the prefix instead of paying a bounds-checked call
-         * per emitted dword. */
+         * per emitted dword. Compact records carry no zero tail, so the
+         * prefix is the whole vertex. */
         ULONG emitted = normalVertex ? (textured ? 10UL : 8UL) :
-                        textured ? 7UL : 0UL;
+                        textured ? 7UL : 5UL;
 
         if (emitted) {
-            ULONG stride = normalVertex ?
-                RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
-                RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS;
+            ULONG stride = compactVertex ? emitted : tclStride;
             /* Generated components sit before the unset-feature zeros:
              * unit 1 starts at dword 10 (normals) or 7 (plain), and unit 0
              * itself is zero when texturing is off. */
@@ -1795,13 +1801,15 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                          : (input[normalVertex ? 8UL : 5UL] ||
                             input[normalVertex ? 9UL : 6UL])))
                     return FALSE;
-                /* Unset vertex features must carry zero dwords, exactly as
-                 * the general path demands. */
-                if (input[firstZero] || input[firstZero + 1UL])
-                    return FALSE;
-                for (index = firstZero + 2UL; index < stride; ++index)
-                    if (input[index])
+                /* Full-stride records must carry zero dwords for unset
+                 * features; compact records simply end at the prefix. */
+                if (!compactVertex) {
+                    if (input[firstZero] || input[firstZero + 1UL])
                         return FALSE;
+                    for (index = firstZero + 2UL; index < stride; ++index)
+                        if (input[index])
+                            return FALSE;
+                }
                 for (index = 0; index < emitted; ++index)
                     output[index] = input[index];
                 emitter->Count += emitted;
@@ -1820,11 +1828,9 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
         return FALSE;
     for (vertex = 0; vertex < vertexCount; ++vertex) {
         const ULONG *input = vertices + vertex *
-            (hardwareTcl ?
-             (normalVertex ? RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
-                             RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS) :
+            (hardwareTcl ? tclStride :
              extendedVertex ? RADEON3D_EXEC_EXTENDED_VERTEX_DWORDS
-                      : RADEON3D_EXEC_VERTEX_DWORDS);
+                       : RADEON3D_EXEC_VERTEX_DWORDS);
 
         if (hardwareTcl) {
             /* The packed ARGB colour dword is shared with the non-TCL paths;
@@ -1985,7 +1991,8 @@ static BOOL EmitExecuteClear(struct Radeon3DDevice *device,
     state->ClearDepth = (clearMask & RADEON3D_CLEAR_DEPTH) != 0;
     return EmitExecuteStateCached(emitter, state) &&
            EmitExecuteVertices(emitter, vertices, 6UL, depth != NULL,
-                                FALSE, FALSE, FALSE, FALSE, FALSE, 0,
+                                FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+                                0,
                                 R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST, NULL);
 }
 
@@ -2011,6 +2018,7 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     ULONG levels = 1, minFilter = 0, sourceBlend = 0, destinationBlend = 0;
     ULONG levels1 = 1, minFilter1 = 0;
     ULONG vertexStride;
+    BOOL compactVertex;
     BOOL textured;
     BOOL textured1;
     BOOL fog;
@@ -2043,6 +2051,7 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
     texGen = (options & RADEON3D_DRAW_TEXGEN) != 0;
     normalVertex = (options & RADEON3D_DRAW_NORMALS) != 0;
     lighting = (options & RADEON3D_DRAW_LIGHTING) != 0;
+    compactVertex = (options & RADEON3D_DRAW_COMPACT_VERTEX) != 0;
     if (lighting)
         normalVertex = TRUE;
     headerDwords = texGen ? RADEON3D_EXEC_DRAW_TEXGEN_HEADER_DWORDS :
@@ -2067,7 +2076,8 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
         headerDwords += RADEON3D_EXEC_LIGHT_STATE_DWORDS;
     }
     vertexStride = hardwareTcl ?
-        (normalVertex ? RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
+        (compactVertex ? (normalVertex ? 10UL : 7UL) :
+         normalVertex ? RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
                         RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS) :
         extendedVertex ? RADEON3D_EXEC_EXTENDED_VERTEX_DWORDS
                        : RADEON3D_EXEC_VERTEX_DWORDS;
@@ -2199,7 +2209,11 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
                      minFilter1 >
                          RADEON3D_TEX_MIN_LINEAR_MIPMAP_LINEAR ||
                      (fogColor & 0xff000000UL))) ||
-        (options & RADEON3D_DRAW_BILINEAR && !textured) ||
+         (options & RADEON3D_DRAW_COMPACT_VERTEX &&
+          (!hardwareTcl ||
+           (vertexState & (RADEON3D_VERTEX_TEXTURE1 |
+                           RADEON3D_VERTEX_FOG)))) ||
+         (options & RADEON3D_DRAW_BILINEAR && !textured) ||
         (options & RADEON3D_DRAW_ALPHA_BLEND && !textured) ||
         (options & RADEON3D_DRAW_DEPTH_FUNC_MASK &&
          !(options & RADEON3D_DRAW_DEPTH_LESS)) ||
@@ -2368,7 +2382,7 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
            EmitExecuteVertices(emitter, vertices, vertexCount, useDepth,
                                 textured, fragmentStatePresent,
                                 extendedVertex, hardwareTcl,
-                                normalVertex,
+                                normalVertex, compactVertex,
                                 vertexState,
                                 primitiveType, color);
 }
