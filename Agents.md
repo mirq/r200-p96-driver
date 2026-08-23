@@ -76,6 +76,18 @@ Do not expose unrestricted packets or client-controlled register writes. Follow
 roadmap at `/home/mirek/r200_minigl/MINIGL_R200_PLAN.md` before changing the ABI.
 Results are tracked in [`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
 
+Check any planned fixed-function behaviour against the Mesa implementation
+before writing it, and again before trusting a probe's expected values. Mesa
+7.11.2 is the last release carrying the classic r200 driver: its
+`src/mesa/drivers/dri/r200` gives the register programming and upload
+orientation, and its software TNL (`src/mesa/tnl/t_vb_texgen.c`,
+`t_vb_light.c`) gives the exact arithmetic the hardware path must reproduce,
+including which inputs arrive normalized. A hand-derived expectation is a
+common source of false probe failures. The interface-12 sphere-map probe first
+asserted that a normal parallel to the eye vector produces (0.5,0.5); the
+reflection `f = u - 2n(n.u)` in fact gives `-u`, so its corner samples failed
+against correct hardware while the interpolated centre passed.
+
 ## Sources, build, and validation
 
 Prefer, in order: local Picasso96 CardDevelop headers/examples for ABI;

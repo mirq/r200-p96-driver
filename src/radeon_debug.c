@@ -277,6 +277,35 @@ void RadeonDebugBoardLock(struct BoardInfo *bi)
         ++DebugNode->Stats.BoardLockOwnedByOther;
 }
 
+void RadeonDebugExecutePhase(ULONG phase, ULONG start)
+{
+    struct RadeonDebugStats *stats;
+    ULONG elapsed;
+
+    if (!DebugNode)
+        return;
+    elapsed = Clock() - start;
+    stats = &DebugNode->Stats;
+    if (phase == RADEON_DEBUG_EXEC_COPY)
+        stats->ExecuteCopyTicks += elapsed;
+    else if (phase == RADEON_DEBUG_EXEC_BUILD)
+        stats->ExecuteBuildTicks += elapsed;
+    else if (phase == RADEON_DEBUG_EXEC_SUBMIT)
+        stats->ExecuteSubmitTicks += elapsed;
+}
+
+void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords)
+{
+    struct RadeonDebugStats *stats;
+
+    if (!DebugNode)
+        return;
+    stats = &DebugNode->Stats;
+    ++stats->ExecuteCalls;
+    stats->ExecuteRecordDwords += recordDwords;
+    stats->ExecuteGeneratedDwords += generatedDwords;
+}
+
 void RadeonDebugFallbackDrain(ULONG skipped)
 {
     if (!DebugNode)

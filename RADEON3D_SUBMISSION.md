@@ -20,7 +20,8 @@ SE_VTX_STATE_CNTL    0
 SE_VTE_CNTL          0
 SE_VTX_FMT_0         packed RGBA color 0
 SE_VTX_FMT_1         0
-SE_CNTL              solid front/back, Gouraud, OGL pixel center, 1/4 rounding
+SE_CNTL              solid front/back, diffuse Gouraud, OGL pixel center,
+                     1/4 rounding (0x9800021e; alpha shading must be absent)
 PP_CNTL              texture blend stage 0 enabled
 PP_TXCBLEND_0        diffuse color
 PP_TXCBLEND2_0       clamp 0..1, output R0
@@ -238,6 +239,70 @@ primitives. `RADEON3D_EXEC_DRAW_POINTS`, `RADEON3D_EXEC_DRAW_LINES`,
 `RADEON3D_EXEC_DRAW_LINE_STRIP`, and `RADEON3D_EXEC_DRAW_LINE_LOOP` are
 available only to interface 9 sessions. There is no CPU transform or clipping
 fallback in the service.
+
+Interface 10 sessions with `RADEON3D_CAP_HW_TEXGEN` may additionally set
+`RADEON3D_DRAW_TEXGEN` on a hardware-TCL record. The header grows to 78 dwords:
+
+```text
+header dword 44: texture unit 0 texgen state
+header dword 45: texture unit 1 texgen state
+header dwords 46..61: unit 0 OpenGL column-major texgen matrix
+header dwords 62..77: unit 1 OpenGL column-major texgen matrix
+```
+
+Texgen state selects `RADEON3D_TEXGEN_MODE_OBJECT_LINEAR` and one or more of
+`RADEON3D_TEXGEN_GEN_S/T/R/Q`; clear components retain supplied coordinates.
+Each enabled unit must have a corresponding bound texture and generate S and T.
+The service validates every matrix element, transposes the plane matrix into the
+R200 vector-memory order, and enables the matching TCL texgen and texture-matrix
+slots. Unit 0 and unit 1 remain the only supported texture units. An inactive
+unit's state and all sixteen matrix dwords must be zero. A generated Q selects
+projective pixel-pipe sampling. Eye-linear callers must pre-transform their eye
+planes into object space before submission; normal-based texgen modes are not
+part of this interface.
+
+Interface 11 sessions advertise `RADEON3D_CAP_HW_NORMALS` and
+`RADEON3D_CAP_HW_LIGHTING`. `RADEON3D_DRAW_NORMALS` extends each hardware-TCL
+vertex to thirteen dwords by inserting a finite object-space normal XYZ triple
+after W; the model-view and inverse model-view matrices follow the existing
+header (and optional texgen block) as 32 additional dwords, both OpenGL
+column-major. `RADEON3D_DRAW_LIGHTING` implies `RADEON3D_DRAW_NORMALS` and
+appends fixed-function lighting state:
+
+```text
+4 dwords: global ambient RGBA
+4 dwords: eye vector (eye-space view direction XYZ, normal rescale factor)
+1 dword:  light control
+17 dwords: front material (emissive, ambient, diffuse, specular, shininess)
+per enabled light, ascending: one dense 31-dword light block
+```
+
+Light control bits 0..7 select GL_LIGHT0..GL_LIGHT7 (the header carries one
+block per set bit), bit 8 requests the local-viewer specular model, bits
+16..23 mark spotlight lights, and bits 24..31 enable range attenuation.
+Bits 9..15 must be zero. Each light block holds ambient/diffuse/specular RGBA,
+the eye-space position XYZW (W zero marks a directional light), the negated
+normalized spot direction XYZW, quadratic/linear/constant attenuation, then
+spot DCD/DCM/exponent/cos(cutoff)/specular-threshold/squared-range-cutoff/
+1-over-constant scalars. All lighting dwords must be finite floats.
+
+The service enables TCL lighting with hardware normal normalization, derives
+`PER_LIGHT_CTL` local/spot/attenuation flags exactly as Mesa's classic r200
+driver does, uploads lights through the interleaved vector/scalar memory
+layout, sources all material channels from the submitted material block, and
+keeps vertex colour as the unlit fallback input. Two-sided lighting,
+colour-material source selection, and user clip planes remain unavailable.
+Interface-10 sessions reject normals and lighting records.
+
+Interface 12 adds `RADEON3D_CAP_HW_SPHERE_MAP` and
+`RADEON3D_TEXGEN_MODE_SPHERE_MAP` without changing the record shape. Sphere
+map mode requires `RADEON3D_DRAW_NORMALS`, a bound texture, and exactly the S/T
+generation bits. Its matrix block is the OpenGL texture matrix rather than an
+object-linear plane matrix. The service selects the R200 sphere texgen input,
+transforms and normalizes submitted object-space normals through the
+inverse-modelview state, enables local-viewer evaluation, applies the texture
+matrix, and selects generated S/T for TCL output. Interface-11 sessions reject
+sphere-map records and do not advertise the capability.
 
 Bilinear and alpha blending require texturing. Alpha blending is fixed to
 source alpha / one-minus-source-alpha. Depth writes require `DEPTH_LESS` and a

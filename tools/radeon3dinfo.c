@@ -43,6 +43,13 @@ int main(void)
     if (!Radeon3DGetInfo(device, &info)) {
         printf("R3DINFO status=get_info_failed\n");
         result = 10;
+    } else if (info.Size >= 56UL && info.ExecCalls) {
+        /* V2 tail: cumulative Execute phase attribution in microseconds. */
+        printf("R3DEXEC calls=%lu record_dwords=%lu generated_dwords=%lu "
+               "copy_us=%lu build_us=%lu submit_us=%lu\n",
+               info.ExecCalls, info.ExecRecordDwords,
+               info.ExecGeneratedDwords, info.ExecCopyMicros,
+               info.ExecBuildMicros, info.ExecSubmitMicros);
     }
 
     Radeon3DClose(device);

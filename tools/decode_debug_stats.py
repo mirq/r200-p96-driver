@@ -114,7 +114,13 @@ FIELDS.extend([
     "BlitRectBoundsSuccess", "BlitRectProbeCalls", "BlitRectProbeTicks",
 ])
 
-KNOWN_VERSION = 17
+# Version 18: Radeon3DExecute stage attribution.
+FIELDS.extend([
+    "ExecuteCalls", "ExecuteRecordDwords", "ExecuteGeneratedDwords",
+    "ExecuteCopyTicks", "ExecuteBuildTicks", "ExecuteSubmitTicks",
+])
+
+KNOWN_VERSION = 18
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -337,6 +343,23 @@ def main():
               (values["CompleteValidateMaxTicks"] * us,
                values["CompleteSubmitMaxTicks"] * us,
                values["CompleteDefaultMaxTicks"] * us))
+    if "ExecuteCalls" in values and values["ExecuteCalls"]:
+        records = values["ExecuteRecordDwords"]
+        generated = values["ExecuteGeneratedDwords"]
+        calls = values["ExecuteCalls"]
+        print("execute n=%-6d records=%d dwords (%.1f KiB/call) "
+              "generated=%d dwords" %
+              (calls, records, records * 4.0 / 1024.0 / max(calls, 1),
+               generated))
+        print("execute stage ms/frame-equivalent totals: copy=%.2f "
+              "build=%.2f submit=%.2f" %
+              (values["ExecuteCopyTicks"] * us / 1000.0,
+               values["ExecuteBuildTicks"] * us / 1000.0,
+               values["ExecuteSubmitTicks"] * us / 1000.0))
+        print("execute per call us: copy=%.2f build=%.2f submit=%.2f" %
+              (values["ExecuteCopyTicks"] * us / max(calls, 1),
+               values["ExecuteBuildTicks"] * us / max(calls, 1),
+               values["ExecuteSubmitTicks"] * us / max(calls, 1)))
 
 
 if __name__ == "__main__":

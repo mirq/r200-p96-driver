@@ -343,9 +343,16 @@ int main(void)
     }
     fence = 0;
     if (!Radeon3DSubmit(device, commands, triangleDwords,
-                        RADEON3D_SUBMIT_FENCE, &fence) || !fence ||
-        !Radeon3DWaitFence(device, fence, 1000UL)) {
-        result = Fail("triangle_submit", 0);
+                        RADEON3D_SUBMIT_FENCE, &fence)) {
+        result = Fail("triangle_submit", 1);
+        goto out;
+    }
+    if (!fence) {
+        result = Fail("triangle_submit", 2);
+        goto out;
+    }
+    if (!Radeon3DWaitFence(device, fence, 1000UL)) {
+        result = Fail("triangle_submit", 3);
         goto out;
     }
     {

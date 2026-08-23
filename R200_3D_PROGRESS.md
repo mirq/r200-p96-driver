@@ -668,3 +668,41 @@ LIBS:minigl.library size=75468 CRC32=BD7E94CA
 R3DQUADS count=2 first=0000ff00 second=00ff0000
 R200_QUAD_LIST status=ok caps=000077ff attempts=65 used=65 draw_records=4
 ```
+
+## Interface 12 Hardware Sphere-Map Texgen
+
+Interface 12 advertises `RADEON3D_CAP_HW_SPHERE_MAP` and accepts
+`RADEON3D_TEXGEN_MODE_SPHERE_MAP` in the existing texgen record shape. The
+service selects the R200 sphere texgen input, requires per-vertex normals and
+both generated S and T, and enables local-viewer evaluation with hardware
+normal normalization. Interface-11 sessions reject the mode.
+
+The first sphere probe failed at its four corner samples while its centre
+passed. That was a probe defect, not a driver defect: it asserted that a normal
+parallel to the eye vector yields (0.5,0.5), whereas the reflection
+`f = u - 2n(n.u)` gives `-u` for a unit normal, matching Mesa's
+`src/mesa/tnl/t_vb_texgen.c`. Its four corners generated s/t of (0.752,0.668),
+(0.378,0.743), (0.378,0.257) and (0.752,0.332), all outside the accepted band,
+while the interpolated centre averaged to (0.565,0.500) inside it. The probe now
+carries, per vertex, the object-space normal that the submitted inverse
+model-view maps onto that vertex's own reflection bisector for `r = (0,0,1)`, so
+every vertex generates exactly (0.5,0.5) and the whole quad samples one texel.
+Because each corner requires a different normal, a wrong normal-matrix
+orientation or a non-sphere texgen input still moves the corners off it.
+
+Physical 68060/RV280 validation followed a cold reboot with the uncommitted tree
+below (`ac3d819` plus modified `Agents.md`, `RADEON3D_SUBMISSION.md`,
+`README.md`, `include/radeon3d.h`, `src/radeon3d_service.c`, `src/radeon_regs.h`,
+`tools/radeon3d_abi_check.c`, `tools/radeon3dformats.c`,
+`tools/radeon3dphase1.c`). Board `1002:5964` generation 2, 64 MiB installed VRAM,
+64995328-byte Picasso96 aperture, 8192-dword maximum batch, validated ToolTypes,
+320x240 B8G8R8A8 target with a 64x64 B8G8R8A8 texture. `radeon3dformats` passed
+in full, including all four corner samples and the centre:
+
+```text
+LIBS:Picasso96/Radeon9200.chip size=64096 CRC32=3A2A9D53
+LIBS:Picasso96/radeon3dformats size=16120 CRC32=4909E011
+R3DINFO interface_version=12 caps=000ff7ff
+R3DSPHEREMAP samples=5ac3e7ff,5ac3e7ff,5ac3e7ff,5ac3e7ff,5ac3e7ff expected=5ac3e7ff
+R3DFORMATS status=ok result=0 sphere=ok legacy_v11_sphere=rejected
+```

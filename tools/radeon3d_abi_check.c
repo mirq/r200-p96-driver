@@ -7,7 +7,7 @@ struct Library *Radeon9200Base;
 #define ABI_CHECK(name, expression) typedef char name[(expression) ? 1 : -1]
 
 ABI_CHECK(Radeon3DInfoSize,
-          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V1_SIZE);
+          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V2_SIZE);
 ABI_CHECK(Radeon3DInfoSizeOffset,
           offsetof(struct Radeon3DInfo, Size) == 0);
 ABI_CHECK(Radeon3DInfoVersionOffset,
@@ -24,6 +24,20 @@ ABI_CHECK(Radeon3DInfoPicasso96VramOffset,
           offsetof(struct Radeon3DInfo, Picasso96Vram) == 24);
 ABI_CHECK(Radeon3DInfoMaxBatchOffset,
           offsetof(struct Radeon3DInfo, MaxBatchDwords) == 28);
+ABI_CHECK(Radeon3DInfoV2Size,
+          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V2_SIZE);
+ABI_CHECK(Radeon3DInfoExecCallsOffset,
+          offsetof(struct Radeon3DInfo, ExecCalls) == 32);
+ABI_CHECK(Radeon3DInfoExecRecordOffset,
+          offsetof(struct Radeon3DInfo, ExecRecordDwords) == 36);
+ABI_CHECK(Radeon3DInfoExecGeneratedOffset,
+          offsetof(struct Radeon3DInfo, ExecGeneratedDwords) == 40);
+ABI_CHECK(Radeon3DInfoExecCopyOffset,
+          offsetof(struct Radeon3DInfo, ExecCopyMicros) == 44);
+ABI_CHECK(Radeon3DInfoExecBuildOffset,
+          offsetof(struct Radeon3DInfo, ExecBuildMicros) == 48);
+ABI_CHECK(Radeon3DInfoExecSubmitOffset,
+          offsetof(struct Radeon3DInfo, ExecSubmitMicros) == 52);
 ABI_CHECK(Radeon3DSurfaceSize,
           sizeof(struct Radeon3DSurface) == RADEON3D_SURFACE_V1_SIZE);
 ABI_CHECK(Radeon3DSurfaceCpuOffset,
@@ -54,8 +68,12 @@ ABI_CHECK(Radeon3DNativeQuadCapability,
            RADEON3D_CAP_NATIVE_QUAD_LISTS == (1UL << 14));
 ABI_CHECK(Radeon3DTransformClipCapability,
           RADEON3D_CAP_HW_TRANSFORM_CLIP == (1UL << 15));
+ABI_CHECK(Radeon3DTexGenCapability,
+          RADEON3D_CAP_HW_TEXGEN == (1UL << 16));
+ABI_CHECK(Radeon3DSphereMapCapability,
+          RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-           RADEON3D_IFACE_VERSION == 9UL);
+           RADEON3D_IFACE_VERSION == 12UL);
 ABI_CHECK(Radeon3DTriangleStripOpcode,
           RADEON3D_EXEC_DRAW_TRI_STRIP == 3UL);
 ABI_CHECK(Radeon3DTriangleFanOpcode,
@@ -85,7 +103,25 @@ ABI_CHECK(Radeon3DPreTclOptions,
 ABI_CHECK(Radeon3DHardwareTclOption,
           RADEON3D_DRAW_HW_TCL == (1UL << 10));
 ABI_CHECK(Radeon3DHardwareTclOptions,
-          RADEON3D_DRAW_OPTIONS == 0x000007ffUL);
+           RADEON3D_DRAW_OPTIONS_PRE_TCL == 0x000003ffUL);
+ABI_CHECK(Radeon3DTexGenOption,
+          RADEON3D_DRAW_TEXGEN == (1UL << 11));
+ABI_CHECK(Radeon3DNormalOption,
+          RADEON3D_DRAW_NORMALS == (1UL << 12));
+ABI_CHECK(Radeon3DLightingOption,
+          RADEON3D_DRAW_LIGHTING == (1UL << 13));
+ABI_CHECK(Radeon3DFullOptions,
+          RADEON3D_DRAW_OPTIONS == 0x00003fffUL);
+ABI_CHECK(Radeon3DPreTclOptionsStill,
+           RADEON3D_DRAW_OPTIONS_PRE_TCL == 0x000003ffUL);
+ABI_CHECK(Radeon3DLightControlMask,
+           RADEON3D_LIGHT_CONTROL_ENABLED_MASK == 0x000000ffUL);
+ABI_CHECK(Radeon3DLightControlReserved,
+           RADEON3D_LIGHT_CONTROL_RESERVED == 0x0000fe00UL);
+ABI_CHECK(Radeon3DTexGenStateMask,
+          RADEON3D_TEXGEN_STATE_MASK == 0x000000ffUL);
+ABI_CHECK(Radeon3DSphereMapMode,
+          RADEON3D_TEXGEN_MODE_SPHERE_MAP == 2UL);
 ABI_CHECK(Radeon3DVertexStateMask,
           RADEON3D_VERTEX_STATE_MASK == 0x00000007UL);
 ABI_CHECK(Radeon3DTransformStateMask,
@@ -99,7 +135,9 @@ ABI_CHECK(Radeon3DExecuteDrawFragmentSize,
 ABI_CHECK(Radeon3DExecuteDrawExtendedSize,
           RADEON3D_EXEC_DRAW_EXTENDED_HEADER_DWORDS == 21UL);
 ABI_CHECK(Radeon3DExecuteDrawHardwareTclSize,
-          RADEON3D_EXEC_DRAW_HW_TCL_HEADER_DWORDS == 44UL);
+           RADEON3D_EXEC_DRAW_HW_TCL_HEADER_DWORDS == 44UL);
+ABI_CHECK(Radeon3DExecuteDrawTexGenSize,
+           RADEON3D_EXEC_DRAW_TEXGEN_HEADER_DWORDS == 78UL);
 ABI_CHECK(Radeon3DExecuteVertexSize,
           RADEON3D_EXEC_VERTEX_DWORDS == 6UL);
 ABI_CHECK(Radeon3DExecuteExtendedVertexSize,

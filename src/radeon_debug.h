@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 17UL
+#define RADEON_DEBUG_VERSION 18UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -205,11 +205,24 @@ struct RadeonDebugStats {
     ULONG BlitRectBoundsSuccess;
     ULONG BlitRectProbeCalls;
     ULONG BlitRectProbeTicks;
+    /*
+     * Version 18: Radeon3DExecute stage attribution. Build deliberately
+     * fuses validation and CP generation into one pass over the vertex
+     * data; separating them would add a second traversal of every record,
+     * which is exactly the cost the fused pass exists to avoid. Submit
+     * covers the ring write only; fence waits are not included.
+     */
+    ULONG ExecuteCalls;
+    ULONG ExecuteRecordDwords;
+    ULONG ExecuteGeneratedDwords;
+    ULONG ExecuteCopyTicks;
+    ULONG ExecuteBuildTicks;
+    ULONG ExecuteSubmitTicks;
 };
 
-#define RADEON_DEBUG_STATS_V17_SIZE 636UL
-typedef char RadeonDebugStatsV17SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V17_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V18_SIZE 660UL
+typedef char RadeonDebugStatsV18SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V18_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL
@@ -220,6 +233,11 @@ typedef char RadeonDebugStatsV17SizeCheck[
 #define RDEBUG_COMPLETE_SURFACE_SOFTWARE (1UL << 3)
 #define RDEBUG_COMPLETE_SURFACE_REJECT  (1UL << 4)
 #define RDEBUG_COMPLETE_ACCEL_UNAVAILABLE (1UL << 5)
+
+/* Shared by both build flavours: Radeon3DExecute stage selectors. */
+#define RADEON_DEBUG_EXEC_COPY    0UL
+#define RADEON_DEBUG_EXEC_BUILD   1UL
+#define RADEON_DEBUG_EXEC_SUBMIT  2UL
 
 struct RadeonDebugSample {
     ULONG Ticks;
@@ -262,6 +280,8 @@ void RadeonDebugCompletePhase(ULONG phase, ULONG start);
 void RadeonDebugBoardLock(struct BoardInfo *bi);
 void RadeonDebugFallbackDrain(ULONG skipped);
 void RadeonDebugFallbackProbe(struct BoardInfo *bi);
+void RadeonDebugExecutePhase(ULONG phase, ULONG start);
+void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords);
 
 #define RADEON_DEBUG_COMPLETE_VALIDATE 0UL
 #define RADEON_DEBUG_COMPLETE_SUBMIT   1UL
@@ -308,6 +328,10 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi);
 #define RDEBUG_BOARD_LOCK(bi) RadeonDebugBoardLock(bi)
 #define RDEBUG_FALLBACK_DRAIN(skipped) RadeonDebugFallbackDrain(skipped)
 #define RDEBUG_FALLBACK_PROBE(bi) RadeonDebugFallbackProbe(bi)
+#define RDEBUG_EXECUTE_PHASE(phase, start) \
+    RadeonDebugExecutePhase((phase), (start))
+#define RDEBUG_EXECUTE_SAMPLE(records, generated) \
+    RadeonDebugExecuteSample((records), (generated))
 
 #else
 
@@ -343,6 +367,10 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi);
 #define RDEBUG_BOARD_LOCK(bi) ((void)0)
 #define RDEBUG_FALLBACK_DRAIN(skipped) ((void)0)
 #define RDEBUG_FALLBACK_PROBE(bi) ((void)0)
+#define RDEBUG_EXECUTE_PHASE(phase, start) \
+    do { (void)(phase); (void)(start); } while (0)
+#define RDEBUG_EXECUTE_SAMPLE(records, generated) \
+    do { (void)(records); (void)(generated); } while (0)
 
 #endif
 

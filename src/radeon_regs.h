@@ -305,6 +305,7 @@
 #define R200_VTX_XY_FMT                     0x00000100UL
 #define R200_VTX_Z_FMT                      0x00000200UL
 #define R200_VTX_W0_FMT                     0x00000400UL
+#define R200_VTX_N0                         (1UL << 6)
 #define R200_VTX_ST_DENORMALIZED             0x00001000UL
 #define R200_SE_VAP_CNTL_STATUS             0x2140UL
 #define R200_SE_VTX_STATE_CNTL              0x2180UL
@@ -316,7 +317,14 @@
 #define R200_SE_TCL_SCALAR_DATA_REG         0x220cUL
 #define R200_SCAL_INDX_DWORD_STRIDE_SHIFT   16
 #define R200_SS_VERT_GUARD_CLIP_ADJ_ADDR    0x00000080UL
+#define R200_VS_MATRIX_0_MV                 0x00000080UL
+#define R200_VS_MATRIX_1_INV_MV             0x00000084UL
+#define R200_SE_TCL_MATRIX_SEL_0            0x2230UL
+#define R200_SE_TCL_MATRIX_SEL_1            0x2234UL
 #define R200_SE_TCL_MATRIX_SEL_2            0x2238UL
+#define R200_SE_TCL_MATRIX_SEL_3            0x223cUL
+#define R200_TEXMAT_0_SHIFT                 0
+#define R200_TEXMAT_1_SHIFT                 8
 #define R200_SE_TCL_OUTPUT_VTX_COMP_SEL     0x2250UL
 #define R200_OUTPUT_XYZW                    (1UL << 0)
 #define R200_OUTPUT_COLOR_0                 (1UL << 8)
@@ -328,15 +336,38 @@
 #define R200_SE_TCL_INPUT_VTX_VECTOR_ADDR_2 0x225cUL
 #define R200_SE_TCL_INPUT_VTX_VECTOR_ADDR_3 0x2260UL
 #define R200_SE_TCL_LIGHT_MODEL_CTL_0       0x2268UL
+#define R200_LIGHTING_ENABLE                (1UL << 0)
+#define R200_LOCAL_VIEWER                   (1UL << 2)
+#define R200_NORMALIZE_NORMALS              (1UL << 3)
 #define R200_SE_TCL_LIGHT_MODEL_CTL_1       0x226cUL
 #define R200_SE_TCL_PER_LIGHT_CTL_0         0x2270UL
 #define R200_SE_TCL_PER_LIGHT_CTL_1         0x2274UL
 #define R200_SE_TCL_PER_LIGHT_CTL_2         0x2278UL
 #define R200_SE_TCL_PER_LIGHT_CTL_3         0x227cUL
+#define R200_LIGHT_ENABLE                   0x00000001UL
+#define R200_LIGHT_ENABLE_AMBIENT           0x00000002UL
+#define R200_LIGHT_ENABLE_SPECULAR          0x00000004UL
+#define R200_LIGHT_IS_LOCAL                 0x00000008UL
+#define R200_LIGHT_IS_SPOT                  0x00000010UL
+#define R200_LIGHT_ENABLE_RANGE_ATTEN       0x00000040UL
+#define R200_LIGHT_CONSTANT_RANGE_ATTEN     0x00000080UL
+#define R200_LIGHT_1_SHIFT                  16
 #define R200_SE_TCL_TEX_PROC_CTL_2          0x22a8UL
+#define R200_TEXGEN_COMP_S                  0x1UL
+#define R200_TEXGEN_COMP_T                  0x2UL
+#define R200_TEXGEN_COMP_R                  0x4UL
+#define R200_TEXGEN_COMP_Q                  0x8UL
+#define R200_TEXGEN_COMP_MASK               0x0fUL
 #define R200_SE_TCL_TEX_PROC_CTL_3          0x22acUL
 #define R200_SE_TCL_TEX_PROC_CTL_0          0x22b0UL
+#define R200_TEXGEN_TEXMAT_0_ENABLE         (1UL << 0)
+#define R200_TEXGEN_TEXMAT_1_ENABLE         (1UL << 1)
+#define R200_TEXMAT_0_ENABLE                (1UL << 8)
+#define R200_TEXMAT_1_ENABLE                (1UL << 9)
 #define R200_SE_TCL_TEX_PROC_CTL_1          0x22b4UL
+#define R200_TEXGEN_INPUT_MASK              0x0fUL
+#define R200_TEXGEN_INPUT_OBJ               8UL
+#define R200_TEXGEN_INPUT_SPHERE            13UL
 #define R200_SE_TC_TEX_CYL_WRAP_CTL         0x22b8UL
 #define R200_SE_TCL_STATE_FLUSH             0x2284UL
 #define R200_SE_TCL_UCP_VERT_BLEND_CTL      0x22c0UL
@@ -348,6 +379,15 @@
 #define R200_VF_COLOR_ORDER_RGBA            0x00000040UL
 #define R200_VTX_FP_RGBA                    3UL
 #define R200_VS_MATRIX_2_MVP                0x00000088UL
+#define R200_VS_MATRIX_3_TEX0               0x0000008cUL
+#define R200_VS_MATRIX_4_TEX1               0x00000090UL
+#define R200_VS_GLOBAL_AMBIENT_ADDR         0x0000005cUL
+#define R200_VS_EYE_VECTOR_ADDR             0x0000005eUL
+#define R200_VS_LIGHT_AMBIENT_ADDR          0x00000028UL
+#define R200_VS_MAT_0_EMISS                 0x000000b0UL
+#define R200_SS_LIGHT_DCD_ADDR              0x00000000UL
+#define R200_SS_MAT_0_SHININESS             0x00000100UL
+#define R200_LIGHT_VECTOR_STRIDE            8UL
 #define R200_RE_TOP_LEFT                    0x26c0UL
 #define R200_RE_AUX_SCISSOR_CNTL            0x26f0UL
 #define R200_SCISSOR_ENABLE                 0x00000002UL
@@ -436,7 +476,6 @@
 #define R200_DIFFUSE_SPECULAR_COMBINE       (1UL << 6)
 #define R200_LOCAL_LIGHT_VEC_GL              (1UL << 8)
 #define R200_FLAT_SHADE_VTX_LAST             (3UL << 6)
-#define R200_ALPHA_SHADE_GOURAUD            (2UL << 10)
 #define R200_VTX_PIX_CENTER_OGL             (1UL << 27)
 #define R200_ROUND_MODE_ROUND               (1UL << 28)
 #define R200_ROUND_PREC_4TH_PIX             (2UL << 30)

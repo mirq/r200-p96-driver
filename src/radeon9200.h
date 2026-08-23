@@ -96,6 +96,19 @@ struct RadeonChipBase {
     ULONG ServiceSessions;
     ULONG ServiceNextHandle;
     ULONG ServiceState;
+    /* Cumulative Radeon3DExecute phase attribution. The timer pair opens
+     * lazily on the first session; totals are microseconds across every
+     * Execute since the driver loaded and survive session closes, so a
+     * later Radeon3DGetInfo can attribute a finished workload. */
+    APTR ExecTimerPort;
+    APTR ExecTimerIO;
+    UBYTE ExecTimerFailed;
+    ULONG ExecCopyMicros;
+    ULONG ExecBuildMicros;
+    ULONG ExecSubmitMicros;
+    ULONG ExecCalls;
+    ULONG ExecRecordDwords;
+    ULONG ExecGeneratedDwords;
 };
 
 typedef char RadeonChipBaseExecBaseOffsetCheck[
