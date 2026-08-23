@@ -708,11 +708,29 @@ static void FreeExecuteEmitter(struct RadeonChipBase *base,
 
 static void ClearExecuteState(struct Radeon3DExecuteState *state)
 {
-    UBYTE *bytes = (UBYTE *)state;
-    ULONG index;
+    ULONG *words = (ULONG *)state;
+    ULONG count = sizeof(*state) / sizeof(*words);
+    UBYTE *tail;
 
-    for (index = 0; index < sizeof(*state); ++index)
-        bytes[index] = 0;
+    while (count >= 8UL) {
+        words[0] = 0;
+        words[1] = 0;
+        words[2] = 0;
+        words[3] = 0;
+        words[4] = 0;
+        words[5] = 0;
+        words[6] = 0;
+        words[7] = 0;
+        words += 8;
+        count -= 8UL;
+    }
+    while (count--)
+        *words++ = 0;
+
+    tail = (UBYTE *)words;
+    count = sizeof(*state) % sizeof(*words);
+    while (count--)
+        *tail++ = 0;
 }
 
 static BOOL ExecuteEmitWord(struct Radeon3DExecuteEmitter *emitter,
@@ -1757,13 +1775,13 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
          * record: 0..9 textured with normals, 0..7 unlit with normals,
          * 0..6 textured without normals. Validate every dword once, then
          * block-copy the prefix instead of paying a bounds-checked call
-         * per emitted dword. Compact records carry no zero tail, so the
-         * prefix is the whole vertex. */
+         * per emitted dword. Compact records omit only the unit-1/fog
+         * tail; inactive unit-0 coordinates remain in their ABI stride. */
         ULONG emitted = normalVertex ? (textured ? 10UL : 8UL) :
                         textured ? 7UL : 5UL;
 
         if (emitted) {
-            ULONG stride = compactVertex ? emitted : tclStride;
+            ULONG stride = tclStride;
             /* Generated components sit before the unset-feature zeros:
              * unit 1 starts at dword 10 (normals) or 7 (plain), and unit 0
              * itself is zero when texturing is off. */

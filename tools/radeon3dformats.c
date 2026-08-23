@@ -225,6 +225,7 @@ static BOOL DrawLitQuadMode(struct Radeon3DDevice *device,
                        (extraOptions & RADEON3D_DRAW_NORMALS ?
                         RADEON3D_EXEC_NORMAL_MATRICES_DWORDS : 0UL);
     ULONG headerDwords = headerBase;
+    ULONG vertexStride;
     ULONG recordDwords;
     ULONG *records;
     ULONG fence = 0;
@@ -237,10 +238,12 @@ static BOOL DrawLitQuadMode(struct Radeon3DDevice *device,
     if (extraOptions & RADEON3D_DRAW_LIGHTING)
         headerDwords += RADEON3D_EXEC_LIGHT_STATE_DWORDS +
                         (lightMask ? RADEON3D_EXEC_LIGHT_BLOCK_DWORDS : 0UL);
-    recordDwords = headerDwords +
-        4UL * (extraOptions & RADEON3D_DRAW_NORMALS ?
-               RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
-               RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS);
+    vertexStride = extraOptions & RADEON3D_DRAW_COMPACT_VERTEX ?
+        (extraOptions & RADEON3D_DRAW_NORMALS ? 10UL : 7UL) :
+        (extraOptions & RADEON3D_DRAW_NORMALS ?
+         RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
+         RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS);
+    recordDwords = headerDwords + 4UL * vertexStride;
     records = AllocMem(recordDwords * sizeof(ULONG), MEMF_CLEAR);
     if (!records)
         return FALSE;
@@ -296,13 +299,10 @@ static BOOL DrawLitQuadMode(struct Radeon3DDevice *device,
         static const LONG corners[8] = {-128, -128, 128, -128,
                                         128, 128, -128, 128};
         BOOL withNormals = (extraOptions & RADEON3D_DRAW_NORMALS) != 0;
-        ULONG stride = withNormals ?
-            RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS :
-            RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS;
         ULONG *vertex;
 
         for (index = 0; index < 4UL; ++index) {
-            vertex = records + headerDwords + index * stride;
+            vertex = records + headerDwords + index * vertexStride;
             vertex[0] = SignedFloatBits(corners[index * 2UL]);
             vertex[1] = SignedFloatBits(corners[index * 2UL + 1UL]);
             vertex[2] = 0;
@@ -737,6 +737,43 @@ out:
     return result;
 }
 
+static int TestCompactTclMode(struct Radeon3DDevice *device,
+                              ULONG options, int rejectResult,
+                              int pixelResult)
+{
+    struct Radeon3DSurface surface;
+    struct BitMap *bitmap = AllocateTarget(32UL, RGBFB_B8G8R8A8,
+                                           RGBFF_B8G8R8A8);
+    ULONG sample;
+    int result = 0;
+
+    surface.Version = 0;
+    surface.Handle = NULL;
+    surface.Size = sizeof(surface);
+    if (!bitmap || !Radeon3DImportBitMap(device, bitmap, &surface) ||
+        !DrawLitQuadMode(device, &surface,
+                         options | RADEON3D_DRAW_COMPACT_VERTEX,
+                         0UL, NULL)) {
+        result = rejectResult;
+        goto out;
+    }
+    sample = ReadSample32(&surface, WIDTH / 2UL, HEIGHT / 2UL);
+    if ((sample & 0x00ffffffUL) != 0x00ffffffUL)
+        result = pixelResult;
+out:
+    if (surface.Handle) Radeon3DReleaseSurface(device, &surface);
+    if (bitmap) p96FreeBitMap(bitmap);
+    return result;
+}
+
+static int TestCompactTcl(struct Radeon3DDevice *device)
+{
+    int result = TestCompactTclMode(device, 0UL, 105, 106);
+
+    return result ? result :
+        TestCompactTclMode(device, RADEON3D_DRAW_NORMALS, 107, 108);
+}
+
 static int TestLegacyLightingRejection(void)
 {
     struct Radeon3DInfo info;
@@ -842,7 +879,7 @@ int main(void)
     struct Radeon3DDevice *device = NULL;
     int result = 0;
     int formatResult = 0, texgenResult = 0, sphereResult = 0;
-    int lightResult = 0;
+    int lightResult = 0, compactResult = 0;
     int quadResult = 0;
     int legacyResult = 0, legacyQuadResult = 0, legacyLightResult = 0;
     int legacySphereResult = 0;
@@ -859,9 +896,10 @@ int main(void)
     info.Size = sizeof(info);
     device = Radeon3DOpen(RADEON3D_IFACE_VERSION, &info);
     if (!device || info.Version != RADEON3D_IFACE_VERSION ||
-        !(info.Caps & RADEON3D_CAP_COLOR_TARGET_FORMATS) ||
-        !(info.Caps & RADEON3D_CAP_NATIVE_QUAD_LISTS) ||
-        !(info.Caps & RADEON3D_CAP_HW_SPHERE_MAP)) {
+         !(info.Caps & RADEON3D_CAP_COLOR_TARGET_FORMATS) ||
+         !(info.Caps & RADEON3D_CAP_NATIVE_QUAD_LISTS) ||
+         !(info.Caps & RADEON3D_CAP_HW_SPHERE_MAP) ||
+         !(info.Caps & RADEON3D_CAP_COMPACT_TCL_VERTEX)) {
         result = 11;
         goto out;
     }
@@ -892,6 +930,10 @@ int main(void)
     lightResult = result;
     result = 0;
     if (!result)
+        result = TestCompactTcl(device);
+    compactResult = result;
+    result = 0;
+    if (!result)
         result = TestQuadList(device);
     quadResult = result;
     Radeon3DClose(device);
@@ -907,6 +949,7 @@ int main(void)
              texgenResult ? texgenResult :
              sphereResult ? sphereResult :
              lightResult ? lightResult :
+             compactResult ? compactResult :
              quadResult ? quadResult :
              legacyResult ? legacyResult :
              legacyQuadResult ? legacyQuadResult :
@@ -917,13 +960,15 @@ out:
     if (P96Base) CloseLibrary(P96Base);
     if (Radeon9200Base) CloseLibrary(Radeon9200Base);
     printf("R3DFORMATS status=%s result=%d format8_16=%s texgen=%s "
-           "sphere=%s light=%s quads=%s legacy_v5=%s legacy_v7_quad=%s "
+           "sphere=%s light=%s compact_tcl=%s quads=%s legacy_v5=%s "
+           "legacy_v7_quad=%s "
            "legacy_v10_light=%s legacy_v11_sphere=%s\n",
            result ? "fail" : "ok", result,
            formatResult ? "fail" : "ok",
            texgenResult ? (texgenResult == 97 ? "color" : "fail") : "ok",
            sphereResult ? (sphereResult == 102 ? "pixel" : "fail") : "ok",
            lightResult ? (lightResult == 92 ? "color" : "fail") : "ok",
+           compactResult ? "fail" : "ok",
            quadResult ? "fail" : "ok",
            legacyResult ? "fail" : "rejected",
            legacyQuadResult ? "fail" : "rejected",
