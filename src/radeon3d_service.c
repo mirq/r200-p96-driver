@@ -149,6 +149,32 @@ static ULONG ServiceExecMicros(struct RadeonChipBase *base)
     return io->tr_time.tv_secs * 1000000UL + io->tr_time.tv_micro;
 }
 
+/* Trusted-record copy: both sides are cached memory, so the cost is pure
+ * instruction count. Eight values held in registers per iteration give the
+ * scheduler independent loads/stores instead of a dependent per-dword
+ * chain; no intermediate staging pass. */
+static void ExecCopyRecords(ULONG *dst, const ULONG *src, ULONG words)
+{
+    while (words >= 8UL) {
+        ULONG a = src[0], b = src[1], c = src[2], d = src[3];
+        ULONG e = src[4], f = src[5], g = src[6], h = src[7];
+
+        dst[0] = a;
+        dst[1] = b;
+        dst[2] = c;
+        dst[3] = d;
+        dst[4] = e;
+        dst[5] = f;
+        dst[6] = g;
+        dst[7] = h;
+        src += 8;
+        dst += 8;
+        words -= 8;
+    }
+    while (words--)
+        *(dst++) = *(src++);
+}
+
 static void ReapRetiredDevicesLocked(struct RadeonChipBase *base)
 {
     struct ExecBase *SysBase = base->ExecBase;
@@ -2644,7 +2670,6 @@ BOOL Radeon3DExecute(
     ULONG *trusted;
     ULONG *generated;
     ULONG internalFence = 0;
-    ULONG index;
     ULONG copyStart, buildStart, submitStart;
     BOOL result = FALSE;
 
@@ -2698,8 +2723,7 @@ BOOL Radeon3DExecute(
     copyStart = RDEBUG_PHASE_BEGIN();
     {
         ULONG phase = ServiceExecMicros(base);
-        for (index = 0; index < recordDwords; ++index)
-            trusted[index] = records[index];
+        ExecCopyRecords(trusted, records, recordDwords);
         base->ExecCopyMicros += ServiceExecMicros(base) - phase;
     }
     RDEBUG_EXECUTE_PHASE(RADEON_DEBUG_EXEC_COPY, copyStart);

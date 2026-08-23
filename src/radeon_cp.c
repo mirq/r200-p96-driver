@@ -256,6 +256,59 @@ static ULONG CpStreamDword(const ULONG *commands, ULONG commandCount,
     return RADEON_CP_PACKET2;
 }
 
+/*
+ * Ring stores go through the VRAM aperture, whose per-dword write cost
+ * dominates submission. Burst eight staged longwords with movem instead
+ * of issuing individual volatile stores; the caller's existing readback
+ * of the final dword still orders everything before the WPTR update.
+ */
+#if defined(__GNUC__) && defined(__m68k__)
+static void CpBurstStore8(volatile ULONG *dst, const ULONG *stage)
+{
+    __asm__ __volatile__ (
+        "movem.l (%1),%%d0-%%d7\n\t"
+        "movem.l %%d0-%%d7,(%0)"
+        :
+        : "a" (dst), "a" (stage)
+        : "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "memory");
+}
+#else
+static void CpBurstStore8(volatile ULONG *dst, const ULONG *stage)
+{
+    ULONG k;
+
+    for (k = 0; k < 8UL; ++k)
+        dst[k] = stage[k];
+}
+#endif
+
+/* Byte-swapped burst copy of commandCount stream words into the ring. */
+static void CpBurstCopySwapped(volatile ULONG *dst, const ULONG *src,
+                               ULONG words)
+{
+    ULONG stage[8];
+
+    while (words >= 8UL) {
+        stage[0] = SWAPLONG(src[0]);
+        stage[1] = SWAPLONG(src[1]);
+        stage[2] = SWAPLONG(src[2]);
+        stage[3] = SWAPLONG(src[3]);
+        stage[4] = SWAPLONG(src[4]);
+        stage[5] = SWAPLONG(src[5]);
+        stage[6] = SWAPLONG(src[6]);
+        stage[7] = SWAPLONG(src[7]);
+        CpBurstStore8(dst, stage);
+        dst += 8;
+        src += 8;
+        words -= 8;
+    }
+    while (words--) {
+        *dst = SWAPLONG(*src);
+        ++dst;
+        ++src;
+    }
+}
+
 static BOOL CpCommitStream(struct BoardInfo *bi,
                            struct RadeonCpState *state,
                            const ULONG *commands, ULONG commandCount,
@@ -285,13 +338,35 @@ static BOOL CpCommitStream(struct BoardInfo *bi,
         firstCount = paddedCount;
     remainingCount = paddedCount - firstCount;
     ring = (volatile ULONG *)state->RingMemory;
-    for (index = 0; index < firstCount; ++index)
-        ring[state->WritePointer + index] = SWAPLONG(CpStreamDword(
-            commands, commandCount, index, addFence, sequence));
-    for (index = 0; index < remainingCount; ++index)
-        ring[index] = SWAPLONG(CpStreamDword(
-            commands, commandCount, firstCount + index,
-            addFence, sequence));
+    /* Segment A: WritePointer .. end of ring. The command bulk moves as
+     * movem bursts; the fence/padding tail (at most CP_FENCE_DWORDS plus
+     * CP_RING_ALIGNMENT-1 dwords) stays on the per-dword path. */
+    {
+        volatile ULONG *dst = ring + state->WritePointer;
+        ULONG data = firstCount < commandCount ? firstCount : commandCount;
+
+        CpBurstCopySwapped(dst, commands, data);
+        dst += data;
+        for (index = data; index < firstCount; ++index, ++dst)
+            *dst = SWAPLONG(CpStreamDword(commands, commandCount, index,
+                                          addFence, sequence));
+    }
+    if (remainingCount) {
+        volatile ULONG *dst = ring;
+        ULONG base = firstCount;
+        ULONG data = 0;
+
+        if (base < commandCount) {
+            data = commandCount - base;
+            if (data > remainingCount)
+                data = remainingCount;
+            CpBurstCopySwapped(ring, commands + base, data);
+        }
+        dst += data;
+        for (index = base + data; index < paddedCount; ++index, ++dst)
+            *dst = SWAPLONG(CpStreamDword(commands, commandCount, index,
+                                          addFence, sequence));
+    }
 
     lastIndex = (state->WritePointer + paddedCount - 1UL) & CP_RING_MASK;
     expectedLast = CpStreamDword(commands, commandCount, paddedCount - 1UL,
