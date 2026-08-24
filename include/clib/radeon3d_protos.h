@@ -30,5 +30,8 @@ BOOL Radeon3DFreeSegment(struct Radeon3DDevice *device, ULONG segmentId);
 BOOL Radeon3DCommitDraw(struct Radeon3DDevice *device,
                         const struct Radeon3DCommit *commit,
                         ULONG *fenceOut);
+BOOL Radeon3DCommitBatch(struct Radeon3DDevice *device,
+                         const struct Radeon3DCommitBatch *commit,
+                         ULONG *fenceOut);
 
 #endif

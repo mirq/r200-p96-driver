@@ -721,9 +721,13 @@ struct Radeon3DExecuteEmitter {
     ULONG ModelView[16];
     BOOL InvModelViewValid;
     ULONG InvModelView[16];
-    /* Commit path: vertices live in a streaming segment at this card
-     * address; a VBUF_2 fetch packet replaces the inline vertex stream. */
+    /* Commit path: vertices live in a streaming segment; LOAD_VBPNTR +
+     * VBUF_2 packets replace the inline vertex stream. The per-record
+     * fetch address comes from CommitVertexOffsets[CommitDrawIndex]. */
     BOOL CommitVbuf;
+    ULONG CommitSegmentGpuBase;
+    const ULONG *CommitVertexOffsets;
+    ULONG CommitDrawIndex;
     ULONG CommitVbufAddress;
     /* Per-record scratch for the clear and draw builders. Lighting made
      * Radeon3DExecuteState too large to keep on a client's stack, and the
@@ -1808,7 +1812,8 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
     if (emitter->CommitVbuf) {
         /* Vertex data is fetched from the segment by the hardware. The
          * LOAD_VBPNTR packet points the VAP at the segment (one array,
-         * components and stride both the vertex dword count), then the
+         * reading the generated prefix of each record and advancing by
+         * the record stride), then the
          * VBUF_2 packet fires the primitive with WALK_LIST. Hardware TCL
          * is mandatory: SE_VTX_FMT describes the vertex layout. */
         if (!hardwareTcl)
@@ -1818,8 +1823,7 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
                    RADEON_CP_PACKET3(R200_CP_CMD_3D_LOAD_VBPNTR, 2UL)) &&
                ExecuteEmitWord(emitter, 1UL) &&
                ExecuteEmitWord(emitter,
-                               dwordsPerVertex |
-                                   (dwordsPerVertex << 8)) &&
+                               dwordsPerVertex | (tclStride << 8)) &&
                ExecuteEmitWord(emitter, emitter->CommitVbufAddress) &&
                ExecuteEmitWord(
                    emitter,
@@ -2163,6 +2167,10 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
                         RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS) :
         extendedVertex ? RADEON3D_EXEC_EXTENDED_VERTEX_DWORDS
                        : RADEON3D_EXEC_VERTEX_DWORDS;
+    if (emitter->CommitVbuf) {
+        emitter->CommitVbufAddress = emitter->CommitSegmentGpuBase +
+            emitter->CommitVertexOffsets[emitter->CommitDrawIndex++];
+    }
     if (length < headerDwords)
         return FALSE;
     if (lighting && hardwareTcl) {
@@ -2976,6 +2984,96 @@ BOOL Radeon3DFreeSegment(
     return TRUE;
 }
 
+static BOOL CommitRecords(
+    struct Radeon3DDevice *device, struct BoardInfo *bi,
+    const ULONG *records, ULONG recordDwords,
+    const ULONG *vertexOffsets, ULONG recordCount,
+    const struct Radeon3DSegmentSlot *slot, ULONG flags, ULONG *fenceOut)
+{
+    struct ExecBase *SysBase = bi->ExecBase;
+    struct RadeonChipBase *base = device->Base;
+    struct Radeon3DExecuteEmitter *emitter;
+    ULONG *trusted;
+    ULONG *generated;
+    ULONG internalFence = 0;
+    ULONG index;
+    ULONG walk;
+    BOOL result;
+
+    if (fenceOut)
+        *fenceOut = 0;
+    if (!SysBase || !records || !recordDwords ||
+        recordDwords > RADEON3D_MAX_BATCH_DWORDS ||
+        !vertexOffsets || !recordCount || !slot ||
+        (flags & ~RADEON3D_SUBMIT_FLAGS))
+        return FALSE;
+    if (device->InterfaceVersion < 13UL || !device->ExecuteTrusted ||
+        !device->ExecuteGenerated || !device->ExecuteEmitter)
+        return FALSE;
+    /* Every record must be a hardware-TCL draw: the commit path has no
+     * inline vertex payload, so clears and non-TCL records cannot ride
+     * along. Walk the chain once up front so the emitter's per-record
+     * fetch-address counter stays in sync. */
+    walk = 0;
+    for (index = 0; index < recordCount; ++index) {
+        ULONG opcode;
+        ULONG length;
+
+        if (walk + 2UL > recordDwords)
+            return FALSE;
+        opcode = records[walk];
+        length = records[walk + 1UL];
+        if (opcode < RADEON3D_EXEC_DRAW_TRIANGLES ||
+            opcode > RADEON3D_EXEC_DRAW_LINE_LOOP ||
+            length < 2UL || length > recordDwords - walk)
+            return FALSE;
+        walk += length;
+    }
+    if (walk != recordDwords)
+        return FALSE;
+    trusted = device->ExecuteTrusted;
+    generated = device->ExecuteGenerated;
+    emitter = device->ExecuteEmitter;
+    ExecCopyRecords(trusted, records, recordDwords);
+    emitter->Words = generated;
+    emitter->Count = 0;
+    emitter->StateValid = FALSE;
+    emitter->GuardClipEmitted = FALSE;
+    emitter->MatrixValid = FALSE;
+    emitter->TexGenMatrixValid[0] = FALSE;
+    emitter->TexGenMatrixValid[1] = FALSE;
+    emitter->ModelViewValid = FALSE;
+    emitter->InvModelViewValid = FALSE;
+    emitter->CommitVbuf = TRUE;
+    emitter->CommitSegmentGpuBase = slot->GpuAddress;
+    emitter->CommitVertexOffsets = vertexOffsets;
+    emitter->CommitDrawIndex = 0;
+    result = BuildExecuteStream(device, trusted, recordDwords, emitter);
+    emitter->CommitVbuf = FALSE;
+    if (!result) {
+        (void)RadeonRecoverAcceleration(bi);
+        return FALSE;
+    }
+    if (!RadeonPrepare3D(bi)) {
+        (void)RadeonRecoverAcceleration(bi);
+        return FALSE;
+    }
+    result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
+                                  &internalFence);
+    if (result) {
+        device->LastFence = internalFence;
+        RadeonMark3DSubmitted(bi);
+        if ((flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
+            *fenceOut = internalFence;
+    } else {
+        (void)RadeonRecoverAcceleration(bi);
+    }
+    base->ExecCalls++;
+    base->ExecRecordDwords += recordDwords;
+    base->ExecGeneratedDwords += emitter->Count;
+    return result;
+}
+
 BOOL Radeon3DCommitDraw(
     __REGA0(struct Radeon3DDevice *device),
     __REGA1(const struct Radeon3DCommit *commit),
@@ -2983,17 +3081,12 @@ BOOL Radeon3DCommitDraw(
     __REGA6(struct RadeonChipBase *base))
 {
     struct BoardInfo *bi;
-    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
-    struct Radeon3DExecuteEmitter *emitter;
     struct Radeon3DSegmentSlot *slot;
-    ULONG *trusted;
-    ULONG *generated;
-    ULONG internalFence = 0;
-    BOOL result = FALSE;
+    BOOL result;
 
     if (fenceOut)
         *fenceOut = 0;
-    if (!SysBase || !commit ||
+    if (!base || !commit ||
         commit->Size < RADEON3D_COMMIT_V1_SIZE ||
         commit->Version != RADEON3D_COMMIT_VERSION ||
         !commit->Header || !commit->HeaderDwords ||
@@ -3004,11 +3097,6 @@ BOOL Radeon3DCommitDraw(
     bi = LockServiceBoard(base, &device);
     if (!bi)
         return FALSE;
-    if (device->InterfaceVersion < 13UL || !device->ExecuteTrusted ||
-        !device->ExecuteGenerated || !device->ExecuteEmitter) {
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
     if (commit->SegmentId >= RADEON3D_MAX_SEGMENTS ||
         !device->Segments[commit->SegmentId].Allocated ||
         commit->OffsetBytes >=
@@ -3021,41 +3109,52 @@ BOOL Radeon3DCommitDraw(
         UnlockServiceBoard(base, bi, device);
         return FALSE;
     }
-    trusted = device->ExecuteTrusted;
-    generated = device->ExecuteGenerated;
-    emitter = device->ExecuteEmitter;
-    ExecCopyRecords(trusted, commit->Header, commit->HeaderDwords);
-    emitter->Words = generated;
-    emitter->Count = 0;
-    emitter->StateValid = FALSE;
-    emitter->GuardClipEmitted = FALSE;
-    emitter->MatrixValid = FALSE;
-    emitter->TexGenMatrixValid[0] = FALSE;
-    emitter->TexGenMatrixValid[1] = FALSE;
-    emitter->ModelViewValid = FALSE;
-    emitter->InvModelViewValid = FALSE;
-    emitter->CommitVbuf = TRUE;
-    emitter->CommitVbufAddress = slot->GpuAddress + commit->OffsetBytes;
-    result = BuildExecuteStream(device, trusted, commit->HeaderDwords,
-                                emitter);
-    emitter->CommitVbuf = FALSE;
-    if (result)
-        result = RadeonPrepare3D(bi);
-    if (result) {
-        result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
-                                      &internalFence);
+    result = CommitRecords(device, bi, commit->Header, commit->HeaderDwords,
+                           &commit->OffsetBytes, 1UL, slot, commit->Flags,
+                           fenceOut);
+    UnlockServiceBoard(base, bi, device);
+    return result;
+}
+
+BOOL Radeon3DCommitBatch(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(const struct Radeon3DCommitBatch *commit),
+    __REGA2(ULONG *fenceOut),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct BoardInfo *bi;
+    struct Radeon3DSegmentSlot *slot;
+    ULONG index;
+    BOOL result;
+
+    if (fenceOut)
+        *fenceOut = 0;
+    if (!base || !commit ||
+        commit->Size < RADEON3D_COMMIT_BATCH_V1_SIZE ||
+        commit->Version != RADEON3D_COMMIT_BATCH_VERSION ||
+        !commit->Records || !commit->RecordDwords ||
+        !commit->VertexOffsets || !commit->RecordCount ||
+        commit->RecordDwords > RADEON3D_MAX_BATCH_DWORDS ||
+        (commit->Flags & ~RADEON3D_SUBMIT_FLAGS))
+        return FALSE;
+    bi = LockServiceBoard(base, &device);
+    if (!bi)
+        return FALSE;
+    if (commit->SegmentId >= RADEON3D_MAX_SEGMENTS ||
+        !device->Segments[commit->SegmentId].Allocated) {
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
     }
-    if (result) {
-        device->LastFence = internalFence;
-        RadeonMark3DSubmitted(bi);
-        if ((commit->Flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
-            *fenceOut = internalFence;
-    } else {
-        (void)RadeonRecoverAcceleration(bi);
+    slot = &device->Segments[commit->SegmentId];
+    for (index = 0; index < commit->RecordCount; ++index) {
+        if (commit->VertexOffsets[index] >= slot->Bytes) {
+            UnlockServiceBoard(base, bi, device);
+            return FALSE;
+        }
     }
-    base->ExecCalls++;
-    base->ExecRecordDwords += commit->HeaderDwords;
-    base->ExecGeneratedDwords += emitter->Count;
+    result = CommitRecords(device, bi, commit->Records, commit->RecordDwords,
+                           commit->VertexOffsets, commit->RecordCount, slot,
+                           commit->Flags, fenceOut);
     UnlockServiceBoard(base, bi, device);
     return result;
 }

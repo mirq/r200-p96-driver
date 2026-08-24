@@ -82,6 +82,30 @@ struct Radeon3DCommit {
 typedef char Radeon3DCommitV1SizeCheck[
     sizeof(struct Radeon3DCommit) == RADEON3D_COMMIT_V1_SIZE ? 1 : -1];
 
+/* Batched commit: Records is a chain of header-only draw records linked by
+ * their dword[1] length fields, each carrying its real vertex count in
+ * dword[10]. VertexOffsets holds one byte offset into the segment per
+ * record, in record order. Every record must be a hardware-TCL draw;
+ * clears and non-TCL records are rejected. One ring submit, one fence. */
+#define RADEON3D_COMMIT_BATCH_VERSION 1UL
+
+struct Radeon3DCommitBatch {
+    ULONG Size;
+    ULONG Version;
+    ULONG SegmentId;
+    const ULONG *Records;
+    ULONG RecordDwords;
+    const ULONG *VertexOffsets;
+    ULONG RecordCount;
+    ULONG Flags;
+};
+
+#define RADEON3D_COMMIT_BATCH_V1_SIZE 32UL
+
+typedef char Radeon3DCommitBatchV1SizeCheck[
+    sizeof(struct Radeon3DCommitBatch) == RADEON3D_COMMIT_BATCH_V1_SIZE
+        ? 1 : -1];
+
 #define RADEON3D_SUBMIT_FENCE (1UL << 0)
 #define RADEON3D_SUBMIT_FLAGS  RADEON3D_SUBMIT_FENCE
 

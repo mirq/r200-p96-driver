@@ -1,8 +1,9 @@
 # Streaming Submission Migration Plan
 
-Status: **T0 complete — Path 1 selected.** Branch `streaming-submit`, paired
-SDK branch `streaming-frontend`. Written 2026-08-24 after the Phase-0 Quake
-profile made the cost structure of the current Execute path unambiguous.
+Status: **T1 complete, T2 implemented and partially validated** — interface 13 on `streaming-submit`, write-through frontend on `streaming-frontend`
+(84ef99a); segment fetch proven on hardware by `tools/radeon3dstream`
+(commit draw renders identically to the inline control). Next: T2,
+the write-through MiniGL frontend on `streaming-frontend`.
 
 ## Problem
 
@@ -151,10 +152,37 @@ per-Execute AllocMem. ABI header synced to the SDK vendored copy;
 `tools/radeon3d_abi_check.c` updated; `make abi-check` green on GCC and vbcc;
 `nm -u` empty.
 
-### T2 — Write-through frontend (`streaming-frontend`)
+### T2 — Write-through frontend (`streaming-frontend`) — implemented
 
-Stream instead of stage; commits replace geometry Executes; legacy records for
-clear/present/readback. All existing phase tests re-run.
+Implemented as slot-homogeneous commit mode. A submit slot is either
+*commit* (header-only draw records, vertices written straight into the
+slot's segment half) or *execute* (legacy inline records); clears force an
+execute slot, so a slot never mixes the two. The existing two-slot fence
+ping-pong maps onto the two segment halves, so vertex-buffer reuse needs no
+extra waits. `Radeon3DCommitBatch` carries the whole slot in one ring
+submit; the service re-emits only the state that changed between records.
+
+Bugs found and fixed during bring-up:
+
+* The emitter struct is allocated without `MEMF_CLEAR`, so the new
+  `CommitVbuf` flag started as garbage and plain `Execute` rejected every
+  record (`length != headerDwords`). Reset it per call.
+* `LOAD_VBPNTR` needs *components* and *stride* as separate fields: the
+  generated prefix is 5-10 dwords while the record stride is 7 (compact) or
+  10. Emitting the prefix count as the stride fetched overlapping vertices.
+* Merged commit records must not grow: their vertices live in the segment,
+  so record length and generated length both stay put and only the vertex
+  count in the header advances.
+
+Validation so far: `r3dstream` (raw segment commit) and `quad_list`
+(66 batches merging into 6 records) pass on hardware. `cull_shade` and
+`phase4_smoke` fail — but they fail **identically on a clean pre-streaming
+baseline boot** (own chip + own library, caps `001ff7ff`), so they are
+pre-existing defects on the branch, not streaming regressions. Gears
+baseline for comparison: 6.118 fps fullscreen 640x480x16.
+
+Remaining: gears/acceptance numbers with the streaming pair (the machine
+wedged after the baseline run and needs a cold power cycle).
 
 ### T3 — Texture bind as commit attribute (both branches)
 

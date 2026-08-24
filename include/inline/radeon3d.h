@@ -94,4 +94,11 @@
         ULONG *, fenceOut, a2, \
         , RADEON3D_BASE_NAME)
 
+#define Radeon3DCommitBatch(device, commit, fenceOut) \
+    LP3(0x7e, BOOL, Radeon3DCommitBatch, \
+        struct Radeon3DDevice *, device, a0, \
+        const struct Radeon3DCommitBatch *, commit, a1, \
+        ULONG *, fenceOut, a2, \
+        , RADEON3D_BASE_NAME)
+
 #endif
