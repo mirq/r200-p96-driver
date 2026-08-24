@@ -165,6 +165,12 @@ typedef char Radeon3DCommitBatchV1SizeCheck[
 #define RADEON3D_TEX_LEVELS_SHIFT    8UL
 #define RADEON3D_TEX_LEVELS_MASK     (15UL << RADEON3D_TEX_LEVELS_SHIFT)
 #define RADEON3D_TEX_STATE_MASK      0x00000f7fUL
+/* Bits 16-31 carry the client's texture content serial. It changes whenever
+ * an in-place texel update reaches the surface, forcing the service to
+ * re-emit the texture unit state (including PP_TXOFFSET) so the GPU's
+ * texture cache re-fetches the rewritten lines. */
+#define RADEON3D_TEX_CONTENT_SHIFT   16UL
+#define RADEON3D_TEX_CONTENT_MASK    (0xffffUL << RADEON3D_TEX_CONTENT_SHIFT)
 
 #define RADEON3D_TEX_MIN_NEAREST                 0UL
 #define RADEON3D_TEX_MIN_LINEAR                  1UL

@@ -1227,6 +1227,19 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
                            R200_DIFFUSE_SPECULAR_COMBINE |
                            R200_LOCAL_LIGHT_VEC_GL;
 
+    /* Texels rewritten in place stay invisible until the host read path is
+     * invalidated: the texture cache keeps serving the old lines for the
+     * surface address, and no texture-register rewrite evicts them. The
+     * client marks in-place updates by changing the content serial carried
+     * in the texture state; flush the HDP read buffer before the atom so
+     * the next sampling draw re-reads VRAM. */
+    if (((textureState ^ emitter->State.TextureState) |
+         (texture1State ^ emitter->State.Texture1State)) &
+        RADEON3D_TEX_CONTENT_MASK &&
+        (!ExecuteEmitRegister(emitter, RADEON_HOST_PATH_CNTL,
+                              RADEON_HDP_READ_BUFFER_INVALIDATE) ||
+         !ExecuteEmitRegister(emitter, RADEON_HOST_PATH_CNTL, 0UL)))
+        return FALSE;
     if (normalVertex)
         format0 |= R200_VTX_N0;
     if (sphereMap0 || sphereMap1)
@@ -1584,6 +1597,74 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
     return TRUE;
 }
 
+/* TRUE when two captures differ only in texture-unit fields; reports which
+ * units changed so the caller can re-emit just those atoms instead of the
+ * full register block. Residency re-imports after in-place texel updates
+ * change only the surface handle, and a full re-emit per update made
+ * Quake's per-frame lightmap uploads dominate the command stream. */
+static BOOL TextureOnlyDelta(const struct Radeon3DExecuteState *a,
+                             const struct Radeon3DExecuteState *b,
+                             BOOL *unit0, BOOL *unit1)
+{
+    ULONG index;
+    ULONG light;
+
+    *unit0 = a->Texture != b->Texture ||
+             a->TextureOffset != b->TextureOffset ||
+             a->TextureWidth != b->TextureWidth ||
+             a->TextureHeight != b->TextureHeight ||
+             a->TextureState != b->TextureState ||
+             a->TextureBytes != b->TextureBytes;
+    *unit1 = a->Texture1 != b->Texture1 ||
+             a->Texture1Offset != b->Texture1Offset ||
+             a->Texture1Width != b->Texture1Width ||
+             a->Texture1Height != b->Texture1Height ||
+             a->Texture1State != b->Texture1State ||
+             a->Texture1Bytes != b->Texture1Bytes;
+    if (!*unit0 && !*unit1)
+        return FALSE;
+    if (!(a->Color == b->Color && a->Depth == b->Depth &&
+           a->Options == b->Options && a->Left == b->Left &&
+           a->Top == b->Top && a->Right == b->Right &&
+           a->Bottom == b->Bottom && a->ClearDepth == b->ClearDepth &&
+           a->FragmentStatePresent == b->FragmentStatePresent &&
+           a->ExtendedVertex == b->ExtendedVertex &&
+           a->HardwareTcl == b->HardwareTcl &&
+           a->FragmentState == b->FragmentState &&
+            a->VertexState == b->VertexState &&
+            a->FogColor == b->FogColor &&
+            a->TransformFlags == b->TransformFlags &&
+            a->TexGen == b->TexGen &&
+            a->TexGenState[0] == b->TexGenState[0] &&
+            a->TexGenState[1] == b->TexGenState[1] &&
+            a->NormalVertex == b->NormalVertex &&
+            a->Lighting == b->Lighting &&
+            a->LightControl == b->LightControl))
+        return FALSE;
+    if (a->Lighting) {
+        for (index = 0; index < 4UL; ++index)
+            if (a->GlobalAmbient[index] != b->GlobalAmbient[index] ||
+                a->EyeVector[index] != b->EyeVector[index])
+                return FALSE;
+        for (index = 0; index < RADEON3D_MATERIAL_DWORDS; ++index)
+            if (a->Material[index] != b->Material[index])
+                return FALSE;
+        for (light = 0; light < 8UL; ++light) {
+            if (!(a->LightControl &
+                  (RADEON3D_LIGHT_CONTROL_ENABLED_MASK << light)))
+                continue;
+            for (index = 0; index < RADEON3D_EXEC_LIGHT_BLOCK_DWORDS;
+                 ++index)
+                if (a->Lights[light][index] != b->Lights[light][index])
+                    return FALSE;
+        }
+    }
+    for (index = 0; index < 6UL; ++index)
+        if (a->Viewport[index] != b->Viewport[index])
+            return FALSE;
+    return TRUE;
+}
+
 static BOOL SameExecuteState(const struct Radeon3DExecuteState *a,
                              const struct Radeon3DExecuteState *b)
 {
@@ -1652,6 +1733,47 @@ static BOOL EmitExecuteStateCached(struct Radeon3DExecuteEmitter *emitter,
     ULONG index;
 
     if (!emitter->StateValid || !SameExecuteState(&emitter->State, state)) {
+        BOOL unit0 = FALSE, unit1 = FALSE;
+
+        if (emitter->StateValid &&
+            TextureOnlyDelta(&emitter->State, state, &unit0, &unit1)) {
+            BOOL perspective = state->HardwareTcl ||
+                (state->ExtendedVertex &&
+                 (state->VertexState &
+                  RADEON3D_VERTEX_CLIP_COORDINATES));
+            BOOL texGen0 = state->TexGen &&
+                state->TexGenState[0] != RADEON3D_TEXGEN_MODE_OFF;
+            BOOL texGen1 = state->TexGen &&
+                state->TexGenState[1] != RADEON3D_TEXGEN_MODE_OFF;
+
+            if (unit0 && state->Texture &&
+                !EmitExecuteTexture(emitter, state->Texture, 0,
+                                    state->Options,
+                                    state->FragmentStatePresent,
+                                    state->TextureOffset,
+                                    state->TextureWidth,
+                                    state->TextureHeight,
+                                    state->TextureState,
+                                    state->TextureBytes, perspective,
+                                    texGen0 &&
+                                    (state->TexGenState[0] &
+                                     RADEON3D_TEXGEN_GEN_Q)))
+                return FALSE;
+            if (unit1 && state->Texture1 &&
+                !EmitExecuteTexture(emitter, state->Texture1, 1,
+                                    state->Options, TRUE,
+                                    state->Texture1Offset,
+                                    state->Texture1Width,
+                                    state->Texture1Height,
+                                    state->Texture1State,
+                                    state->Texture1Bytes, perspective,
+                                    texGen1 &&
+                                    (state->TexGenState[1] &
+                                     RADEON3D_TEXGEN_GEN_Q)))
+                return FALSE;
+            emitter->State = *state;
+            return TRUE;
+        }
         if (!EmitExecuteState(emitter, state))
             return FALSE;
         emitter->State = *state;
@@ -1815,21 +1937,72 @@ static BOOL EmitExecuteVertices(struct Radeon3DExecuteEmitter *emitter,
     ULONG vertex;
 
     if (emitter->CommitVbuf) {
+        UBYTE components[6];
+        UBYTE offsets[6];
+        ULONG arrays = 0;
+        ULONG array;
+        ULONG payload;
+        ULONG colorOffset = normalVertex ? 7UL : 4UL;
+
         /* Vertex data is fetched from the segment by the hardware. The
-         * LOAD_VBPNTR packet points the VAP at the contiguous generated
-         * prefix of each record and advances by the record stride. VBUF_2
-         * then fires the primitive with WALK_LIST. Hardware TCL is
-         * mandatory: SE_VTX_FMT describes the vertex layout. */
+         * VAP needs one array descriptor per active attribute. The arrays
+         * are interleaved in one segment record, so they share a stride but
+         * start at the position/normal/fog/color/texture dword offsets.
+         * VBUF_2 then fires the primitive with WALK_LIST. Hardware TCL
+         * is mandatory: SE_VTX_FMT describes the vertex layout. */
         if (!hardwareTcl)
             return FALSE;
+        components[arrays] = 4;
+        offsets[arrays++] = 0;
+        if (normalVertex) {
+            components[arrays] = 3;
+            offsets[arrays++] = 4;
+        }
+        if (vertexState & RADEON3D_VERTEX_FOG) {
+            components[arrays] = 1;
+            offsets[arrays++] = normalVertex ? 12 : 9;
+        }
+        if (!textured || fragmentStatePresent) {
+            components[arrays] = 1;
+            offsets[arrays++] = (UBYTE)colorOffset;
+        }
+        if (textured) {
+            components[arrays] = 2;
+            offsets[arrays++] = (UBYTE)(normalVertex ? 8UL : 5UL);
+        }
+        if (vertexState & RADEON3D_VERTEX_TEXTURE1) {
+            components[arrays] = 2;
+            offsets[arrays++] = (UBYTE)(normalVertex ? 10UL : 7UL);
+        }
+        payload = 1UL + (arrays >> 1) * 3UL + (arrays & 1UL) * 2UL;
+        if (!ExecuteEmitWord(
+                emitter,
+                RADEON_CP_PACKET3(R200_CP_CMD_3D_LOAD_VBPNTR,
+                                  payload - 1UL)) ||
+            !ExecuteEmitWord(emitter, arrays))
+            return FALSE;
+        for (array = 0; array + 1UL < arrays; array += 2UL) {
+            if (!ExecuteEmitWord(
+                    emitter,
+                    components[array] | (tclStride << 8) |
+                        ((ULONG)components[array + 1UL] << 16) |
+                        (tclStride << 24)) ||
+                !ExecuteEmitWord(emitter,
+                                 emitter->CommitVbufAddress +
+                                     (ULONG)offsets[array] * 4UL) ||
+                !ExecuteEmitWord(emitter,
+                                 emitter->CommitVbufAddress +
+                                     (ULONG)offsets[array + 1UL] * 4UL))
+                return FALSE;
+        }
+        if (array < arrays &&
+            (!ExecuteEmitWord(emitter,
+                              components[array] | (tclStride << 8)) ||
+             !ExecuteEmitWord(emitter,
+                              emitter->CommitVbufAddress +
+                                  (ULONG)offsets[array] * 4UL)))
+            return FALSE;
         return ExecuteEmitWord(
-                   emitter,
-                   RADEON_CP_PACKET3(R200_CP_CMD_3D_LOAD_VBPNTR, 2UL)) &&
-               ExecuteEmitWord(emitter, 1UL) &&
-               ExecuteEmitWord(emitter,
-                               dwordsPerVertex | (tclStride << 8)) &&
-               ExecuteEmitWord(emitter, emitter->CommitVbufAddress) &&
-               ExecuteEmitWord(
                    emitter,
                    RADEON_CP_PACKET3(R200_CP_CMD_3D_DRAW_VBUF_2, 0UL)) &&
                ExecuteEmitWord(emitter,
@@ -2881,6 +3054,8 @@ BOOL Radeon3DExecute(
     emitter->Words = generated;
     emitter->Count = 0;
     emitter->StateValid = FALSE;
+    emitter->State.TextureState = 0;
+    emitter->State.Texture1State = 0;
     emitter->GuardClipEmitted = FALSE;
     emitter->MatrixValid = FALSE;
     emitter->TexGenMatrixValid[0] = FALSE;
@@ -3103,6 +3278,8 @@ static BOOL CommitRecords(
     emitter->Words = generated;
     emitter->Count = 0;
     emitter->StateValid = FALSE;
+    emitter->State.TextureState = 0;
+    emitter->State.Texture1State = 0;
     emitter->GuardClipEmitted = FALSE;
     emitter->MatrixValid = FALSE;
     emitter->TexGenMatrixValid[0] = FALSE;

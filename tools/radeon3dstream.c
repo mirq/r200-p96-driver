@@ -266,12 +266,23 @@ int main(void)
         }
     }
 
-    /* Commit path: same header, vertices fetched from the segment. */
+    /* Commit path: same header, vertices fetched from the segment. The VAP
+     * fetches little-endian, so the commit copy is byte-reversed relative
+     * to the inline Execute copy, which the ring writer swaps. */
+    ULONG reverse;
+
+    for (reverse = 0; reverse < VERTEX_COUNT * VERTEX_DWORDS; ++reverse) {
+        ULONG value = vertices[reverse];
+
+        vertices[256UL + reverse] =
+            (value << 24) | ((value << 8) & 0x00ff0000UL) |
+            ((value >> 8) & 0x0000ff00UL) | (value >> 24);
+    }
     BuildHeader(header, (ULONG)surface.Handle, VERTEX_COUNT, HEADER_DWORDS);
     commit.Size = sizeof(commit);
     commit.Version = RADEON3D_COMMIT_VERSION;
     commit.SegmentId = segment.Id;
-    commit.OffsetBytes = 0;
+    commit.OffsetBytes = 1024UL;
     commit.Header = header;
     commit.HeaderDwords = HEADER_DWORDS;
     commit.Flags = RADEON3D_SUBMIT_FENCE;

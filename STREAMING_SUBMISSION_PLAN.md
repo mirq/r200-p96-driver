@@ -213,7 +213,53 @@ the drawing buffer, and the display/safe messages must retire before changing
 or reusing a screen buffer. No drain can be removed without racing GPU writes
 or buffer ownership, so T4 deliberately makes no code change.
 
-### T5 — Acceptance
+### T5 acceptance results (stream9 chip + streaming library, commits enabled)
+
+Hardware: A4000/TF4060, Radeon 9200 (RV280), cold boot. STREAM_COMMITS=1.
+
+| Check | Result |
+|---|---|
+| r3dstream raw single + batch commit, bad-args reject | pass (fence stage encoding verified) |
+| quad_list untextured + textured VBUF commits (1 and 300 vertices) | pass |
+| bootstrap smoke | pass |
+| phase5 image/subimage/deferred/flatfan/font/mip/wrap/env/blend/alpha/stress | full pass |
+| phase6 primitives (fog linear/exp/exp2, multitex, scissor, points, lines) | pass |
+| phase6 acceptance depth 16 and 32 (deferred state, arrays, FastPath v2, window move/overlap, resize, batch budget, async) | pass |
+| phase6 acceptance depth 8 fullscreen | deferred/async pass; resize rejected (fullscreen limitation) |
+| phase4_smoke depth_func_index=0, cull_shade cull-disabled | pre-existing failures, identical on the clean baseline |
+| Quake demo1 640x480x32 | world renders correctly; 2.985 fps; draw-bound (293 draws/frame, per-draw state re-emission dominates), streaming roughly perf-neutral for this workload |
+
+Gears fullscreen 640x480x16, 50 frames, envmap, median of three: 6.831 / 6.923 /
+6.897 -> **6.897 fps, +12.7% over the 6.118 pre-streaming baseline**. One submit
+per frame, record chain 2761 dwords/frame (91% below inline), service-side
+execute 3.8 ms/frame (89% below inline).
+
+Root causes found and fixed during T5:
+
+1. Streaming segments allocated from the live Picasso96 VRAM pool overlapped
+   later bitmap allocations. The pool is now reserved once at driver init,
+   before rtg allocates anything.
+2. Segment vertex data was written big-endian while the VAP fetches
+   little-endian; inline Execute hid the swap inside the ring writer. The
+   frontend now byte-swaps in registers before the single VRAM store.
+3. The VAP needs one LOAD_VBPNTR descriptor per active attribute; a single
+   descriptor cannot express components < stride for textured records.
+4. This RV280's texture cache never re-reads rewritten lines at the same
+   address; neither texture-register rewrites nor an in-stream HDP
+   read-buffer invalidate evict them. glTexSubImage2D therefore re-imports
+   residency under a fresh address (the stale block is kept alive until the
+   replacement exists so the allocator cannot hand back the same address).
+5. A residency re-import changes only the surface handle; re-emitting the
+   full ~900-dword state block per update made Quake's lightmap uploads
+   dominate the command stream. The service now detects texture-only deltas
+   and re-emits just the affected texture atoms.
+
+Deferred to the fixes phase: Quake's item-pickup / muzzle-flash light blink
+renders as a full-screen yellow wash (pre-dates the streaming work); Quake
+remains draw-bound, so the next lever is per-draw state emission, not vertex
+transport.
+
+## T5 — Acceptance
 
 Physical machine only, cold-boot discipline, one variable per run:
 
