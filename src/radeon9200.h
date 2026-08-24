@@ -96,6 +96,9 @@ struct RadeonChipBase {
     ULONG ServiceSessions;
     ULONG ServiceNextHandle;
     ULONG ServiceState;
+    APTR StreamSegmentPool;
+    ULONG StreamSegmentGpuBase;
+    ULONG StreamSegmentMask;
     /* Cumulative Radeon3DExecute phase attribution. The timer pair opens
      * lazily on the first session; totals are microseconds across every
      * Execute since the driver loaded and survive session closes, so a
@@ -106,6 +109,7 @@ struct RadeonChipBase {
     ULONG ExecCopyMicros;
     ULONG ExecBuildMicros;
     ULONG ExecSubmitMicros;
+    ULONG CommitFailStage;
     ULONG ExecCalls;
     ULONG ExecRecordDwords;
     ULONG ExecGeneratedDwords;

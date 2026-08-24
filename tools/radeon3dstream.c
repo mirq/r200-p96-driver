@@ -172,9 +172,10 @@ int main(void)
         result = Fail("open_service");
         goto out;
     }
-    printf("R3DSTREAM iface=%lu caps=%08lx generation=%lu\n",
+    printf("R3DSTREAM iface=%lu caps=%08lx generation=%lu commit_stage=%08lx\n",
            (unsigned long)info.Version, (unsigned long)info.Caps,
-           (unsigned long)info.Generation);
+           (unsigned long)info.Generation,
+           (unsigned long)info.CommitFailStage);
     if (!(info.Caps & RADEON3D_CAP_STREAM_SEGMENTS)) {
         result = Fail("capabilities");
         goto out;
@@ -290,6 +291,47 @@ int main(void)
     if (sample != 0x07e0UL && sample != 0xe007UL) {
         result = Fail("pixel");
         goto out;
+    }
+
+    /* Batch variant: two draws in one commit, offsets 0 and 112. */
+    {
+        struct Radeon3DCommitBatch batchCommit;
+        ULONG offsets[2];
+        ULONG batchFence = 0;
+        BOOL ok;
+
+        offsets[0] = 0;
+        offsets[1] = 112;
+        header[10] = 4;
+        commit.Header = header;
+        commit.HeaderDwords = HEADER_DWORDS;
+        header[10] = 6;
+        /* second header variant reuses the same array; the batch carries
+         * two entries pointing at the same header for a minimal check */
+        header[10] = 4;
+        batchCommit.Size = sizeof(batchCommit);
+        batchCommit.Version = RADEON3D_COMMIT_BATCH_VERSION;
+        batchCommit.SegmentId = segment.Id;
+        batchCommit.Records = header;
+        batchCommit.RecordDwords = HEADER_DWORDS;
+        batchCommit.VertexOffsets = offsets;
+        batchCommit.RecordCount = 1;
+        batchCommit.Flags = RADEON3D_SUBMIT_FENCE;
+        ok = Radeon3DCommitBatch(device, &batchCommit, &batchFence);
+        printf("R3DSTREAM batch ok=%lu fence=%08lx\n",
+               (unsigned long)ok, (unsigned long)batchFence);
+        {
+            struct Radeon3DCommitBatch bad = batchCommit;
+            ULONG badFence = 0;
+
+            bad.RecordCount = 0;
+            ok = Radeon3DCommitBatch(device, &bad, &badFence);
+            printf("R3DSTREAM badargs ok=%lu fence=%08lx expected=80000029\n",
+                   (unsigned long)ok, (unsigned long)badFence);
+        }
+        if (ok && batchFence)
+            Radeon3DWaitFence(device, batchFence, 10000UL);
+        header[10] = VERTEX_COUNT;
     }
 
     if (!Radeon3DFreeSegment(device, segment.Id)) {

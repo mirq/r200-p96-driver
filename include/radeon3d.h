@@ -320,10 +320,15 @@ struct Radeon3DInfo {
     ULONG ExecCopyMicros;
     ULONG ExecBuildMicros;
     ULONG ExecSubmitMicros;
+    /* V3: which check rejected the most recent streaming commit, zero if
+     * none has failed. Stage numbers are internal to the service and only
+     * meaningful when read right after a failed commit. */
+    ULONG CommitFailStage;
 };
 
 #define RADEON3D_INFO_V1_SIZE 32UL
 #define RADEON3D_INFO_V2_SIZE 56UL
+#define RADEON3D_INFO_V3_SIZE 60UL
 
 /* requestedVersion is the newest interface version understood by the caller. */
 
@@ -339,8 +344,8 @@ struct Radeon3DInfo {
  * RADEON3D_SUBMISSION.md for exact record layouts and restrictions.
  */
 
-typedef char Radeon3DInfoV2SizeCheck[
-    sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V2_SIZE ? 1 : -1];
+typedef char Radeon3DInfoV3SizeCheck[
+    sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V3_SIZE ? 1 : -1];
 #ifdef __GNUC__
 typedef char Radeon3DInfoV1PrefixCheck[
     __builtin_offsetof(struct Radeon3DInfo, ExecCalls) ==

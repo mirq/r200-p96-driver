@@ -1367,6 +1367,8 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
                                    BOOL stageTemplates)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonChipBase *base = bi ? (struct RadeonChipBase *)bi->ChipBase
+                                      : NULL;
     ULONG location;
 
     if (!data || !bi->MemoryBase || !bi->MemoryIOBase)
@@ -1412,11 +1414,30 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
     RLOG("Radeon9200: mono-from-memory probe=%lu sample=%lx\n",
          RadeonMonoProbeResult, RadeonMonoProbeSample);
 #endif
+    if (base) {
+        base->StreamSegmentPool = NULL;
+        base->StreamSegmentGpuBase = 0;
+        base->StreamSegmentMask = 0;
+    }
     if (!enableCp || !RadeonCpInitialize(bi))
         RLOG("Radeon9200: direct-MMIO 2D engine ready, status=%lx\n",
               RadeonRead32(bi, RADEON_RBBM_STATUS));
-    else
+    else {
+        APTR pool = RadeonAllocatePrivateVram(
+            bi, RADEON3D_MAX_SEGMENTS * RADEON3D_MAX_SEGMENT_BYTES);
+
+        if (pool && base) {
+            ULONG offset = (ULONG)pool - (ULONG)bi->MemoryBase;
+
+            base->StreamSegmentPool = pool;
+            base->StreamSegmentGpuBase = data->FramebufferGpuBase + offset;
+        } else if (pool) {
+            (void)RadeonFreePrivateVram(
+                bi, pool,
+                RADEON3D_MAX_SEGMENTS * RADEON3D_MAX_SEGMENT_BYTES);
+        }
         RLOG("Radeon9200: CP ready; Picasso96 2D uses direct MMIO\n");
+    }
     return TRUE;
 }
 
@@ -1424,12 +1445,22 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
 {
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonChipBase *base = bi ? (struct RadeonChipBase *)bi->ChipBase
+                                      : NULL;
 
     if (!SysBase || !data)
         return;
     ObtainSemaphore(&bi->BoardLock);
     if (data->AccelPending)
         (void)SynchronizeEngine(bi);
+    if (base && base->StreamSegmentPool) {
+        (void)RadeonFreePrivateVram(
+            bi, base->StreamSegmentPool,
+            RADEON3D_MAX_SEGMENTS * RADEON3D_MAX_SEGMENT_BYTES);
+        base->StreamSegmentPool = NULL;
+        base->StreamSegmentGpuBase = 0;
+        base->StreamSegmentMask = 0;
+    }
     RadeonCpShutdown(bi);
     LineSurface.Valid = FALSE;
     InvalidateEngineState();

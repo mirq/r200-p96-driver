@@ -154,13 +154,14 @@ per-Execute AllocMem. ABI header synced to the SDK vendored copy;
 
 ### T2 — Write-through frontend (`streaming-frontend`) — implemented
 
-Implemented as slot-homogeneous commit mode. A submit slot is either
-*commit* (header-only draw records, vertices written straight into the
-slot's segment half) or *execute* (legacy inline records); clears force an
-execute slot, so a slot never mixes the two. The existing two-slot fence
-ping-pong maps onto the two segment halves, so vertex-buffer reuse needs no
-extra waits. `Radeon3DCommitBatch` carries the whole slot in one ring
-submit; the service re-emits only the state that changed between records.
+Implemented as slot-homogeneous draw mode. A submit slot is either *commit*
+(header-only draw records, vertices written straight into the slot's segment
+half) or *execute* (legacy inline records). Clears can ride in either slot;
+the service emits their generated projected rectangle normally and consumes
+segment offsets only for draw records. The existing two-slot fence ping-pong
+maps onto the two segment halves, so vertex-buffer reuse needs no extra waits.
+`Radeon3DCommitBatch` carries the whole slot in one ring submit; the service
+re-emits only the state that changed between records.
 
 Bugs found and fixed during bring-up:
 
@@ -173,27 +174,44 @@ Bugs found and fixed during bring-up:
 * Merged commit records must not grow: their vertices live in the segment,
   so record length and generated length both stay put and only the vertex
   count in the header advances.
+* `PendingDrawState.header` followed eleven 16-bit AmigaOS `BOOL` fields and
+  started at byte offset 58. The length-aware `ULONG` copy consequently
+  omitted the final two bytes of every header, clearing transform dword 43's
+  point-size field. Explicit padding now aligns the variable header.
+* Commit batches containing a clear initially left `CommitVbuf` enabled while
+  the service built the clear's internal screen-space rectangle. Clears now
+  temporarily use normal immediate emission without consuming a segment
+  vertex offset.
 
-Validation so far: `r3dstream` (raw segment commit) and `quad_list`
-(66 batches merging into 6 records) pass on hardware. `cull_shade` and
+Validation so far: `r3dstream` (raw segment commit), `quad_list`
+(66 batches merging into 6 records), phase5 smoke, phase6 primitives, and
+phase6 acceptance at depth 16 pass on hardware. `cull_shade` and
 `phase4_smoke` fail — but they fail **identically on a clean pre-streaming
 baseline boot** (own chip + own library, caps `001ff7ff`), so they are
 pre-existing defects on the branch, not streaming regressions. Gears
-baseline for comparison: 6.118 fps fullscreen 640x480x16.
+fullscreen 640x480x16 improved from the 6.118 fps clean baseline to
+**6.730 fps** (50 measured frames, 50 asynchronous submits), a 10.0% gain.
 
-Remaining: gears/acceptance numbers with the streaming pair (the machine
-wedged after the baseline run and needs a cold power cycle).
-
-### T3 — Texture bind as commit attribute (both branches)
+### T3 — Texture bind as commit attribute (both branches) — implemented
 
 List-primitive batches merge across texture binds; mutation/deletion still
-barriers. Expected effect on Quake: Execute count collapses from ~10.6 k to
-hundreds per timedemo.
+barriers. The existing deferred-state snapshots already provide this once T2
+uses `Radeon3DCommitBatch`: `glBindTexture` bumps the semantic serial, flushes
+pending vertices into another immutable header in the same slot, and does not
+submit. Expected effect on Quake: Execute count collapses from ~10.6 k to
+hundreds per timedemo. Physical Quake measurement remains pending.
 
-### T4 — Present-path slimming (optional, separable)
+### T4 — Present-path slimming (optional, separable) — measured, no change
 
 Attribute the 27.6 ms/frame present cost (pre-flip fence drains vs vblank
-wait); remove avoidable drains. Only after T1-T3 numbers are in.
+wait); remove avoidable drains. Only after T1-T3 numbers are in. The streaming
+gears profile attributes 8.3 ms/frame to retiring GPU work and 21.7 ms/frame
+to display notifications plus `ChangeScreenBuffer`. With sync disabled, both
+display waits are already deferred until the next present, overlapping the
+application's frame construction. The GPU fence must retire before exposing
+the drawing buffer, and the display/safe messages must retire before changing
+or reusing a screen buffer. No drain can be removed without racing GPU writes
+or buffer ownership, so T4 deliberately makes no code change.
 
 ### T5 — Acceptance
 

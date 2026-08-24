@@ -7,7 +7,7 @@ struct Library *Radeon9200Base;
 #define ABI_CHECK(name, expression) typedef char name[(expression) ? 1 : -1]
 
 ABI_CHECK(Radeon3DInfoSize,
-          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V2_SIZE);
+          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V3_SIZE);
 ABI_CHECK(Radeon3DInfoSizeOffset,
           offsetof(struct Radeon3DInfo, Size) == 0);
 ABI_CHECK(Radeon3DInfoVersionOffset,
@@ -25,7 +25,7 @@ ABI_CHECK(Radeon3DInfoPicasso96VramOffset,
 ABI_CHECK(Radeon3DInfoMaxBatchOffset,
           offsetof(struct Radeon3DInfo, MaxBatchDwords) == 28);
 ABI_CHECK(Radeon3DInfoV2Size,
-          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V2_SIZE);
+          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V3_SIZE);
 ABI_CHECK(Radeon3DInfoExecCallsOffset,
           offsetof(struct Radeon3DInfo, ExecCalls) == 32);
 ABI_CHECK(Radeon3DInfoExecRecordOffset,
