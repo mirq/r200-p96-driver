@@ -73,7 +73,15 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-           RADEON3D_IFACE_VERSION == 12UL);
+           RADEON3D_IFACE_VERSION == 13UL);
+ABI_CHECK(Radeon3DStreamSegmentCapability,
+          RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
+ABI_CHECK(Radeon3DSegmentStructSize,
+          sizeof(struct Radeon3DSegment) == RADEON3D_SEGMENT_V1_SIZE);
+ABI_CHECK(Radeon3DCommitStructSize,
+          sizeof(struct Radeon3DCommit) == RADEON3D_COMMIT_V1_SIZE);
+ABI_CHECK(Radeon3DMaxSegments,
+          RADEON3D_MAX_SEGMENTS == 8UL);
 ABI_CHECK(Radeon3DTriangleStripOpcode,
           RADEON3D_EXEC_DRAW_TRI_STRIP == 3UL);
 ABI_CHECK(Radeon3DTriangleFanOpcode,
@@ -111,7 +119,7 @@ ABI_CHECK(Radeon3DNormalOption,
 ABI_CHECK(Radeon3DLightingOption,
           RADEON3D_DRAW_LIGHTING == (1UL << 13));
 ABI_CHECK(Radeon3DFullOptions,
-          RADEON3D_DRAW_OPTIONS == 0x00003fffUL);
+          RADEON3D_DRAW_OPTIONS == 0x00007fffUL);
 ABI_CHECK(Radeon3DPreTclOptionsStill,
            RADEON3D_DRAW_OPTIONS_PRE_TCL == 0x000003ffUL);
 ABI_CHECK(Radeon3DLightControlMask,

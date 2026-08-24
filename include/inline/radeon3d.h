@@ -74,4 +74,24 @@
         struct Radeon3DDevice *, device, a0, \
         , RADEON3D_BASE_NAME)
 
+#define Radeon3DAllocSegment(device, bytes, segment) \
+    LP3(0x6c, BOOL, Radeon3DAllocSegment, \
+        struct Radeon3DDevice *, device, a0, \
+        ULONG, bytes, d0, \
+        struct Radeon3DSegment *, segment, a1, \
+        , RADEON3D_BASE_NAME)
+
+#define Radeon3DFreeSegment(device, segmentId) \
+    LP2(0x72, BOOL, Radeon3DFreeSegment, \
+        struct Radeon3DDevice *, device, a0, \
+        ULONG, segmentId, d0, \
+        , RADEON3D_BASE_NAME)
+
+#define Radeon3DCommitDraw(device, commit, fenceOut) \
+    LP3(0x78, BOOL, Radeon3DCommitDraw, \
+        struct Radeon3DDevice *, device, a0, \
+        const struct Radeon3DCommit *, commit, a1, \
+        ULONG *, fenceOut, a2, \
+        , RADEON3D_BASE_NAME)
+
 #endif

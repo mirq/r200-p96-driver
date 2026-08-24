@@ -318,6 +318,17 @@ BOOL Radeon3DExecute(__REGA0(struct Radeon3DDevice *device),
                       __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DInvalidateForTest(__REGA0(struct Radeon3DDevice *device),
                                __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DAllocSegment(__REGA0(struct Radeon3DDevice *device),
+                          __REGD0(ULONG bytes),
+                          __REGA1(struct Radeon3DSegment *segment),
+                          __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DFreeSegment(__REGA0(struct Radeon3DDevice *device),
+                         __REGD0(ULONG segmentId),
+                         __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DCommitDraw(__REGA0(struct Radeon3DDevice *device),
+                        __REGA1(const struct Radeon3DCommit *commit),
+                        __REGA2(ULONG *fenceOut),
+                        __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
                          __REGA6(struct RadeonChipBase *base));
 

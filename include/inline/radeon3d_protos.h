@@ -50,6 +50,20 @@ BOOL __Radeon3DExecute(
 BOOL __Radeon3DInvalidateForTest(
     __reg("a6") void *base,
     __reg("a0") struct Radeon3DDevice *device) = "\tjsr\t-102(a6)";
+BOOL __Radeon3DAllocSegment(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device,
+    __reg("d0") ULONG bytes,
+    __reg("a1") struct Radeon3DSegment *segment) = "\tjsr\t-108(a6)";
+BOOL __Radeon3DFreeSegment(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device,
+    __reg("d0") ULONG segmentId) = "\tjsr\t-114(a6)";
+BOOL __Radeon3DCommitDraw(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device,
+    __reg("a1") const struct Radeon3DCommit *commit,
+    __reg("a2") ULONG *fenceOut) = "\tjsr\t-120(a6)";
 #ifndef RADEON3D_BASE_NAME
 #define RADEON3D_BASE_NAME Radeon9200Base
 #endif
@@ -76,5 +90,11 @@ BOOL __Radeon3DInvalidateForTest(
                        (recordDwords), (flags), (fenceOut))
 #define Radeon3DInvalidateForTest(device) \
     __Radeon3DInvalidateForTest(RADEON3D_BASE_NAME, (device))
+#define Radeon3DAllocSegment(device, bytes, segment) \
+    __Radeon3DAllocSegment(RADEON3D_BASE_NAME, (device), (bytes), (segment))
+#define Radeon3DFreeSegment(device, segmentId) \
+    __Radeon3DFreeSegment(RADEON3D_BASE_NAME, (device), (segmentId))
+#define Radeon3DCommitDraw(device, commit, fenceOut) \
+    __Radeon3DCommitDraw(RADEON3D_BASE_NAME, (device), (commit), (fenceOut))
 
 #endif

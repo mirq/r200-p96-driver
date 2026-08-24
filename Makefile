@@ -137,12 +137,31 @@ R3D_INFO_TEST := $(BUILD_DIR)/radeon3dinfo
 R3D_SESSIONS_TEST := $(BUILD_DIR)/radeon3dsessions
 R3D_PHASE1_TEST := $(BUILD_DIR)/radeon3dphase1
 R3D_FORMATS_TEST := $(BUILD_DIR)/radeon3dformats
+R3D_STREAM_TEST := $(BUILD_DIR)/radeon3dstream
+VRAM_STREAM_TEST := $(BUILD_DIR)/vramstream
 
-.PHONY: all abi-check clean r3d-tools tools
+.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream
 
 all: $(TARGET) $(CARD_TARGET)
 
 tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST)
+
+vramstream: $(VRAM_STREAM_TEST)
+
+r3dstream: $(R3D_STREAM_TEST)
+
+$(VRAM_STREAM_TEST): tools/vramstream.c
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
+		-Iinclude $< -lamiga -o $@
+
+$(R3D_STREAM_TEST): tools/radeon3dstream.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d_protos.h
+	mkdir -p $(dir $@)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
+		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
 
 abi-check: $(ABI_CHECK_GCC) $(ABI_CHECK_VBCC)
 

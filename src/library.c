@@ -48,6 +48,9 @@ static APTR FunctionTable[] USED = {
     (APTR)Radeon3DReleaseSurface,
     (APTR)Radeon3DExecute,
     (APTR)Radeon3DInvalidateForTest,
+    (APTR)Radeon3DAllocSegment,
+    (APTR)Radeon3DFreeSegment,
+    (APTR)Radeon3DCommitDraw,
     (APTR)-1
 };
 

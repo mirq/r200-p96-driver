@@ -24,5 +24,11 @@ BOOL Radeon3DExecute(struct Radeon3DDevice *device,
                      const ULONG *records, ULONG recordDwords,
                       ULONG flags, ULONG *fenceOut);
 BOOL Radeon3DInvalidateForTest(struct Radeon3DDevice *device);
+BOOL Radeon3DAllocSegment(struct Radeon3DDevice *device, ULONG bytes,
+                          struct Radeon3DSegment *segment);
+BOOL Radeon3DFreeSegment(struct Radeon3DDevice *device, ULONG segmentId);
+BOOL Radeon3DCommitDraw(struct Radeon3DDevice *device,
+                        const struct Radeon3DCommit *commit,
+                        ULONG *fenceOut);
 
 #endif

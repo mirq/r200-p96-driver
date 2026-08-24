@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   12UL
+#define RADEON3D_IFACE_VERSION   13UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -28,12 +28,59 @@
 #define RADEON3D_CAP_HW_LIGHTING            (1UL << 18)
 #define RADEON3D_CAP_HW_SPHERE_MAP          (1UL << 19)
 #define RADEON3D_CAP_COMPACT_TCL_VERTEX     (1UL << 20)
+#define RADEON3D_CAP_STREAM_SEGMENTS        (1UL << 21)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
 #define RADEON3D_IMMD_MAX_QUAD_VERTICES 252UL
 #define RADEON3D_IMMD_MAX_EXTENDED_QUAD_VERTICES 252UL
 #define RADEON3D_IMMD_VERTEX_DWORDS 3UL
+
+/* Streaming segments (interface 13). A segment is service-allocated private
+ * VRAM that the context-owning task writes through its CpuAddress; draw
+ * commits reference vertex data at GpuAddress + OffsetBytes instead of
+ * carrying vertices inline in the Execute record. Segments are freed
+ * automatically when the device closes. */
+#define RADEON3D_MAX_SEGMENTS      8UL
+#define RADEON3D_MAX_SEGMENT_BYTES (256UL * 1024UL)
+
+#define RADEON3D_SEGMENT_VERSION 1UL
+
+struct Radeon3DSegment {
+    ULONG Size;
+    ULONG Version;
+    ULONG Id;
+    APTR CpuAddress;
+    ULONG GpuAddress;
+    ULONG Bytes;
+};
+
+#define RADEON3D_SEGMENT_V1_SIZE 24UL
+
+typedef char Radeon3DSegmentV1SizeCheck[
+    sizeof(struct Radeon3DSegment) == RADEON3D_SEGMENT_V1_SIZE ? 1 : -1];
+
+/* Draw commit: the header is an ordinary HW-TCL draw-record header whose
+ * record[10] vertex count is the real count, but only HeaderDwords dwords
+ * are supplied — the vertices are fetched from the segment by the hardware.
+ * OffsetBytes must be 4-byte aligned and leave room for the full vertex
+ * array inside the segment. Flags accept RADEON3D_SUBMIT_FENCE. */
+#define RADEON3D_COMMIT_VERSION 1UL
+
+struct Radeon3DCommit {
+    ULONG Size;
+    ULONG Version;
+    ULONG SegmentId;
+    ULONG OffsetBytes;
+    const ULONG *Header;
+    ULONG HeaderDwords;
+    ULONG Flags;
+};
+
+#define RADEON3D_COMMIT_V1_SIZE 28UL
+
+typedef char Radeon3DCommitV1SizeCheck[
+    sizeof(struct Radeon3DCommit) == RADEON3D_COMMIT_V1_SIZE ? 1 : -1];
 
 #define RADEON3D_SUBMIT_FENCE (1UL << 0)
 #define RADEON3D_SUBMIT_FLAGS  RADEON3D_SUBMIT_FENCE
