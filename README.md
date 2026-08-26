@@ -5,9 +5,9 @@ Pure-C Picasso96 chip driver for desktop RV280 Radeon 9200 PCI boards behind
 
 ## Status
 
-The current library is `Radeon9200.chip 3.0` and exposes Radeon3D interface 12,
-adding object-linear and sphere-map texture-coordinate generation, per-vertex
-normals, and fixed-function lighting to the hardware TCL path.
+The current library is `Radeon9200.chip 3.0` and exposes Radeon3D interface 13,
+adding client-written VRAM streaming segments and batched semantic commits to
+the hardware TCL path.
 It has been validated on a physical 50 MHz 68060 Amiga with a
 Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB COMBIOS board, and a
 64 MiB linear aperture. Supported device IDs are `1002:5960`, `1002:5961`, and
