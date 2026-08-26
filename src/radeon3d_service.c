@@ -1,10 +1,45 @@
 #include <exec/memory.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 #include <devices/timer.h>
 
 #include "radeon9200.h"
 #include "radeon_debug.h"
 #include "radeon_regs.h"
+
+#ifdef DEBUG
+/*
+ * Temporary diagnostics: dump the first Execute and the first CommitBatch
+ * (record chain + generated CP stream) so the host can disassemble exactly
+ * what the card was asked to do.
+ */
+static void DumpStreamFile(struct ExecBase *SysBase, const char *path,
+                           const ULONG *records, ULONG recordDwords,
+                           const ULONG *generated, ULONG generatedDwords)
+{
+    BPTR file;
+    ULONG header[4];
+
+    if (!SysBase)
+        return;
+    file = Open((STRPTR)path, MODE_NEWFILE);
+    if (!file)
+        return;
+    header[0] = 0x52334455UL; /* 'R3DU' */
+    header[1] = 1UL;
+    header[2] = recordDwords;
+    header[3] = generatedDwords;
+    (void)Write(file, header, sizeof(header));
+    if (recordDwords)
+        (void)Write(file, (APTR)records, recordDwords * sizeof(ULONG));
+    if (generatedDwords)
+        (void)Write(file, (APTR)generated, generatedDwords * sizeof(ULONG));
+    Close(file);
+}
+
+static LONG FirstExecuteDumpPending = 1;
+static LONG FirstCommitDumpPending = 1;
+#endif
 
 #define RADEON3D_SESSION_MAGIC 0x52334453UL
 #define RADEON3D_EXEC_SUPPRESS_COLOR_WRITE 0x80000000UL
@@ -958,12 +993,19 @@ static BOOL ExecuteSurfacesOverlap(struct Radeon3DSurfaceHandle *first,
 static BOOL ValidDepthTarget(struct Radeon3DSurfaceHandle *surface,
                              struct Radeon3DSurfaceHandle *color)
 {
+    /* Width may exceed the color surface: minigl.library pads the depth
+     * storage so its pitch is a whole number of 64-pixel tile pairs (the
+     * R200 drops whole 32-pixel tile columns at widths such as 800, whose
+     * 1600-byte pitch is 12.5 tile pairs).  Rendering and clearing are
+     * bounded by RE_WIDTH_HEIGHT, so the extra columns are never touched.
+     * 64 pixels of 16-bit depth is 128 bytes; the same alignment the Linux
+     * radeon DDX applies to every tiled surface. */
     return surface && !ExecuteSurfacesOverlap(surface, color) &&
            surface->Format == RADEON3D_FORMAT_R5G6B5PC &&
-           surface->Width == color->Width &&
+           surface->Width >= color->Width &&
            surface->Height == color->Height &&
            !(surface->GpuAddress & 0x0fUL) &&
-           !(surface->Pitch & 1UL) &&
+           !(surface->Pitch & 127UL) &&
            !((surface->Pitch / 2UL) & ~R200_DEPTHPITCH_MASK);
 }
 
@@ -985,6 +1027,35 @@ static BOOL ValidTextureTarget(struct Radeon3DSurfaceHandle *surface,
 static BOOL IsPowerOfTwo(ULONG value)
 {
     return value && !(value & (value - 1UL));
+}
+
+/* Diagnostic companion to ValidTextureTargetWithState(): reports which of
+ * its checks rejects a texture, for the commit-failure stage report. */
+static ULONG TextureRejectReason(struct Radeon3DSurfaceHandle *surface,
+                                 struct Radeon3DSurfaceHandle *color,
+                                 struct Radeon3DSurfaceHandle *depth,
+                                 ULONG offset, ULONG width, ULONG height,
+                                 ULONG levels)
+{
+    if (!surface || !color)
+        return 80UL;
+    if (ExecuteSurfacesOverlap(surface, color))
+        return 81UL;
+    if (depth && ExecuteSurfacesOverlap(surface, depth))
+        return 82UL;
+    if (surface->Format != RADEON3D_FORMAT_R5G6B5PC &&
+        surface->Format != RADEON3D_FORMAT_B8G8R8A8)
+        return 83UL;
+    if (!width || width > 2048UL || !height || height > 2048UL)
+        return 84UL;
+    if (!levels || levels > 12UL)
+        return 85UL;
+    if (offset > 0xffffffffUL - surface->GpuAddress ||
+        ((surface->GpuAddress + offset) & ~R200_TXO_OFFSET_MASK))
+        return 86UL;
+    if (levels > 1UL && (!IsPowerOfTwo(width) || !IsPowerOfTwo(height)))
+        return 87UL;
+    return 88UL;   /* allocation/mip-layout bounds */
 }
 
 static BOOL ValidTextureTargetWithState(struct Radeon3DSurfaceHandle *surface,
@@ -1325,9 +1396,16 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
         format0 |= R200_VTX_DISCRETE_FOG;
         ppControl |= R200_FOG_ENABLE;
         seControl |= R200_FOG_SHADE_GOURAUD |
-                     R200_DISC_FOG_SHADE_GOURAUD;
-        outputFormat0 |= R200_VTX_DISCRETE_FOG;
-        outputSelect |= R200_OUTPUT_DISCRETE_FOG;
+                      R200_DISC_FOG_SHADE_GOURAUD;
+        /* Mesa's fixed-function R200 path always exports secondary colour
+         * while fog is active.  RV280's fog interpolator requires that
+         * companion output even when VTX_FOG selects the discrete scalar. */
+        outputFormat0 |= R200_VTX_DISCRETE_FOG |
+                         (R200_VTX_FP_RGBA << R200_VTX_COLOR_1_SHIFT);
+        /* OUTPUT_DISCRETE_FOG is a programmable-vertex-output selector.
+         * Fixed TCL exports fog from VTX_FMT; selecting it here reads an
+         * unwritten result and collapses the blend factor to zero. */
+        outputSelect |= R200_OUTPUT_COLOR_1;
     }
     /* Hardware TCL keeps the base PK_RGBA colour format: the record carries
      * the same packed ARGB dword as the non-TCL paths, and the TCL unit
@@ -1404,8 +1482,13 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
         ULONG pointSize = (state->TransformFlags &
                            RADEON3D_TRANSFORM_POINT_SIZE_MASK) >>
                           RADEON3D_TRANSFORM_POINT_SIZE_SHIFT;
-        if (state->TransformFlags & RADEON3D_TRANSFORM_FLAT_SHADE)
-            seControl &= ~R200_DIFFUSE_SHADE_GOURAUD;
+        if (state->TransformFlags & RADEON3D_TRANSFORM_FLAT_SHADE) {
+            /* GL flat shade is SE_CNTL field value 1; clearing GOURAUD alone
+             * selects 0 = SOLID, which samples the unprogrammed solid-colour
+             * path and draws nothing visible. */
+            seControl &= ~R200_DIFFUSE_SHADE_MASK;
+            seControl |= R200_DIFFUSE_SHADE_FLAT;
+        }
         if (state->TransformFlags & RADEON3D_TRANSFORM_POLYGON_LINE) {
             seControl &= ~(R200_BFACE_SOLID | R200_FFACE_SOLID);
             seControl |= R200_BFACE_LINE | R200_FFACE_LINE;
@@ -1426,6 +1509,12 @@ static BOOL EmitExecuteState(struct Radeon3DExecuteEmitter *emitter,
                                  pointSize | (1024UL << 16)) ||
             !ExecuteEmitRegister(emitter, R200_SE_LINE_WIDTH, 16UL))
             return FALSE;
+        /* RE_POINTSIZE is programmed above for completeness, but the hardware
+         * ignores it for point primitives under TCL: measured on RV280, every
+         * point rasterises one pixel whatever this register, the point-sprite
+         * vport scale, or SE_TCL_POINT_SPRITE_CNTL contain. minigl.library
+         * sizes points itself instead (EmitSizedPoints), so nothing further is
+         * emitted here. See GLITCH_HUNT_FINDINGS.md. */
     }
     if (perspective &&
         (!ExecuteEmitRegister(emitter,R200_SE_VPORT_XSCALE,
@@ -2548,8 +2637,56 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
         (!fog && extendedVertex && fogColor) ||
         !ValidExecuteScissor(color, record[6], record[7],
                               record[8], record[9])) {
-        if (emitter->CommitVbuf)
-            device->Base->CommitFailStage = 22UL;
+        if (emitter->CommitVbuf) {
+            /* Re-evaluate the terms individually so the reported stage says
+             * which one rejected the draw; the combined predicate above is
+             * too coarse to attribute a streaming failure. */
+            ULONG detail = 22UL;
+
+            if (!ValidColorTarget(device, color))
+                detail = 60UL;
+            else if (useDepth && !ValidDepthTarget(depth, color))
+                detail = 61UL;
+            else if (!useDepth && record[3])
+                detail = 62UL;
+            else if (textured && fragmentStatePresent &&
+                     !ValidTextureTargetWithState(texture, color, depth,
+                                                  textureOffset, textureWidth,
+                                                  textureHeight, levels,
+                                                  &textureBytes))
+                detail = TextureRejectReason(texture, color,
+                                             useDepth ? depth : NULL,
+                                             textureOffset, textureWidth,
+                                             textureHeight, levels);
+            else if (textured && !fragmentStatePresent &&
+                     !ValidTextureTarget(texture, color, depth))
+                detail = 64UL;
+            else if (textured1 &&
+                     !ValidTextureTargetWithState(texture1, color, depth,
+                                                  texture1Offset, texture1Width,
+                                                  texture1Height, levels1,
+                                                  &texture1Bytes))
+                detail = 20UL + TextureRejectReason(texture1, color,
+                                                    useDepth ? depth : NULL,
+                                                    texture1Offset,
+                                                    texture1Width,
+                                                    texture1Height, levels1);
+            else if (!ValidExecuteScissor(color, record[6], record[7],
+                                          record[8], record[9]))
+                detail = 66UL;
+            else if (!hardwareTcl)
+                detail = 67UL;
+            else if (commitOffset >= emitter->CommitSegmentBytes)
+                detail = 68UL;
+            else if (!vertexStride)
+                detail = 69UL;
+            else if (vertexCount > (emitter->CommitSegmentBytes - commitOffset) /
+                                       (vertexStride * 4UL))
+                detail = 70UL;
+            else if (length != headerDwords)
+                detail = 71UL;
+            device->Base->CommitFailStage = detail;
+        }
         return FALSE;
     }
     if (textured && !fragmentStatePresent)
@@ -3093,6 +3230,13 @@ BOOL Radeon3DExecute(
     } else {
         (void)RadeonRecoverAcceleration(bi);
     }
+#ifdef DEBUG
+    if (FirstExecuteDumpPending) {
+        FirstExecuteDumpPending = 0;
+        DumpStreamFile(base->ExecBase, "T:r3d_first_execute.bin",
+                       records, recordDwords, generated, emitter->Count);
+    }
+#endif
     RDEBUG_EXECUTE_PHASE(RADEON_DEBUG_EXEC_SUBMIT, submitStart);
     RDEBUG_EXECUTE_SAMPLE(recordDwords, emitter->Count);
     base->ExecCalls++;
@@ -3296,6 +3440,11 @@ static BOOL CommitRecords(
     if (!result) {
         if (!base->CommitFailStage)
             COMMIT_FAIL(base, 6UL);
+        /* Encode the emitter stage for clients whose info block predates
+         * CommitFailStage: fenceOut keeps 0 for success only. */
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | (6UL << 16) |
+                        (base->CommitFailStage & 0xffffUL);
         (void)RadeonRecoverAcceleration(bi);
         return FALSE;
     }
@@ -3422,6 +3571,13 @@ BOOL Radeon3DCommitBatch(
     result = CommitRecords(device, bi, commit->Records, commit->RecordDwords,
                            commit->VertexOffsets, commit->RecordCount, slot,
                            commit->Flags, fenceOut);
+#ifdef DEBUG
+    if (FirstCommitDumpPending) {
+        FirstCommitDumpPending = 0;
+        DumpStreamFile(base->ExecBase, "T:r3d_first_commit.bin",
+                       commit->Records, commit->RecordDwords, NULL, 0UL);
+    }
+#endif
     UnlockServiceBoard(base, bi, device);
     return result;
 }

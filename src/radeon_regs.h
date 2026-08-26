@@ -284,6 +284,7 @@
 #define R200_VTX_W0                         (1UL << 1)
 #define R200_VTX_DISCRETE_FOG               (1UL << 8)
 #define R200_VTX_COLOR_0_SHIFT              11
+#define R200_VTX_COLOR_1_SHIFT              13
 #define R200_SE_VTX_FMT_1                   0x208cUL
 #define R200_VTX_TEX0_COMP_CNT_SHIFT        0
 #define R200_VTX_TEX1_COMP_CNT_SHIFT        3
@@ -328,6 +329,7 @@
 #define R200_SE_TCL_OUTPUT_VTX_COMP_SEL     0x2250UL
 #define R200_OUTPUT_XYZW                    (1UL << 0)
 #define R200_OUTPUT_COLOR_0                 (1UL << 8)
+#define R200_OUTPUT_COLOR_1                 (1UL << 9)
 #define R200_OUTPUT_TEX_0                   (1UL << 16)
 #define R200_OUTPUT_TEX_1                   (1UL << 17)
 #define R200_OUTPUT_DISCRETE_FOG            (1UL << 24)
@@ -470,7 +472,10 @@
 #define R200_FFACE_LINE                     (1UL << 3)
 #define R200_BFACE_POINT                    (2UL << 1)
 #define R200_FFACE_POINT                    (2UL << 3)
+#define R200_DIFFUSE_SHADE_SOLID            (0UL << 8)
+#define R200_DIFFUSE_SHADE_FLAT             (1UL << 8)
 #define R200_DIFFUSE_SHADE_GOURAUD          (2UL << 8)
+#define R200_DIFFUSE_SHADE_MASK          (3UL << 8)
 #define R200_ALPHA_SHADE_GOURAUD            (2UL << 10)
 #define R200_SPECULAR_LIGHTS                 (1UL << 5)
 #define R200_DIFFUSE_SPECULAR_COMBINE       (1UL << 6)
