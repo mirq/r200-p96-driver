@@ -38,6 +38,7 @@ SOURCES := \
 	src/dma.c \
 	src/r200_microcode.c \
 	src/radeon_cp.c \
+	src/radeon3d_emit.c \
 	src/radeon3d_service.c \
 	src/radeon_debug.c \
 	src/radeon_cursor.c \
