@@ -52,6 +52,7 @@ static APTR FunctionTable[] USED = {
     (APTR)Radeon3DFreeSegment,
     (APTR)Radeon3DCommitDraw,
     (APTR)Radeon3DCommitBatch,
+    (APTR)Radeon3DCommitStateBatch,
     (APTR)-1
 };
 

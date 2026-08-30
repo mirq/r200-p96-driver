@@ -73,13 +73,32 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-           RADEON3D_IFACE_VERSION == 13UL);
+           RADEON3D_IFACE_VERSION == 15UL);
 ABI_CHECK(Radeon3DStreamSegmentCapability,
-          RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
+           RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
+ABI_CHECK(Radeon3DCommitStateReuseCapability,
+           RADEON3D_CAP_COMMIT_STATE_REUSE == (1UL << 22));
+ABI_CHECK(Radeon3DCommitStateBatchCapability,
+          RADEON3D_CAP_COMMIT_STATE_BATCH == (1UL << 23));
 ABI_CHECK(Radeon3DSegmentStructSize,
           sizeof(struct Radeon3DSegment) == RADEON3D_SEGMENT_V1_SIZE);
 ABI_CHECK(Radeon3DCommitStructSize,
           sizeof(struct Radeon3DCommit) == RADEON3D_COMMIT_V1_SIZE);
+ABI_CHECK(Radeon3DCommitBatchStructSize,
+          sizeof(struct Radeon3DCommitBatch) ==
+              RADEON3D_COMMIT_BATCH_V1_SIZE);
+ABI_CHECK(Radeon3DStateBatchDrawStructSize,
+          sizeof(struct Radeon3DStateBatchDraw) ==
+              RADEON3D_STATE_BATCH_DRAW_V1_SIZE);
+ABI_CHECK(Radeon3DStateBatchStructSize,
+          sizeof(struct Radeon3DStateBatch) ==
+              RADEON3D_STATE_BATCH_V1_SIZE);
+ABI_CHECK(Radeon3DStateBatchGenerationOffset,
+          offsetof(struct Radeon3DStateBatch, Generation) == 8);
+ABI_CHECK(Radeon3DStateBatchHeaderOffset,
+          offsetof(struct Radeon3DStateBatch, Header) == 20);
+ABI_CHECK(Radeon3DStateBatchDrawsOffset,
+          offsetof(struct Radeon3DStateBatch, Draws) == 28);
 ABI_CHECK(Radeon3DMaxSegments,
           RADEON3D_MAX_SEGMENTS == 8UL);
 ABI_CHECK(Radeon3DTriangleStripOpcode,
@@ -164,6 +183,7 @@ void Radeon3DAbiCalls(void)
         ULONG command = 0x80000000UL;
         ULONG fence;
         struct Radeon3DSurface surface;
+        struct Radeon3DStateBatch batch;
 
         (void)Radeon3DGetInfo(device, &info);
         (void)Radeon3DSubmit(device, &command, 1,
@@ -174,6 +194,8 @@ void Radeon3DAbiCalls(void)
         (void)Radeon3DImportBitMap(device, NULL, &surface);
         Radeon3DReleaseSurface(device, &surface);
         (void)Radeon3DExecute(device, &command, 1, 0, &fence);
+        batch.Size = sizeof(batch);
+        (void)Radeon3DCommitStateBatch(device, &batch, &fence);
         (void)Radeon3DInvalidateForTest(device);
         Radeon3DClose(device);
     }

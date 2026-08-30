@@ -101,4 +101,11 @@
         ULONG *, fenceOut, a2, \
         , RADEON3D_BASE_NAME)
 
+#define Radeon3DCommitStateBatch(device, batch, fenceOut) \
+    LP3(0x84, BOOL, Radeon3DCommitStateBatch, \
+        struct Radeon3DDevice *, device, a0, \
+        const struct Radeon3DStateBatch *, batch, a1, \
+        ULONG *, fenceOut, a2, \
+        , RADEON3D_BASE_NAME)
+
 #endif

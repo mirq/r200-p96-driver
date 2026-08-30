@@ -33,5 +33,8 @@ BOOL Radeon3DCommitDraw(struct Radeon3DDevice *device,
 BOOL Radeon3DCommitBatch(struct Radeon3DDevice *device,
                          const struct Radeon3DCommitBatch *commit,
                          ULONG *fenceOut);
+BOOL Radeon3DCommitStateBatch(struct Radeon3DDevice *device,
+                              const struct Radeon3DStateBatch *batch,
+                              ULONG *fenceOut);
 
 #endif

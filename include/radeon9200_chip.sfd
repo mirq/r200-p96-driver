@@ -23,4 +23,6 @@ BOOL Radeon3DImportBitMap(struct Radeon3DDevice *device, struct BitMap *bitmap, 
 VOID Radeon3DReleaseSurface(struct Radeon3DDevice *device, struct Radeon3DSurface *surface) (a0,a1)
 ==version 3
 BOOL Radeon3DExecute(struct Radeon3DDevice *device, const ULONG *records, ULONG recordDwords, ULONG flags, ULONG *fenceOut) (a0,a1,d0,d1,a2)
+==bias 132
+BOOL Radeon3DCommitStateBatch(struct Radeon3DDevice *device, const struct Radeon3DStateBatch *batch, ULONG *fenceOut) (a0,a1,a2)
 ==end

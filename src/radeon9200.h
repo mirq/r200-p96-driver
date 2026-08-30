@@ -337,6 +337,11 @@ BOOL Radeon3DCommitBatch(__REGA0(struct Radeon3DDevice *device),
                          __REGA1(const struct Radeon3DCommitBatch *commit),
                          __REGA2(ULONG *fenceOut),
                          __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DCommitStateBatch(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(const struct Radeon3DStateBatch *batch),
+    __REGA2(ULONG *fenceOut),
+    __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
                          __REGA6(struct RadeonChipBase *base));
 

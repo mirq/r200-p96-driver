@@ -176,7 +176,10 @@ int main(void)
            (unsigned long)info.Version, (unsigned long)info.Caps,
            (unsigned long)info.Generation,
            (unsigned long)info.CommitFailStage);
-    if (!(info.Caps & RADEON3D_CAP_STREAM_SEGMENTS)) {
+    if ((info.Caps & (RADEON3D_CAP_STREAM_SEGMENTS |
+                      RADEON3D_CAP_COMMIT_STATE_BATCH)) !=
+        (RADEON3D_CAP_STREAM_SEGMENTS |
+         RADEON3D_CAP_COMMIT_STATE_BATCH)) {
         result = Fail("capabilities");
         goto out;
     }
@@ -330,7 +333,9 @@ int main(void)
         batchCommit.Flags = RADEON3D_SUBMIT_FENCE;
         ok = Radeon3DCommitBatch(device, &batchCommit, &batchFence);
         printf("R3DSTREAM batch ok=%lu fence=%08lx\n",
-               (unsigned long)ok, (unsigned long)batchFence);
+                (unsigned long)ok, (unsigned long)batchFence);
+        if (ok && batchFence)
+            Radeon3DWaitFence(device, batchFence, 10000UL);
         {
             struct Radeon3DCommitBatch bad = batchCommit;
             ULONG badFence = 0;
@@ -340,9 +345,48 @@ int main(void)
             printf("R3DSTREAM badargs ok=%lu fence=%08lx expected=80000029\n",
                    (unsigned long)ok, (unsigned long)badFence);
         }
-        if (ok && batchFence)
-            Radeon3DWaitFence(device, batchFence, 10000UL);
         header[10] = VERTEX_COUNT;
+    }
+
+    /* Interface-15 homogeneous batch: reuse the existing state header and
+     * byte-swapped segment vertices, then verify an unaligned offset fails. */
+    {
+        struct Radeon3DStateBatchDraw draw;
+        struct Radeon3DStateBatch stateBatch;
+        ULONG stateFence = 0;
+        BOOL ok;
+
+        BuildHeader(header, (ULONG)surface.Handle, VERTEX_COUNT,
+                    HEADER_DWORDS);
+        draw.OffsetBytes = 1024UL;
+        draw.VertexCount = VERTEX_COUNT;
+        stateBatch.Size = sizeof(stateBatch);
+        stateBatch.Version = RADEON3D_STATE_BATCH_VERSION;
+        stateBatch.Generation = info.Generation;
+        stateBatch.SegmentId = segment.Id;
+        stateBatch.Primitive = RADEON3D_EXEC_DRAW_QUADS;
+        stateBatch.Header = header;
+        stateBatch.HeaderDwords = HEADER_DWORDS;
+        stateBatch.Draws = &draw;
+        stateBatch.DrawCount = 1;
+        stateBatch.Flags = RADEON3D_SUBMIT_FENCE;
+        ok = Radeon3DCommitStateBatch(device, &stateBatch, &stateFence);
+        printf("R3DSTREAM state_batch ok=%lu fence=%08lx\n",
+               (unsigned long)ok, (unsigned long)stateFence);
+        if (!ok || !stateFence ||
+            !Radeon3DWaitFence(device, stateFence, 10000UL)) {
+            result = Fail("commit_state_batch");
+            goto out;
+        }
+        draw.OffsetBytes = 1025UL;
+        stateFence = 0;
+        ok = Radeon3DCommitStateBatch(device, &stateBatch, &stateFence);
+        printf("R3DSTREAM state_batch_bad_align ok=%lu fence=%08lx\n",
+               (unsigned long)ok, (unsigned long)stateFence);
+        if (ok) {
+            result = Fail("commit_state_batch_alignment");
+            goto out;
+        }
     }
 
     if (!Radeon3DFreeSegment(device, segment.Id)) {

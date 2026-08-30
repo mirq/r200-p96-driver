@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   13UL
+#define RADEON3D_IFACE_VERSION   15UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -29,6 +29,8 @@
 #define RADEON3D_CAP_HW_SPHERE_MAP          (1UL << 19)
 #define RADEON3D_CAP_COMPACT_TCL_VERTEX     (1UL << 20)
 #define RADEON3D_CAP_STREAM_SEGMENTS        (1UL << 21)
+#define RADEON3D_CAP_COMMIT_STATE_REUSE     (1UL << 22)
+#define RADEON3D_CAP_COMMIT_STATE_BATCH     (1UL << 23)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
@@ -106,6 +108,43 @@ typedef char Radeon3DCommitBatchV1SizeCheck[
     sizeof(struct Radeon3DCommitBatch) == RADEON3D_COMMIT_BATCH_V1_SIZE
         ? 1 : -1];
 
+/* Bounded homogeneous state batch (interface 15). Header is one complete
+ * existing hardware-TCL draw header; its vertex count is replaced by each
+ * descriptor's count. Primitive is one RADEON3D_EXEC_DRAW_* opcode and
+ * applies to every draw. The service copies both arrays before parsing. */
+#define RADEON3D_STATE_BATCH_VERSION 1UL
+#define RADEON3D_STATE_BATCH_MAX_DRAWS 192UL
+
+struct Radeon3DStateBatchDraw {
+    ULONG OffsetBytes;
+    ULONG VertexCount;
+};
+
+#define RADEON3D_STATE_BATCH_DRAW_V1_SIZE 8UL
+
+typedef char Radeon3DStateBatchDrawV1SizeCheck[
+    sizeof(struct Radeon3DStateBatchDraw) ==
+        RADEON3D_STATE_BATCH_DRAW_V1_SIZE ? 1 : -1];
+
+struct Radeon3DStateBatch {
+    ULONG Size;
+    ULONG Version;
+    ULONG Generation;
+    ULONG SegmentId;
+    ULONG Primitive;
+    const ULONG *Header;
+    ULONG HeaderDwords;
+    const struct Radeon3DStateBatchDraw *Draws;
+    ULONG DrawCount;
+    ULONG Flags;
+};
+
+#define RADEON3D_STATE_BATCH_V1_SIZE 40UL
+
+typedef char Radeon3DStateBatchV1SizeCheck[
+    sizeof(struct Radeon3DStateBatch) == RADEON3D_STATE_BATCH_V1_SIZE
+        ? 1 : -1];
+
 #define RADEON3D_SUBMIT_FENCE (1UL << 0)
 #define RADEON3D_SUBMIT_FLAGS  RADEON3D_SUBMIT_FENCE
 
@@ -118,6 +157,15 @@ typedef char Radeon3DCommitBatchV1SizeCheck[
 #define RADEON3D_EXEC_DRAW_LINES     7UL
 #define RADEON3D_EXEC_DRAW_LINE_STRIP 8UL
 #define RADEON3D_EXEC_DRAW_LINE_LOOP 9UL
+#define RADEON3D_EXEC_REUSE_TRIANGLES 10UL
+#define RADEON3D_EXEC_REUSE_TRI_STRIP 11UL
+#define RADEON3D_EXEC_REUSE_TRI_FAN   12UL
+#define RADEON3D_EXEC_REUSE_QUADS     13UL
+#define RADEON3D_EXEC_REUSE_POINTS    14UL
+#define RADEON3D_EXEC_REUSE_LINES     15UL
+#define RADEON3D_EXEC_REUSE_LINE_STRIP 16UL
+#define RADEON3D_EXEC_REUSE_LINE_LOOP 17UL
+#define RADEON3D_EXEC_REUSE_DWORDS     3UL
 
 #define RADEON3D_CLEAR_COLOR (1UL << 0)
 #define RADEON3D_CLEAR_DEPTH (1UL << 1)

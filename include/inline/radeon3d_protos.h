@@ -69,6 +69,11 @@ BOOL __Radeon3DCommitBatch(
     __reg("a0") struct Radeon3DDevice *device,
     __reg("a1") const struct Radeon3DCommitBatch *commit,
     __reg("a2") ULONG *fenceOut) = "\tjsr\t-126(a6)";
+BOOL __Radeon3DCommitStateBatch(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device,
+    __reg("a1") const struct Radeon3DStateBatch *batch,
+    __reg("a2") ULONG *fenceOut) = "\tjsr\t-132(a6)";
 #ifndef RADEON3D_BASE_NAME
 #define RADEON3D_BASE_NAME Radeon9200Base
 #endif
@@ -103,5 +108,8 @@ BOOL __Radeon3DCommitBatch(
     __Radeon3DCommitDraw(RADEON3D_BASE_NAME, (device), (commit), (fenceOut))
 #define Radeon3DCommitBatch(device, commit, fenceOut) \
     __Radeon3DCommitBatch(RADEON3D_BASE_NAME, (device), (commit), (fenceOut))
+#define Radeon3DCommitStateBatch(device, batch, fenceOut) \
+    __Radeon3DCommitStateBatch(RADEON3D_BASE_NAME, (device), (batch), \
+                               (fenceOut))
 
 #endif

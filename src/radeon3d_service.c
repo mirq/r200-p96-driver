@@ -365,6 +365,10 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
         info->Caps |= RADEON3D_CAP_COMPACT_TCL_VERTEX;
     if (interfaceVersion >= 13UL && base->StreamSegmentPool)
         info->Caps |= RADEON3D_CAP_STREAM_SEGMENTS;
+    if (interfaceVersion >= 14UL)
+        info->Caps |= RADEON3D_CAP_COMMIT_STATE_REUSE;
+    if (interfaceVersion >= 15UL)
+        info->Caps |= RADEON3D_CAP_COMMIT_STATE_BATCH;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -2812,6 +2816,90 @@ static BOOL EmitExecuteDraw(struct Radeon3DDevice *device,
                                primitiveType, color);
 }
 
+static BOOL EmitExecuteVbufDraw(struct Radeon3DDevice *device,
+                                struct Radeon3DExecuteEmitter *emitter,
+                                ULONG commitOffset, ULONG vertexCount,
+                                ULONG primitiveType)
+{
+    const struct Radeon3DExecuteState *state = &emitter->State;
+    ULONG vertexStride;
+    ULONG options;
+    BOOL textured;
+    BOOL useDepth;
+
+    if (!emitter->CommitVbuf || !emitter->StateValid || !state->HardwareTcl)
+        return FALSE;
+    options = state->Options;
+    vertexStride = (options & RADEON3D_DRAW_COMPACT_VERTEX)
+        ? (state->NormalVertex ? 10UL : 7UL)
+        : (state->NormalVertex ? RADEON3D_EXEC_HW_TCL_NORMAL_VERTEX_DWORDS
+                               : RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS);
+    if ((primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_POINT_LIST
+             ? !vertexCount
+             : (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_LINE_LIST ||
+                primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_LINE_STRIP ||
+                primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_LINE_LOOP)
+                   ? vertexCount < 2UL
+                   : vertexCount < 3UL) ||
+        (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST &&
+         vertexCount % 3UL) ||
+        (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_LINE_LIST &&
+         vertexCount % 2UL) ||
+        (primitiveType == R200_CP_VC_CNTL_PRIM_TYPE_QUADS &&
+         (vertexCount < 4UL || vertexCount % 4UL)) ||
+        commitOffset >= emitter->CommitSegmentBytes || !vertexStride ||
+        vertexCount > (emitter->CommitSegmentBytes - commitOffset) /
+                          (vertexStride * 4UL)) {
+        device->Base->CommitFailStage = 72UL;
+        return FALSE;
+    }
+    emitter->CommitVbufAddress = emitter->CommitSegmentGpuBase + commitOffset;
+    textured = (options & RADEON3D_DRAW_TEXTURED) != 0;
+    useDepth = (options & (RADEON3D_DRAW_DEPTH_LESS |
+                           RADEON3D_DRAW_DEPTH_WRITE)) != 0;
+    return EmitExecuteVertices(
+        emitter, NULL, vertexCount, useDepth, textured,
+        state->FragmentStatePresent, state->ExtendedVertex,
+        state->HardwareTcl, state->NormalVertex,
+        (options & RADEON3D_DRAW_COMPACT_VERTEX) != 0,
+        state->VertexState, primitiveType, state->Color);
+}
+
+static BOOL EmitExecuteReuseDraw(struct Radeon3DDevice *device,
+                                 struct Radeon3DExecuteEmitter *emitter,
+                                 const ULONG *record, ULONG length,
+                                 ULONG primitiveType)
+{
+    ULONG commitOffset;
+
+    if (length != RADEON3D_EXEC_REUSE_DWORDS)
+        return FALSE;
+    commitOffset =
+        emitter->CommitVertexOffsets[emitter->CommitDrawIndex++];
+    return EmitExecuteVbufDraw(device, emitter, commitOffset, record[2],
+                               primitiveType);
+}
+
+static BOOL ExecutePrimitiveType(ULONG opcode, ULONG *primitiveType)
+{
+    static const UBYTE primitives[] = {
+        R200_CP_VC_CNTL_PRIM_TYPE_TRI_LIST,
+        R200_CP_VC_CNTL_PRIM_TYPE_TRI_STRIP,
+        R200_CP_VC_CNTL_PRIM_TYPE_TRI_FAN,
+        R200_CP_VC_CNTL_PRIM_TYPE_QUADS,
+        R200_CP_VC_CNTL_PRIM_TYPE_POINT_LIST,
+        R200_CP_VC_CNTL_PRIM_TYPE_LINE_LIST,
+        R200_CP_VC_CNTL_PRIM_TYPE_LINE_STRIP,
+        R200_CP_VC_CNTL_PRIM_TYPE_LINE_LOOP
+    };
+
+    if (!primitiveType || opcode < RADEON3D_EXEC_DRAW_TRIANGLES ||
+        opcode > RADEON3D_EXEC_DRAW_LINE_LOOP)
+        return FALSE;
+    *primitiveType = primitives[opcode - RADEON3D_EXEC_DRAW_TRIANGLES];
+    return TRUE;
+}
+
 static BOOL BuildExecuteStream(struct Radeon3DDevice *device,
                                const ULONG *records, ULONG recordDwords,
                                struct Radeon3DExecuteEmitter *emitter)
@@ -2877,7 +2965,21 @@ static BOOL BuildExecuteStream(struct Radeon3DDevice *device,
         } else if (device->InterfaceVersion >= 9UL &&
                    records[index] == RADEON3D_EXEC_DRAW_LINE_LOOP) {
             if (!EmitExecuteDraw(device, emitter, records + index, length,
-                                 R200_CP_VC_CNTL_PRIM_TYPE_LINE_LOOP))
+                                  R200_CP_VC_CNTL_PRIM_TYPE_LINE_LOOP))
+                return FALSE;
+        } else if (device->InterfaceVersion >= 14UL && emitter->CommitVbuf &&
+                   records[index] >= RADEON3D_EXEC_REUSE_TRIANGLES &&
+                   records[index] <= RADEON3D_EXEC_REUSE_LINE_LOOP) {
+            ULONG primitiveType;
+
+            if (!ExecutePrimitiveType(
+                    records[index] - RADEON3D_EXEC_REUSE_TRIANGLES +
+                        RADEON3D_EXEC_DRAW_TRIANGLES,
+                    &primitiveType))
+                return FALSE;
+            if (!EmitExecuteReuseDraw(
+                    device, emitter, records + index, length,
+                    primitiveType))
                 return FALSE;
         } else
             return FALSE;
@@ -3356,6 +3458,8 @@ static BOOL CommitRecords(
     ULONG internalFence = 0;
     ULONG index;
     ULONG walk;
+    ULONG phase;
+    BOOL streamBuilt;
     BOOL result;
 
     if (fenceOut)
@@ -3396,8 +3500,11 @@ static BOOL CommitRecords(
                 *fenceOut = 0x80000000UL | 3UL;
             return FALSE;
         }
-        if (opcode >= RADEON3D_EXEC_DRAW_TRIANGLES &&
-            opcode <= RADEON3D_EXEC_DRAW_LINE_LOOP)
+        if ((opcode >= RADEON3D_EXEC_DRAW_TRIANGLES &&
+             opcode <= RADEON3D_EXEC_DRAW_LINE_LOOP) ||
+            (device->InterfaceVersion >= 14UL &&
+             opcode >= RADEON3D_EXEC_REUSE_TRIANGLES &&
+             opcode <= RADEON3D_EXEC_REUSE_LINE_LOOP))
             ++index;
         else if (opcode != RADEON3D_EXEC_CLEAR ||
                  length != RADEON3D_EXEC_CLEAR_DWORDS) {
@@ -3418,7 +3525,9 @@ static BOOL CommitRecords(
     generated = device->ExecuteGenerated;
     emitter = device->ExecuteEmitter;
     base->CommitFailStage = 0;
+    phase = ServiceExecMicros(base);
     ExecCopyRecords(trusted, records, recordDwords);
+    base->ExecCopyMicros += ServiceExecMicros(base) - phase;
     emitter->Words = generated;
     emitter->Count = 0;
     emitter->StateValid = FALSE;
@@ -3435,11 +3544,24 @@ static BOOL CommitRecords(
     emitter->CommitSegmentBytes = slot->Bytes;
     emitter->CommitVertexOffsets = vertexOffsets;
     emitter->CommitDrawIndex = 0;
-    result = BuildExecuteStream(device, trusted, recordDwords, emitter);
+    phase = ServiceExecMicros(base);
+    streamBuilt = BuildExecuteStream(device, trusted, recordDwords, emitter);
+    result = streamBuilt;
+    if (result)
+        result = RadeonPrepare3D(bi);
+    base->ExecBuildMicros += ServiceExecMicros(base) - phase;
     emitter->CommitVbuf = FALSE;
+    emitter->CommitSegmentGpuBase = 0;
+    emitter->CommitSegmentBytes = 0;
+    emitter->CommitVertexOffsets = NULL;
+    emitter->CommitDrawIndex = 0;
+    emitter->CommitVbufAddress = 0;
+    emitter->StateValid = FALSE;
     if (!result) {
-        if (!base->CommitFailStage)
+        if (!streamBuilt && !base->CommitFailStage)
             COMMIT_FAIL(base, 6UL);
+        else if (streamBuilt)
+            COMMIT_FAIL(base, 7UL);
         /* Encode the emitter stage for clients whose info block predates
          * CommitFailStage: fenceOut keeps 0 for success only. */
         if (fenceOut)
@@ -3448,13 +3570,10 @@ static BOOL CommitRecords(
         (void)RadeonRecoverAcceleration(bi);
         return FALSE;
     }
-    if (!RadeonPrepare3D(bi)) {
-        COMMIT_FAIL(base, 7UL);
-        (void)RadeonRecoverAcceleration(bi);
-        return FALSE;
-    }
+    phase = ServiceExecMicros(base);
     result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
                                   &internalFence);
+    base->ExecSubmitMicros += ServiceExecMicros(base) - phase;
     if (result) {
         device->LastFence = internalFence;
         RadeonMark3DSubmitted(bi);
@@ -3578,6 +3697,162 @@ BOOL Radeon3DCommitBatch(
                        commit->Records, commit->RecordDwords, NULL, 0UL);
     }
 #endif
+    UnlockServiceBoard(base, bi, device);
+    return result;
+}
+
+BOOL Radeon3DCommitStateBatch(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(const struct Radeon3DStateBatch *batch),
+    __REGA2(ULONG *fenceOut),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct Radeon3DStateBatch request;
+    struct Radeon3DStateBatchDraw *draws;
+    struct Radeon3DSegmentSlot *slot;
+    struct Radeon3DExecuteEmitter *emitter;
+    struct BoardInfo *bi;
+    ULONG *trusted;
+    ULONG *generated;
+    ULONG primitiveType;
+    ULONG internalFence = 0;
+    ULONG stagedDwords;
+    ULONG phase;
+    ULONG index;
+    BOOL streamBuilt;
+    BOOL result;
+
+    if (fenceOut)
+        *fenceOut = 0;
+    if (!base || !batch)
+        return FALSE;
+    request = *batch;
+    if (request.Size < RADEON3D_STATE_BATCH_V1_SIZE ||
+        request.Version != RADEON3D_STATE_BATCH_VERSION ||
+        !request.Header ||
+        request.HeaderDwords < RADEON3D_EXEC_DRAW_HW_TCL_HEADER_DWORDS ||
+        request.HeaderDwords > RADEON3D_MAX_BATCH_DWORDS ||
+        !request.Draws || !request.DrawCount ||
+        request.DrawCount > RADEON3D_STATE_BATCH_MAX_DRAWS ||
+        request.DrawCount >
+            (RADEON3D_MAX_BATCH_DWORDS - request.HeaderDwords) /
+                (RADEON3D_STATE_BATCH_DRAW_V1_SIZE / sizeof(ULONG)) ||
+        !ExecutePrimitiveType(request.Primitive, &primitiveType) ||
+        (request.Flags & ~RADEON3D_SUBMIT_FLAGS)) {
+        COMMIT_FAIL(base, 80UL);
+        return FALSE;
+    }
+    stagedDwords = request.HeaderDwords +
+                   request.DrawCount *
+                       (RADEON3D_STATE_BATCH_DRAW_V1_SIZE / sizeof(ULONG));
+    bi = LockServiceBoard(base, &device);
+    if (!bi)
+        return FALSE;
+    if (device->InterfaceVersion < 15UL ||
+        request.Generation != device->Generation ||
+        request.Generation != base->ServiceGeneration ||
+        request.SegmentId >= RADEON3D_MAX_SEGMENTS ||
+        !device->Segments[request.SegmentId].Allocated ||
+        !EnsureExecuteBuffers(base, device)) {
+        COMMIT_FAIL(base, 81UL);
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    slot = &device->Segments[request.SegmentId];
+    trusted = device->ExecuteTrusted;
+    generated = device->ExecuteGenerated;
+    emitter = device->ExecuteEmitter;
+
+    base->CommitFailStage = 0;
+    phase = ServiceExecMicros(base);
+    ExecCopyRecords(trusted, request.Header, request.HeaderDwords);
+    draws = (struct Radeon3DStateBatchDraw *)(trusted +
+                                              request.HeaderDwords);
+    for (index = 0; index < request.DrawCount; ++index)
+        draws[index] = request.Draws[index];
+    base->ExecCopyMicros += ServiceExecMicros(base) - phase;
+
+    if (trusted[0] != request.Primitive ||
+        trusted[1] != request.HeaderDwords) {
+        COMMIT_FAIL(base, 82UL);
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    for (index = 0; index < request.DrawCount; ++index) {
+        if ((draws[index].OffsetBytes & 3UL) ||
+            draws[index].OffsetBytes >= slot->Bytes ||
+            !draws[index].VertexCount ||
+            slot->GpuAddress > ~0UL - draws[index].OffsetBytes) {
+            COMMIT_FAIL(base, 83UL);
+            UnlockServiceBoard(base, bi, device);
+            return FALSE;
+        }
+    }
+
+    emitter->Words = generated;
+    emitter->Count = 0;
+    emitter->StateValid = FALSE;
+    emitter->State.TextureState = 0;
+    emitter->State.Texture1State = 0;
+    emitter->GuardClipEmitted = FALSE;
+    emitter->MatrixValid = FALSE;
+    emitter->TexGenMatrixValid[0] = FALSE;
+    emitter->TexGenMatrixValid[1] = FALSE;
+    emitter->ModelViewValid = FALSE;
+    emitter->InvModelViewValid = FALSE;
+    emitter->CommitVbuf = TRUE;
+    emitter->CommitSegmentGpuBase = slot->GpuAddress;
+    emitter->CommitSegmentBytes = slot->Bytes;
+    emitter->CommitVertexOffsets = &draws[0].OffsetBytes;
+    emitter->CommitDrawIndex = 0;
+
+    /* The first descriptor drives the normal parser and emits the complete
+     * state. Remaining descriptors draw directly from that validated state. */
+    trusted[10] = draws[0].VertexCount;
+    phase = ServiceExecMicros(base);
+    streamBuilt = EmitExecuteDraw(device, emitter, trusted,
+                                  request.HeaderDwords, primitiveType);
+    for (index = 1; streamBuilt && index < request.DrawCount; ++index)
+        streamBuilt = EmitExecuteVbufDraw(
+            device, emitter, draws[index].OffsetBytes,
+            draws[index].VertexCount, primitiveType);
+    result = streamBuilt;
+    if (result)
+        result = RadeonPrepare3D(bi);
+    base->ExecBuildMicros += ServiceExecMicros(base) - phase;
+    emitter->CommitVbuf = FALSE;
+    if (!result) {
+        if (!streamBuilt && !base->CommitFailStage)
+            COMMIT_FAIL(base, 84UL);
+        else if (streamBuilt)
+            COMMIT_FAIL(base, 85UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | (9UL << 16) |
+                        (base->CommitFailStage & 0xffffUL);
+        (void)RadeonRecoverAcceleration(bi);
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+
+    phase = ServiceExecMicros(base);
+    result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
+                                  &internalFence);
+    base->ExecSubmitMicros += ServiceExecMicros(base) - phase;
+    if (result) {
+        device->LastFence = internalFence;
+        RadeonMark3DSubmitted(bi);
+        if ((request.Flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
+            *fenceOut = internalFence;
+    } else {
+        COMMIT_FAIL(base, 86UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | (10UL << 16) |
+                        (emitter->Count & 0xffffUL);
+        (void)RadeonRecoverAcceleration(bi);
+    }
+    base->ExecCalls++;
+    base->ExecRecordDwords += stagedDwords;
+    base->ExecGeneratedDwords += emitter->Count;
     UnlockServiceBoard(base, bi, device);
     return result;
 }
