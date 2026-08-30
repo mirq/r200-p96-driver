@@ -384,6 +384,19 @@ static BOOL SynchronizeEngine(struct BoardInfo *bi)
 
 BOOL RadeonPrepare3D(struct BoardInfo *bi)
 {
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    /* CP->CP: the ring orders this submission behind the previous one, so
+     * draining to idle and restoring the 2D baseline between back-to-back
+     * 3D submits only serializes the pipeline. Ring-space back-pressure
+     * stays in CpReserve(), fence waits read SCRATCH_REG0 directly, and the
+     * next Picasso96 operation still drains and restores through
+     * Need2DRestore via PrepareMmioEngine(). Only a healthy CP-pending
+     * engine takes the fast path; anything degraded keeps the full
+     * synchronize/recover behaviour. */
+    if (data && data->AccelState == RADEON_ACCEL_READY &&
+        data->AccelPending == RADEON_PENDING_CP)
+        return TRUE;
     return SynchronizeEngine(bi);
 }
 

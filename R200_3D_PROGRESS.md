@@ -705,3 +705,25 @@ R3DINFO interface_version=12 caps=000ff7ff
 R3DSPHEREMAP samples=5ac3e7ff,5ac3e7ff,5ac3e7ff,5ac3e7ff,5ac3e7ff expected=5ac3e7ff
 R3DFORMATS status=ok result=0 sphere=ok legacy_v11_sphere=rejected
 ```
+
+## Phase 2 Validated Streams (2026-08-30): implemented, measured, rejected
+
+Interface 17 (validated client CP streams, PPC-side emission) was implemented
+and physically validated for correctness on the 68060/RV280 target — native
+validator suite, cross-CPU emitter proofs, 1350 submitted streams with zero
+rejects, and every native MiniGL suite passing. The performance gate failed:
+800x600x32 windowed envmap gears reached 46.8 FPS median against the accepted
+interface-16 state-batch median of 52.456. Per-stage counters attributed the
+cost to the per-submit `RadeonCpWait` drain (4.2 ms/frame), the 2.5 us/dword
+validator walk (2.7 ms/frame), and the trusted copy (1.9 ms/frame).
+
+A CP-to-CP prepare skip in `RadeonPrepare3D` (skip drain+restore when the
+engine is READY and pending work is already CP) recovered +3.9% on the stream
+configuration and is semantically correct: the ring orders consecutive 3D
+submissions, `CpReserve()` provides back-pressure, and the next Picasso96
+operation still drains through `Need2DRestore`. All native suites pass with
+the skip. On the accepted interface-16 baseline it measured neutral
+(51.540 vs 51.690 FPS single cold-boot runs) because the per-frame present
+blit already forces the drain. The skip is retained on the mainline; the full
+Phase 2 implementation is preserved on the `phase2-cp-stream` branch
+(commit `32afdf1`, includes the V5 stage counters and measurement records).
