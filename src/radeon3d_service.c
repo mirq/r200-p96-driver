@@ -369,6 +369,8 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
         info->Caps |= RADEON3D_CAP_COMMIT_STATE_REUSE;
     if (interfaceVersion >= 15UL)
         info->Caps |= RADEON3D_CAP_COMMIT_STATE_BATCH;
+    if (interfaceVersion >= 16UL)
+        info->Caps |= RADEON3D_CAP_ORDERED_COMMITS;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;

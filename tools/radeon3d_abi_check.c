@@ -73,13 +73,15 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-           RADEON3D_IFACE_VERSION == 15UL);
+            RADEON3D_IFACE_VERSION == 16UL);
 ABI_CHECK(Radeon3DStreamSegmentCapability,
            RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
 ABI_CHECK(Radeon3DCommitStateReuseCapability,
            RADEON3D_CAP_COMMIT_STATE_REUSE == (1UL << 22));
 ABI_CHECK(Radeon3DCommitStateBatchCapability,
-          RADEON3D_CAP_COMMIT_STATE_BATCH == (1UL << 23));
+           RADEON3D_CAP_COMMIT_STATE_BATCH == (1UL << 23));
+ABI_CHECK(Radeon3DOrderedCommitsCapability,
+           RADEON3D_CAP_ORDERED_COMMITS == (1UL << 24));
 ABI_CHECK(Radeon3DSegmentStructSize,
           sizeof(struct Radeon3DSegment) == RADEON3D_SEGMENT_V1_SIZE);
 ABI_CHECK(Radeon3DCommitStructSize,

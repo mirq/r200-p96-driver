@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   15UL
+#define RADEON3D_IFACE_VERSION   16UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -31,6 +31,9 @@
 #define RADEON3D_CAP_STREAM_SEGMENTS        (1UL << 21)
 #define RADEON3D_CAP_COMMIT_STATE_REUSE     (1UL << 22)
 #define RADEON3D_CAP_COMMIT_STATE_BATCH     (1UL << 23)
+/* Commit streams enter one CP FIFO in call order. Waiting on the most recent
+ * fence retires all earlier commits; only that latest fence is waitable. */
+#define RADEON3D_CAP_ORDERED_COMMITS        (1UL << 24)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL

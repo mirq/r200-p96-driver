@@ -177,9 +177,11 @@ int main(void)
            (unsigned long)info.Generation,
            (unsigned long)info.CommitFailStage);
     if ((info.Caps & (RADEON3D_CAP_STREAM_SEGMENTS |
-                      RADEON3D_CAP_COMMIT_STATE_BATCH)) !=
+                       RADEON3D_CAP_COMMIT_STATE_BATCH |
+                       RADEON3D_CAP_ORDERED_COMMITS)) !=
         (RADEON3D_CAP_STREAM_SEGMENTS |
-         RADEON3D_CAP_COMMIT_STATE_BATCH)) {
+         RADEON3D_CAP_COMMIT_STATE_BATCH |
+         RADEON3D_CAP_ORDERED_COMMITS)) {
         result = Fail("capabilities");
         goto out;
     }
