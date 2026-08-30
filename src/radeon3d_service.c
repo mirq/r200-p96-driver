@@ -369,8 +369,11 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
         info->Caps |= RADEON3D_CAP_COMMIT_STATE_REUSE;
     if (interfaceVersion >= 15UL)
         info->Caps |= RADEON3D_CAP_COMMIT_STATE_BATCH;
-    if (interfaceVersion >= 16UL)
-        info->Caps |= RADEON3D_CAP_ORDERED_COMMITS;
+    /* Ordered commits measured 52.4-53.0 fps against 55.5 with
+     * drain-before-submit on reboot-isolated 800x600x32 windowed gears
+     * (2026-08-30): the retired-tracking handshake costs more than the
+     * intermediate drains it removes at this batch size. The machinery
+     * stays; re-advertise the cap to re-enable it. */
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
