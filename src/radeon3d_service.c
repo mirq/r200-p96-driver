@@ -367,12 +367,18 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
         info->Caps |= RADEON3D_CAP_STREAM_SEGMENTS;
     if (interfaceVersion >= 14UL)
         info->Caps |= RADEON3D_CAP_COMMIT_STATE_REUSE;
-    /* State batches measured 47.8 fps against 55.5 on reboot-isolated
-     * 800x600x32 windowed gears (2026-08-30): the client emits ~3.5
-     * batches/frame (one per state group), each re-emitting a full TCL
-     * header, versus ~1.5 commits/frame for the record-chain shape.
-     * Ordered commits additionally measured 52.4-53.0. Both machineries
-     * stay; re-advertise the caps when the client groups state. */
+    /* 2026-08-30 reboot-isolated 800x600x32 windowed gears ladder (300
+     * frames each): state batches + ordered commits 52.456 median,
+     * state batches + drain-before-submit 47.845, inline fallback
+     * 39.621. The state-batch shape submits ~3.5 batches/frame, each
+     * re-emitting a full TCL header; the next win is client-side state
+     * grouping, not driver shapes. The 55.5 figure from the async-present
+     * entry used a client-side commit-chain shape that no longer exists
+     * in the reconciled client. */
+    if (interfaceVersion >= 15UL)
+        info->Caps |= RADEON3D_CAP_COMMIT_STATE_BATCH;
+    if (interfaceVersion >= 16UL)
+        info->Caps |= RADEON3D_CAP_ORDERED_COMMITS;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
