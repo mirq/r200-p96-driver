@@ -995,10 +995,9 @@ BOOL Radeon3DExecute(
     struct BoardInfo *bi;
     struct ExecBase *SysBase = base ? base->ExecBase : NULL;
     struct Radeon3DEmitter *emitter;
-    ULONG *trusted;
     ULONG *generated;
     ULONG internalFence = 0;
-    ULONG copyStart, buildStart, submitStart;
+    ULONG buildStart, submitStart;
     BOOL result = FALSE;
 
     if (fenceOut)
@@ -1018,20 +1017,15 @@ BOOL Radeon3DExecute(
         UnlockServiceBoard(base, bi, device);
         return FALSE;
     }
-    trusted = device->ExecuteTrusted;
     generated = device->ExecuteGenerated;
     emitter = device->ExecuteEmitter;
-    if (!trusted || !generated || !emitter) {
+    if (!generated || !emitter) {
         UnlockServiceBoard(base, bi, device);
         return FALSE;
     }
-    copyStart = RDEBUG_PHASE_BEGIN();
-    {
-        ULONG phase = ServiceExecMicros(base);
-        ExecCopyRecords(trusted, records, recordDwords);
-        base->ExecCopyMicros += ServiceExecMicros(base) - phase;
-    }
-    RDEBUG_EXECUTE_PHASE(RADEON_DEBUG_EXEC_COPY, copyStart);
+    /* The emitter validates and consumes the record chain in a single pass
+     * from const memory, and the calling task is blocked for the duration,
+     * so it reads the client's buffer directly -- no trusted snapshot. */
     emitter->Words = generated;
     emitter->Count = 0;
     emitter->StateValid = FALSE;
@@ -1049,7 +1043,7 @@ BOOL Radeon3DExecute(
     buildStart = RDEBUG_PHASE_BEGIN();
     {
         ULONG phase = ServiceExecMicros(base);
-        result = Radeon3DEmitStream(emitter, trusted, recordDwords);
+        result = Radeon3DEmitStream(emitter, records, recordDwords);
         if (result)
             result = RadeonPrepare3D(bi);
         base->ExecBuildMicros += ServiceExecMicros(base) - phase;
@@ -1195,7 +1189,6 @@ static BOOL CommitRecords(
     struct ExecBase *SysBase = bi->ExecBase;
     struct RadeonChipBase *base = device->Base;
     struct Radeon3DEmitter *emitter;
-    ULONG *trusted;
     ULONG *generated;
     ULONG internalFence = 0;
     ULONG index;
@@ -1263,13 +1256,11 @@ static BOOL CommitRecords(
             *fenceOut = 0x80000000UL | 5UL;
         return FALSE;
     }
-    trusted = device->ExecuteTrusted;
     generated = device->ExecuteGenerated;
     emitter = device->ExecuteEmitter;
     base->CommitFailStage = 0;
-    phase = ServiceExecMicros(base);
-    ExecCopyRecords(trusted, records, recordDwords);
-    base->ExecCopyMicros += ServiceExecMicros(base) - phase;
+    /* Records were structurally walked above and the emitter re-validates as
+     * it consumes; both read the caller's buffer directly. */
     emitter->Words = generated;
     emitter->Count = 0;
     emitter->StateValid = FALSE;
@@ -1287,7 +1278,7 @@ static BOOL CommitRecords(
     emitter->CommitVertexOffsets = vertexOffsets;
     emitter->CommitDrawIndex = 0;
     phase = ServiceExecMicros(base);
-    streamBuilt = Radeon3DEmitStream(emitter, trusted, recordDwords);
+    streamBuilt = Radeon3DEmitStream(emitter, records, recordDwords);
     result = streamBuilt;
     if (result)
         result = RadeonPrepare3D(bi);
