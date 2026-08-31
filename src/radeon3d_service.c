@@ -44,7 +44,6 @@ static LONG FirstCommitDumpPending = 1;
 
 #define RADEON3D_SESSION_MAGIC 0x52334453UL
 
-struct Radeon3DEmitter;
 
 struct Radeon3DSegmentSlot {
     APTR CpuAddress;
@@ -147,13 +146,21 @@ static void RemoveServiceDevice(struct Radeon3DDevice *device)
 }
 
 /*
- * Execute-phase attribution clock. Independent of radeon_debug.c's shared
- * TimerBase so release builds (where the debug timer never opens) still
- * measure; UNIT_VBLANK TR_GETSYSTIME costs one short DoIO per phase
- * boundary, which is noise against the multi-millisecond phases being
- * attributed. Unsigned delta arithmetic absorbs the 2^32 microsecond
- * timeval wrap because real intervals are orders of magnitude shorter.
+ * Execute-phase attribution clock, DEBUG builds only. Independent of
+ * radeon_debug.c's shared TimerBase. Unsigned delta arithmetic absorbs the
+ * 2^32 microsecond timeval wrap because real intervals are far shorter.
+ *
+ * This used to run in release too, on the argument that a TR_GETSYSTIME
+ * DoIO is noise against the phases being attributed. That was written when
+ * a phase still contained the 8192-dword trusted-record copy. The copy is
+ * gone and the emitter no longer clears or copies a full capture per
+ * record, so the phases are short enough that four DoIOs per Execute (six
+ * per CommitStateBatch) are a measurable share of what they claim to
+ * measure. ExecCalls/ExecRecordDwords/ExecGeneratedDwords are plain adds
+ * and stay live in every build; only the *Micros fields read back zero.
+ * Build DEBUG=1 to attribute phase timings.
  */
+#ifdef DEBUG
 static void EnsureExecTimer(struct RadeonChipBase *base)
 {
     struct ExecBase *SysBase = base->ExecBase;
@@ -191,6 +198,42 @@ static ULONG ServiceExecMicros(struct RadeonChipBase *base)
     DoIO((struct IORequest *)io);
     return io->tr_time.tv_secs * 1000000UL + io->tr_time.tv_micro;
 }
+
+void Radeon3DFreeExecTimer(struct RadeonChipBase *base)
+{
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    struct timerequest *io;
+
+    if (!SysBase)
+        return;
+    io = (struct timerequest *)base->ExecTimerIO;
+    if (io) {
+        CloseDevice((struct IORequest *)io);
+        DeleteIORequest((struct IORequest *)io);
+        base->ExecTimerIO = NULL;
+    }
+    if (base->ExecTimerPort) {
+        DeleteMsgPort((struct MsgPort *)base->ExecTimerPort);
+        base->ExecTimerPort = NULL;
+    }
+}
+#else
+static void EnsureExecTimer(struct RadeonChipBase *base)
+{
+    (void)base;
+}
+
+static ULONG ServiceExecMicros(struct RadeonChipBase *base)
+{
+    (void)base;
+    return 0UL;
+}
+
+void Radeon3DFreeExecTimer(struct RadeonChipBase *base)
+{
+    (void)base;
+}
+#endif
 
 /* Trusted-record copy: both sides are cached memory, so the cost is pure
  * instruction count. Eight values held in registers per iteration give the
@@ -267,9 +310,16 @@ static void RemoveSurfaceHandle(struct Radeon3DSurfaceHandle *surface)
     surface->Node.mln_Pred = NULL;
 }
 
-/* Defined with the emitter, whose size is not known here. */
 static void FreeExecuteEmitter(struct RadeonChipBase *base,
-                               struct Radeon3DDevice *device);
+                               struct Radeon3DDevice *device)
+{
+    struct ExecBase *SysBase = base->ExecBase;
+
+    if (!device->ExecuteEmitter)
+        return;
+    FreeMem(device->ExecuteEmitter, sizeof(*device->ExecuteEmitter));
+    device->ExecuteEmitter = NULL;
+}
 
 static void FreeDeviceSegments(struct RadeonChipBase *base,
                                struct BoardInfo *bi,
@@ -384,9 +434,12 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     info->InstalledVram = data ? data->InstalledVram : 0;
     info->Picasso96Vram = bi ? bi->MemorySize : 0;
     info->MaxBatchDwords = RADEON3D_MAX_BATCH_DWORDS;
+    /* Size-gated tails: a caller passing a smaller buffer must not see
+     * anything beyond it touched, and Size reports back the largest tier
+     * actually filled. Each tier only raises Size, so a caller sitting
+     * between two tiers keeps the lower one -- V2 used to be clobbered
+     * back to V1 by an else on the V3 test. */
     if (requestedSize >= RADEON3D_INFO_V2_SIZE) {
-        /* Size-gated V2 tail: older callers pass a V1-sized buffer and
-         * must not see anything beyond it touched. */
         info->ExecCalls = base->ExecCalls;
         info->ExecRecordDwords = base->ExecRecordDwords;
         info->ExecGeneratedDwords = base->ExecGeneratedDwords;
@@ -398,8 +451,6 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     if (requestedSize >= RADEON3D_INFO_V3_SIZE) {
         info->CommitFailStage = base->CommitFailStage;
         info->Size = RADEON3D_INFO_V3_SIZE;
-    } else {
-        info->Size = RADEON3D_INFO_V1_SIZE;
     }
 }
 
@@ -670,37 +721,17 @@ static BOOL ValidateBatch(struct Radeon3DDevice *device,
     if (!commands || !commandCount ||
         commandCount > RADEON3D_MAX_BATCH_DWORDS)
         return FALSE;
+    /* Skip leading PACKET2 fill dwords, then the remainder must pass the
+     * immediate-triangle-list exact match. The fill skip is not optional:
+     * ValidateTriangleBatch anchors on a PACKET0 header at index 0, so a
+     * fill-prefixed mixed batch must be rejected here rather than waved
+     * through to the CP. An all-fill batch is the idle submission. */
     for (index = 0; index < commandCount; ++index) {
         if (commands[index] != 0x80000000UL)
             return ValidateTriangleBatch(device, commands, commandCount);
     }
     return TRUE;
 }
-
-
-static void FreeExecuteEmitter(struct RadeonChipBase *base,
-                               struct Radeon3DDevice *device)
-{
-    struct ExecBase *SysBase = base->ExecBase;
-
-    if (!device->ExecuteEmitter)
-        return;
-    FreeMem(device->ExecuteEmitter, sizeof(*device->ExecuteEmitter));
-    device->ExecuteEmitter = NULL;
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 void Radeon3DAdvanceGeneration(struct RadeonChipBase *base)
@@ -950,9 +981,6 @@ static BOOL EnsureExecuteBuffers(struct RadeonChipBase *base,
 {
     struct ExecBase *SysBase = base->ExecBase;
 
-    if (!device->ExecuteTrusted)
-        device->ExecuteTrusted = AllocMem(
-            RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
     if (!device->ExecuteGenerated)
         device->ExecuteGenerated = AllocMem(
             RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
@@ -961,19 +989,13 @@ static BOOL EnsureExecuteBuffers(struct RadeonChipBase *base,
     if (!device->ExecuteEmitter)
         device->ExecuteEmitter = AllocMem(
             sizeof(*device->ExecuteEmitter), MEMF_PUBLIC);
-    if (device->ExecuteTrusted && device->ExecuteGenerated &&
-        device->ExecuteEmitter) {
+    if (device->ExecuteGenerated && device->ExecuteEmitter) {
         device->ExecuteEmitter->Resolve = Radeon3DEmitResolveSurface;
         device->ExecuteEmitter->ResolveUser = device;
         device->ExecuteEmitter->InterfaceVersion =
             device->InterfaceVersion;
         device->ExecuteEmitter->FailStage = 0;
         return TRUE;
-    }
-    if (device->ExecuteTrusted) {
-        FreeMem(device->ExecuteTrusted,
-                RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
-        device->ExecuteTrusted = NULL;
     }
     if (device->ExecuteGenerated) {
         FreeMem(device->ExecuteGenerated,
@@ -982,6 +1004,24 @@ static BOOL EnsureExecuteBuffers(struct RadeonChipBase *base,
     }
     FreeExecuteEmitter(base, device);
     return FALSE;
+}
+
+/* Records reach the emitter straight out of the caller's buffer, so the
+ * only path still needing a driver-side staging copy is CommitStateBatch:
+ * it rewrites dword 10 of the header and re-reads the header and the draw
+ * descriptors after validating them. Allocated on that path's first use so
+ * a session that never issues a state batch does not carry 32 KiB, and so
+ * Execute/CommitDraw/CommitBatch no longer fail on an allocation they have
+ * no use for. */
+static BOOL EnsureStateBatchBuffer(struct RadeonChipBase *base,
+                                   struct Radeon3DDevice *device)
+{
+    struct ExecBase *SysBase = base->ExecBase;
+
+    if (!device->ExecuteTrusted)
+        device->ExecuteTrusted = AllocMem(
+            RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
+    return device->ExecuteTrusted != NULL;
 }
 
 BOOL Radeon3DExecute(
@@ -1028,9 +1068,9 @@ BOOL Radeon3DExecute(
      * so it reads the client's buffer directly -- no trusted snapshot. */
     emitter->Words = generated;
     emitter->Count = 0;
-    emitter->StateValid = FALSE;
-    emitter->State.TextureState = 0;
-    emitter->State.Texture1State = 0;
+    Radeon3DEmitResetCaptures(emitter);
+    emitter->Live->TextureState = 0;
+    emitter->Live->Texture1State = 0;
     emitter->GuardClipEmitted = FALSE;
     emitter->MatrixValid = FALSE;
     emitter->TexGenMatrixValid[0] = FALSE;
@@ -1225,8 +1265,12 @@ static BOOL CommitRecords(
         ULONG opcode;
         ULONG length;
 
-        if (walk + 2UL > recordDwords)
+        if (walk + 2UL > recordDwords) {
+            COMMIT_FAIL(base, 3UL);
+            if (fenceOut)
+                *fenceOut = 0x80000000UL | 3UL;
             return FALSE;
+        }
         opcode = records[walk];
         length = records[walk + 1UL];
         if (length < 2UL || length > recordDwords - walk) {
@@ -1263,9 +1307,9 @@ static BOOL CommitRecords(
      * it consumes; both read the caller's buffer directly. */
     emitter->Words = generated;
     emitter->Count = 0;
-    emitter->StateValid = FALSE;
-    emitter->State.TextureState = 0;
-    emitter->State.Texture1State = 0;
+    Radeon3DEmitResetCaptures(emitter);
+    emitter->Live->TextureState = 0;
+    emitter->Live->Texture1State = 0;
     emitter->GuardClipEmitted = FALSE;
     emitter->MatrixValid = FALSE;
     emitter->TexGenMatrixValid[0] = FALSE;
@@ -1486,7 +1530,8 @@ BOOL Radeon3DCommitStateBatch(
         request.Generation != base->ServiceGeneration ||
         request.SegmentId >= RADEON3D_MAX_SEGMENTS ||
         !device->Segments[request.SegmentId].Allocated ||
-        !EnsureExecuteBuffers(base, device)) {
+        !EnsureExecuteBuffers(base, device) ||
+        !EnsureStateBatchBuffer(base, device)) {
         COMMIT_FAIL(base, 81UL);
         UnlockServiceBoard(base, bi, device);
         return FALSE;
@@ -1524,9 +1569,9 @@ BOOL Radeon3DCommitStateBatch(
 
     emitter->Words = generated;
     emitter->Count = 0;
-    emitter->StateValid = FALSE;
-    emitter->State.TextureState = 0;
-    emitter->State.Texture1State = 0;
+    Radeon3DEmitResetCaptures(emitter);
+    emitter->Live->TextureState = 0;
+    emitter->Live->Texture1State = 0;
     emitter->GuardClipEmitted = FALSE;
     emitter->MatrixValid = FALSE;
     emitter->TexGenMatrixValid[0] = FALSE;

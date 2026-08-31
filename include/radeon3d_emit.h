@@ -55,10 +55,6 @@ static inline BOOL ValidScreenCoordinate(ULONG bits, ULONG limit)
 #define RADEON3D_EXEC_SUPPRESS_COLOR_WRITE 0x80000000UL
 
 #include "../src/radeon_regs.h"
-/* Record option flag defined alongside the service ABI constants. */
-#define RADEON3D_EXEC_SUPPRESS_COLOR_WRITE 0x80000000UL
-
-#include "../src/radeon_regs.h"
 
 struct Radeon3DEmitSurface {
     APTR CpuAddress;
@@ -69,6 +65,29 @@ struct Radeon3DEmitSurface {
     ULONG Format;
 };
 
+/*
+ * Field order is load-bearing. A capture is ~1.6 KB and the emitter builds
+ * one per record, which is far too much to zero in full for a draw that uses
+ * none of the optional blocks. Captures are never copied -- Live and Build
+ * swap -- so a buffer handed to a builder still holds the record before last,
+ * and only the first zone is cleared:
+ *
+ *   [start, GlobalAmbient)      zeroed per record -- rounded up to the next
+ *                               dword boundary, which on the m68k ABI
+ *                               slightly overlaps GlobalAmbient[0];
+ *                               always compared
+ *   [GlobalAmbient, ModelProjection)  read only while Lighting is set, and
+ *                               per light only when that light's enable bit
+ *                               is set in the freshly written LightControl
+ *   [ModelProjection, end)      matrices; read only while the matching flag
+ *                               (HardwareTcl, TexGen, NormalVertex) is set
+ *
+ * The rule that makes the stale tail safe: a builder that sets one of those
+ * flags must write that block in full. Both zones are conditioned on flags
+ * living in the cleared first zone, so nothing reads a value it did not
+ * write. Moving a member between zones changes that contract; keep the zone
+ * comments below in step with any addition.
+ */
 struct Radeon3DEmitState {
     struct Radeon3DEmitSurface Color;
     BOOL ColorValid;
@@ -100,21 +119,26 @@ struct Radeon3DEmitState {
     ULONG Texture1Bytes;
     ULONG VertexState;
     ULONG FogColor;
-    ULONG ModelProjection[16];
     ULONG Viewport[6];
     ULONG TransformFlags;
     BOOL TexGen;
     ULONG TexGenState[2];
-    ULONG TexGenMatrix[2][16];
     BOOL NormalVertex;
     BOOL Lighting;
     ULONG LightControl;
-    ULONG ModelView[16];
-    ULONG InvModelView[16];
+    /* --- lighting zone: meaningful only while Lighting is set --- */
     ULONG GlobalAmbient[4];
     ULONG EyeVector[4];
     ULONG Material[17];
     ULONG Lights[8][31];
+    /* --- matrix zone: never read back from the live capture. Each block is
+     *     written in full by the record that sets HardwareTcl / TexGen /
+     *     NormalVertex, and EmitExecuteStateCached diffs it against its own
+     *     shadows, so SameExecuteState skips it entirely. --- */
+    ULONG ModelProjection[16];
+    ULONG TexGenMatrix[2][16];
+    ULONG ModelView[16];
+    ULONG InvModelView[16];
 };
 
 /* Resolve a raw handle dword from a record into *slot and return slot, or
@@ -131,7 +155,14 @@ struct Radeon3DEmitter {
     void *ResolveUser;
     ULONG ResolveSlot;
     struct Radeon3DEmitSurface Surfaces[4];
-    struct Radeon3DEmitState State;
+    /* Two captures alternating roles. Build receives the record currently
+     * being parsed; Live is what was last emitted to the card. A state
+     * change swaps the two pointers, so carrying a capture forward costs a
+     * pointer exchange rather than a ~1.6 KB structure copy. Both are set
+     * by the caller before the first record of a submission. */
+    struct Radeon3DEmitState Captures[2];
+    struct Radeon3DEmitState *Live;
+    struct Radeon3DEmitState *Build;
     BOOL StateValid;
     /* The MVP matrix and guard-clip scalars are tracked separately from the
      * register block so a matrix-only change between records re-emits ~21
@@ -154,10 +185,16 @@ struct Radeon3DEmitter {
     const ULONG *CommitVertexOffsets;
     ULONG CommitDrawIndex;
     ULONG CommitVbufAddress;
-    /* Per-record scratch for the clear and draw builders. The two builders
-     * never nest. */
-    struct Radeon3DEmitState Scratch;
 };
+
+/* Point Live/Build at the emitter's two captures. Call once per submission,
+ * before the first record; the roles alternate from there. */
+static inline void Radeon3DEmitResetCaptures(struct Radeon3DEmitter *emitter)
+{
+    emitter->Live = &emitter->Captures[0];
+    emitter->Build = &emitter->Captures[1];
+    emitter->StateValid = FALSE;
+}
 
 BOOL Radeon3DEmitStream(struct Radeon3DEmitter *emitter,
                         const ULONG *records, ULONG recordDwords);

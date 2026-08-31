@@ -187,6 +187,9 @@ static APTR LibExpunge(__REGA6(struct RadeonChipBase *base))
 
     (void)RadeonReleaseBoard(base, NULL, FALSE);
     Radeon3DFreeRetiredDevices(base);
+    /* The phase timer outlives every session, so it can only be released
+     * here -- before the base it hangs off is freed. */
+    Radeon3DFreeExecTimer(base);
     if (base->PrometheusBase) {
         CloseLibrary(base->PrometheusBase);
         base->PrometheusBase = NULL;

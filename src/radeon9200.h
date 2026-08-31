@@ -143,6 +143,9 @@ void Radeon3DAdvanceGeneration(struct RadeonChipBase *base);
 void Radeon3DInvalidateService(struct BoardInfo *bi);
 BOOL Radeon3DRearmService(struct BoardInfo *bi);
 void Radeon3DFreeRetiredDevices(struct RadeonChipBase *base);
+/* Closes the DEBUG phase-attribution timer. No-op in release builds, where
+ * the timer is never opened. */
+void Radeon3DFreeExecTimer(struct RadeonChipBase *base);
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg);
 BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value);
