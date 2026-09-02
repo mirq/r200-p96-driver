@@ -1,20 +1,18 @@
-# Radeon9200 Prometheus integration 0.30
+# Radeon9200 Prometheus integration 0.31
 
-Release 0.30 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
-The chip reports `$VER: Radeon9200.chip 3.0 (27.8.2026)` and exposes Radeon3D
-interface 13.
+Release 0.31 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
+The chip reports `$VER: Radeon9200.chip 3.0 (2.9.2026)` and exposes Radeon3D
+interface 17.
 
 ## Highlights
 
-- Adds the hardware-TCL semantic path, including fixed-function lighting,
-  normals, object-linear texgen, and sphere-map texgen.
-- Adds interface-13 client-written VRAM streaming segments and batched commits,
-  avoiding the CPU copy from client records into driver staging memory.
-- Compacts untextured and single-texture TCL vertex records and uses burst
-  stores for command-processor ring submission.
-- Fixes fog output on RV280, flat-shaded TCL primitives, texture-update
-  ordering, compact-record stride handling, and depth targets padded for R200
-  tile-pitch alignment.
+- Adds interface-17 auxiliary render-surface allocation from driver-owned VRAM,
+  preventing depth buffers from overlapping Picasso96 screen buffers.
+- Adds release-safe per-submission EClock telemetry and capture/plot tooling.
+- Adds the pre-serialized Radeon3D replay benchmark for isolating driver and
+  command-processor throughput.
+- Preserves immutable record-chain emission, ordered commits, state batching,
+  and client-written VRAM streaming segments.
 - Retains bounded surface validation, session generation checks, submission
   fences, recovery, and failure attribution for rejected semantic commits.
 - Keeps Picasso96 display, cursor, 2D acceleration, VGA, and validated

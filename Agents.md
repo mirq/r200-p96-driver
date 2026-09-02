@@ -5,12 +5,33 @@
 The reference target is a physical 68060 Amiga, not an emulator. Do not use
 emulator reset, pause, state, or lifecycle commands. The primary AmigaBridge
 endpoint is `192.168.1.21:2345`; the old `192.168.100.*` endpoints are no
-longer accessible. A cold reboot takes about 100 seconds before the bridge is
-available.
+longer accessible. Always connect with that explicit host and port; localhost
+defaults fail. A cold reboot normally takes 80--100 seconds. Poll the bridge
+with `/home/mirek/minigl_ppc/tools/wait_bridge.sh` rather than sleeping for a
+fixed interval, then reconnect explicitly.
 
 Run AmigaBridge transfers and filesystem copies sequentially. Concurrent copy
 requests can use or report the wrong destination. Keep a native display or
 serial recovery path available for hardware tests.
+
+`InitPPC` must run once per boot before launching any WarpOS/PPC client
+(minigl_ppc host or bench). Without it the launch hangs silently: the process
+ignores `Break`, holds its redirect log open, and every later PPC load fails
+with `Unknown command`. Check `Status` for leftover processes before
+diagnosing anything else after a boot, and recover from a wedged launch with
+a reboot, not another `InitPPC`.
+
+Use deployment names of at most 16 characters and verify the deployed CRC32
+before running. Longer names can alias after Amiga filesystem truncation and
+silently overwrite another test variant.
+
+This machine cannot be recovered through emulator controls. After a grey
+screen, guru, or hard GPU hang, require an operator cold power cycle: a warm
+reboot does not reliably reset the Radeon and can leave windowed presentation
+broken while simpler tests still pass. Prefer each client's normal quit path.
+Do not break a running fullscreen GL client and immediately launch another;
+in-flight CP work can wedge the machine. After an interrupted GL client, run a
+small bootstrap/service probe before a heavier workload.
 
 Switch both monitor ToolTypes before a cold reboot:
 
@@ -27,6 +48,10 @@ Changing only `BOARDTYPE` can leave Workbench on the native fallback screen.
   address translation, interrupt registration, and the shared DMA arena.
 - `Radeon9200.chip` owns RV280 initialization, display, cursor, 2D callbacks,
   and the Radeon3D service. It must not enumerate independently.
+- After the validated Prometheus handoff, `Radeon9200.chip` is the sole owner
+  of Radeon MMIO, CP submission/reset, and private VRAM. MiniGL and other 3D
+  clients must use the bounded semantic Radeon3D service and must never touch
+  PCI, MMIO, the CP ring, or VRAM allocation directly.
 - Prometheus passes its handoff in `BoardInfo.CardData`; Radeon per-board state
   belongs in `BoardInfo.ChipData`. Library bases contain only library-lifetime
   state.
@@ -72,9 +97,12 @@ acceleration resumes. Failed recovery must not permit unsafe VRAM rendering.
 
 The Radeon3D API is an active bounded service, not a future raw-register path.
 Do not expose unrestricted packets or client-controlled register writes. Follow
-[`RADEON3D_SUBMISSION.md`](RADEON3D_SUBMISSION.md) and the authoritative MiniGL
-roadmap at `/home/mirek/r200_minigl/MINIGL_R200_PLAN.md` before changing the ABI.
-Results are tracked in [`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
+[`RADEON3D_SUBMISSION.md`](RADEON3D_SUBMISSION.md) and reconcile changes with
+MiniGL's vendored consumer headers under
+`/home/mirek/minigl_ppc/third_party/radeon3d/include/` before changing the ABI.
+The current driver is version 3.0 and exposes Radeon3D interface 17; do not copy
+older interface numbers from consumer-side notes. Results are tracked in
+[`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
 
 Check any planned fixed-function behaviour against the Mesa implementation
 before writing it, and again before trusting a probe's expected values. Mesa
@@ -97,10 +125,21 @@ algorithms. Do not inspect or copy
 `/home/mirek/warp3d-r9200/Prometheus/PrometheusCard`. Retain applicable notices
 when adapting third-party material.
 
-Build with `make` using `/opt/amiga/bin/m68k-amigaos-gcc`. Keep
+This is a cross-compile-only project; the host cannot run the Amiga outputs.
+Build with `make` using `/opt/amiga/bin/m68k-amigaos-gcc`. Do not substitute a
+Docker toolchain or a different GCC major version for performance comparisons,
+because changed code generation invalidates binary and hardware baselines. Keep
 `src/startup.c` and `src/library.c` first in link order so `_start` and resident
 data remain in the first code hunk. Treat warnings as defects.
 
+Install `Radeon9200.chip` and `Prometheus.card` as a matched pair and cold boot
+before testing the new driver. If a run also installs a new
+`LIBS:minigl.library`, execute `Avail Flush` before launching clients or
+AmigaOS may retain and reopen the old resident library despite a matching disk
+CRC.
+
 A successful build is not hardware validation. Record commit, dirty state,
 artifact hashes, CPU, bridge, board ID/revision, VRAM/ROM, ToolTypes, mode,
-cold/warm state, and exact tests for every physical run.
+cold/warm state, and exact tests for every physical run. For benchmark
+comparisons, change one variable at a time, use three independent runs with the
+required cold-boot protocol, and report the median along with every sample.

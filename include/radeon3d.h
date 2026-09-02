@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   16UL
+#define RADEON3D_IFACE_VERSION   17UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -34,6 +34,8 @@
 /* Commit streams enter one CP FIFO in call order. Waiting on the most recent
  * fence retires all earlier commits; only that latest fence is waitable. */
 #define RADEON3D_CAP_ORDERED_COMMITS        (1UL << 24)
+/* Radeon3DAllocSurface() is available and its pool was reserved. */
+#define RADEON3D_CAP_AUX_SURFACES           (1UL << 25)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
@@ -358,6 +360,34 @@ struct BitMap;
  * Public structures use only fixed-width AmigaOS types and the normal m68k
  * two-byte ABI alignment. Callers set Size before opening or querying.
  */
+
+/* Where a timing sample came from: one sample is written at the end of
+ * every submission call that reached the service, success or failure. */
+#define RADEON3D_SAMPLE_EXECUTE      1UL
+#define RADEON3D_SAMPLE_COMMIT_DRAW  2UL
+#define RADEON3D_SAMPLE_COMMIT_BATCH 3UL
+#define RADEON3D_SAMPLE_STATE_BATCH  4UL
+#define RADEON3D_SAMPLE_SUBMIT       5UL
+
+#define RADEON3D_SAMPLE_RING_SIZE 1024UL
+
+/* One submission timing sample. Tick fields are raw EClock ticks; convert
+ * with EClockHz from the info block. The writer holds the service lock and
+ * clears Seq before changing an entry and stores the new Seq last. Readers
+ * copy an entry only while Seq matches the expected value, then verify Seq
+ * again after the copy. */
+struct Radeon3DSample {
+    ULONG Seq;             /* global sequence number of this sample */
+    ULONG WallTicks;       /* EClock low word at completion */
+    ULONG Type;            /* RADEON3D_SAMPLE_* */
+    ULONG Result;          /* nonzero when the submission succeeded */
+    ULONG RecordDwords;    /* host dwords the call received */
+    ULONG GeneratedDwords; /* CP dwords it produced */
+    ULONG CopyTicks;       /* staging copy (state batches; else 0) */
+    ULONG BuildTicks;      /* validation plus command build */
+    ULONG SubmitTicks;     /* CP ring submit including fence work */
+};
+
 struct Radeon3DInfo {
     ULONG Size;
     ULONG Version;
@@ -381,11 +411,22 @@ struct Radeon3DInfo {
      * none has failed. Stage numbers are internal to the service and only
      * meaningful when read right after a failed commit. */
     ULONG CommitFailStage;
+    /* V4: release-safe per-submission timing ring. SampleRing points at a
+     * driver-owned RADEON3D_SAMPLE_RING_SIZE-entry Radeon3DSample array
+     * written under the service lock; SampleSeq counts the samples written
+     * since the driver loaded. EClockHz is the timer.device EClock rate, so
+     * raw tick fields convert to time as ticks * 1e6 / EClockHz. All four
+     * fields read zero on a driver that never opened its timer. */
+    APTR SampleRing;
+    ULONG SampleRingEntries;
+    ULONG SampleSeq;
+    ULONG EClockHz;
 };
 
 #define RADEON3D_INFO_V1_SIZE 32UL
 #define RADEON3D_INFO_V2_SIZE 56UL
 #define RADEON3D_INFO_V3_SIZE 60UL
+#define RADEON3D_INFO_V4_SIZE 76UL
 
 /* requestedVersion is the newest interface version understood by the caller. */
 
@@ -401,8 +442,8 @@ struct Radeon3DInfo {
  * RADEON3D_SUBMISSION.md for exact record layouts and restrictions.
  */
 
-typedef char Radeon3DInfoV3SizeCheck[
-    sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V3_SIZE ? 1 : -1];
+typedef char Radeon3DInfoV4SizeCheck[
+    sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V4_SIZE ? 1 : -1];
 #ifdef __GNUC__
 typedef char Radeon3DInfoV1PrefixCheck[
     __builtin_offsetof(struct Radeon3DInfo, ExecCalls) ==
@@ -434,5 +475,19 @@ typedef char Radeon3DSurfaceV1SizeCheck[
     sizeof(struct Radeon3DSurface) == RADEON3D_SURFACE_V1_SIZE ? 1 : -1];
 
 /* The caller owns an imported BitMap until Radeon3DReleaseSurface returns. */
+
+/* Service-allocated surfaces (interface 17). Radeon3DAllocSurface() carves
+ * the surface out of private VRAM the driver reserved before Picasso96 saw
+ * the card, so it can never overlap a p96 bitmap or an AllocScreenBuffer()
+ * buffer. That matters for depth: the two allocators do not know about each
+ * other, and depth landing inside a screen buffer scribbles bands across the
+ * displayed frame. The service pads Pitch up to the 128-byte tile alignment
+ * the R200 depth unit needs and reports the padded pixel count in Width, so
+ * Width may exceed the requested width. Release with Radeon3DReleaseSurface(),
+ * which returns the VRAM to the pool; surfaces still held when the device
+ * closes are released with it. */
+#define RADEON3D_AUX_POOL_BYTES     (4UL * 1024UL * 1024UL)
+#define RADEON3D_MAX_AUX_SURFACES   8UL
+#define RADEON3D_AUX_MAX_DIMENSION  4096UL
 
 #endif

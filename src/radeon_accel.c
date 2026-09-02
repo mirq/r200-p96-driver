@@ -1428,9 +1428,18 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
          RadeonMonoProbeResult, RadeonMonoProbeSample);
 #endif
     if (base) {
+        ULONG index;
+
         base->StreamSegmentPool = NULL;
         base->StreamSegmentGpuBase = 0;
         base->StreamSegmentMask = 0;
+        base->AuxSurfacePool = NULL;
+        base->AuxSurfaceGpuBase = 0;
+        base->AuxSurfaceBytes = 0;
+        for (index = 0; index < RADEON3D_MAX_AUX_SURFACES; ++index) {
+            base->AuxSurfaceBlocks[index].Offset = 0;
+            base->AuxSurfaceBlocks[index].Bytes = 0;
+        }
     }
     if (!enableCp || !RadeonCpInitialize(bi))
         RLOG("Radeon9200: direct-MMIO 2D engine ready, status=%lx\n",
@@ -1438,6 +1447,7 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
     else {
         APTR pool = RadeonAllocatePrivateVram(
             bi, RADEON3D_MAX_SEGMENTS * RADEON3D_MAX_SEGMENT_BYTES);
+        APTR aux;
 
         if (pool && base) {
             ULONG offset = (ULONG)pool - (ULONG)bi->MemoryBase;
@@ -1448,6 +1458,18 @@ BOOL RadeonInitializeAcceleration(struct BoardInfo *bi, BOOL enableCp,
             (void)RadeonFreePrivateVram(
                 bi, pool,
                 RADEON3D_MAX_SEGMENTS * RADEON3D_MAX_SEGMENT_BYTES);
+        }
+        /* Carved after the segment pool, so it must be released first:
+         * RadeonFreePrivateVram() only accepts the most recent carve. */
+        aux = RadeonAllocatePrivateVram(bi, RADEON3D_AUX_POOL_BYTES);
+        if (aux && base) {
+            ULONG offset = (ULONG)aux - (ULONG)bi->MemoryBase;
+
+            base->AuxSurfacePool = aux;
+            base->AuxSurfaceGpuBase = data->FramebufferGpuBase + offset;
+            base->AuxSurfaceBytes = RADEON3D_AUX_POOL_BYTES;
+        } else if (aux) {
+            (void)RadeonFreePrivateVram(bi, aux, RADEON3D_AUX_POOL_BYTES);
         }
         RLOG("Radeon9200: CP ready; Picasso96 2D uses direct MMIO\n");
     }
@@ -1466,6 +1488,13 @@ void RadeonShutdownAcceleration(struct BoardInfo *bi)
     ObtainSemaphore(&bi->BoardLock);
     if (data->AccelPending)
         (void)SynchronizeEngine(bi);
+    if (base && base->AuxSurfacePool) {
+        (void)RadeonFreePrivateVram(bi, base->AuxSurfacePool,
+                                    RADEON3D_AUX_POOL_BYTES);
+        base->AuxSurfacePool = NULL;
+        base->AuxSurfaceGpuBase = 0;
+        base->AuxSurfaceBytes = 0;
+    }
     if (base && base->StreamSegmentPool) {
         (void)RadeonFreePrivateVram(
             bi, base->StreamSegmentPool,

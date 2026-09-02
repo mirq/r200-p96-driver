@@ -7,7 +7,7 @@ struct Library *Radeon9200Base;
 #define ABI_CHECK(name, expression) typedef char name[(expression) ? 1 : -1]
 
 ABI_CHECK(Radeon3DInfoSize,
-          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V3_SIZE);
+          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V4_SIZE);
 ABI_CHECK(Radeon3DInfoSizeOffset,
           offsetof(struct Radeon3DInfo, Size) == 0);
 ABI_CHECK(Radeon3DInfoVersionOffset,
@@ -25,7 +25,17 @@ ABI_CHECK(Radeon3DInfoPicasso96VramOffset,
 ABI_CHECK(Radeon3DInfoMaxBatchOffset,
           offsetof(struct Radeon3DInfo, MaxBatchDwords) == 28);
 ABI_CHECK(Radeon3DInfoV2Size,
-          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V3_SIZE);
+          sizeof(struct Radeon3DInfo) == RADEON3D_INFO_V4_SIZE);
+ABI_CHECK(Radeon3DInfoCommitFailOffset,
+          offsetof(struct Radeon3DInfo, CommitFailStage) == 56);
+ABI_CHECK(Radeon3DInfoSampleRingOffset,
+          offsetof(struct Radeon3DInfo, SampleRing) == 60);
+ABI_CHECK(Radeon3DInfoSampleEntriesOffset,
+          offsetof(struct Radeon3DInfo, SampleRingEntries) == 64);
+ABI_CHECK(Radeon3DInfoSampleSeqOffset,
+          offsetof(struct Radeon3DInfo, SampleSeq) == 68);
+ABI_CHECK(Radeon3DInfoEClockHzOffset,
+          offsetof(struct Radeon3DInfo, EClockHz) == 72);
 ABI_CHECK(Radeon3DInfoExecCallsOffset,
           offsetof(struct Radeon3DInfo, ExecCalls) == 32);
 ABI_CHECK(Radeon3DInfoExecRecordOffset,
@@ -73,7 +83,7 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-            RADEON3D_IFACE_VERSION == 16UL);
+            RADEON3D_IFACE_VERSION == 17UL);
 ABI_CHECK(Radeon3DStreamSegmentCapability,
            RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
 ABI_CHECK(Radeon3DCommitStateReuseCapability,
@@ -82,6 +92,8 @@ ABI_CHECK(Radeon3DCommitStateBatchCapability,
            RADEON3D_CAP_COMMIT_STATE_BATCH == (1UL << 23));
 ABI_CHECK(Radeon3DOrderedCommitsCapability,
            RADEON3D_CAP_ORDERED_COMMITS == (1UL << 24));
+ABI_CHECK(Radeon3DAuxSurfaceCapability,
+           RADEON3D_CAP_AUX_SURFACES == (1UL << 25));
 ABI_CHECK(Radeon3DSegmentStructSize,
           sizeof(struct Radeon3DSegment) == RADEON3D_SEGMENT_V1_SIZE);
 ABI_CHECK(Radeon3DCommitStructSize,

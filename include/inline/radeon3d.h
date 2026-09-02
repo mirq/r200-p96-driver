@@ -108,4 +108,13 @@
         ULONG *, fenceOut, a2, \
         , RADEON3D_BASE_NAME)
 
+#define Radeon3DAllocSurface(device, width, height, format, surface) \
+    LP5(0x8a, BOOL, Radeon3DAllocSurface, \
+        struct Radeon3DDevice *, device, a0, \
+        ULONG, width, d0, \
+        ULONG, height, d1, \
+        ULONG, format, d2, \
+        struct Radeon3DSurface *, surface, a1, \
+        , RADEON3D_BASE_NAME)
+
 #endif

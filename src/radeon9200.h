@@ -81,6 +81,11 @@ struct RadeonBoardData {
 #define RADEON_PENDING_MMIO 1U
 #define RADEON_PENDING_CP   2U
 
+struct Radeon3DAuxBlock {
+    ULONG Offset;
+    ULONG Bytes;
+};
+
 struct RadeonChipBase {
     struct Library Library;
     UBYTE Flags;
@@ -99,6 +104,14 @@ struct RadeonChipBase {
     APTR StreamSegmentPool;
     ULONG StreamSegmentGpuBase;
     ULONG StreamSegmentMask;
+    /* Private-VRAM pool for Radeon3DAllocSurface(). Reserved out of
+     * bi->MemorySize before Picasso96 hands anything out, so surfaces from
+     * here are invisible to both the p96 bitmap allocator and
+     * AllocScreenBuffer(). A zero Bytes marks a free block table entry. */
+    APTR AuxSurfacePool;
+    ULONG AuxSurfaceGpuBase;
+    ULONG AuxSurfaceBytes;
+    struct Radeon3DAuxBlock AuxSurfaceBlocks[RADEON3D_MAX_AUX_SURFACES];
     /* Cumulative Radeon3DExecute phase attribution. The timer pair opens
      * lazily on the first session; totals are microseconds across every
      * Execute since the driver loaded and survive session closes, so a
@@ -113,6 +126,12 @@ struct RadeonChipBase {
     ULONG ExecCalls;
     ULONG ExecRecordDwords;
     ULONG ExecGeneratedDwords;
+    /* Release-safe per-submission timing ring (struct Radeon3DSample),
+     * allocated with the timer on the first session open. SampleSeq counts
+     * the samples written since load; each entry carries its own Seq. */
+    APTR ExecSampleRing;
+    ULONG ExecSampleSeq;
+    ULONG ExecClockHz;
 };
 
 typedef char RadeonChipBaseExecBaseOffsetCheck[
@@ -143,8 +162,7 @@ void Radeon3DAdvanceGeneration(struct RadeonChipBase *base);
 void Radeon3DInvalidateService(struct BoardInfo *bi);
 BOOL Radeon3DRearmService(struct BoardInfo *bi);
 void Radeon3DFreeRetiredDevices(struct RadeonChipBase *base);
-/* Closes the DEBUG phase-attribution timer. No-op in release builds, where
- * the timer is never opened. */
+/* Closes the phase-attribution timer and frees the timing sample ring. */
 void Radeon3DFreeExecTimer(struct RadeonChipBase *base);
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg);
@@ -345,6 +363,12 @@ BOOL Radeon3DCommitStateBatch(
     __REGA1(const struct Radeon3DStateBatch *batch),
     __REGA2(ULONG *fenceOut),
     __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DAllocSurface(__REGA0(struct Radeon3DDevice *device),
+                          __REGD0(ULONG width),
+                          __REGD1(ULONG height),
+                          __REGD2(ULONG format),
+                          __REGA1(struct Radeon3DSurface *surface),
+                          __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
                          __REGA6(struct RadeonChipBase *base));
 

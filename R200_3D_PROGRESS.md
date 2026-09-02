@@ -4,7 +4,7 @@ This is a chronological engineering and physical-validation log. Older phase
 descriptions are preserved as historical checkpoints and may be superseded by
 later sections.
 
-Current status: `Radeon9200.chip` 3.0 exposes Radeon3D interface 13 with bounded
+Current status: `Radeon9200.chip` 3.0 exposes Radeon3D interface 17 with bounded
 submission, client-written VRAM streaming segments, batched semantic commits,
 hardware TCL, CLUT8/RGB565/BGRA surface support, and recovery. It does not
 expose general client-controlled register writes. Chronological performance

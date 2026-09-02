@@ -17,6 +17,7 @@ deploy-r200-phase0/
 a.out
 __pycache__/
 *.pyc
+*-frames-*.png
 
 # Local reference trees (upstream sources, not part of this project)
 mesa/
