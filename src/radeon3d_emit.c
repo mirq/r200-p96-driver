@@ -1098,6 +1098,7 @@ static BOOL EmitExecuteStateCached(struct Radeon3DEmitter *emitter,
                                    const struct Radeon3DEmitState *state)
 {
     ULONG index;
+    BOOL textureOnly = FALSE;
 
     if (!emitter->StateValid || !SameExecuteState(emitter->Live, state)) {
         BOOL unit0 = FALSE, unit1 = FALSE;
@@ -1109,6 +1110,7 @@ static BOOL EmitExecuteStateCached(struct Radeon3DEmitter *emitter,
             BOOL texGen1 = state->TexGen &&
                 state->TexGenState[1] != RADEON3D_TEXGEN_MODE_OFF;
 
+            textureOnly = TRUE;
             if (unit0 && state->TextureValid &&
                 !EmitExecuteTexture(emitter, &state->Texture, 0,
                                     state->Options,
@@ -1134,10 +1136,7 @@ static BOOL EmitExecuteStateCached(struct Radeon3DEmitter *emitter,
                                     (state->TexGenState[1] &
                                      RADEON3D_TEXGEN_GEN_Q)))
                 return FALSE;
-            PromoteExecuteState(emitter);
-            return TRUE;
-        }
-        if (!EmitExecuteState(emitter, state))
+        } else if (!EmitExecuteState(emitter, state))
             return FALSE;
         PromoteExecuteState(emitter);
         emitter->StateValid = TRUE;
@@ -1229,7 +1228,9 @@ static BOOL EmitExecuteStateCached(struct Radeon3DEmitter *emitter,
                     return FALSE;
             }
         }
-        if (state->Lighting) {
+        /* TextureOnlyDelta excludes matrices, which still need the updates
+         * above, but proves the lighting payload itself is unchanged. */
+        if (state->Lighting && !textureOnly) {
             ULONG light;
 
             if (!ExecuteEmitVectorBlock(emitter, R200_VS_GLOBAL_AMBIENT_ADDR,

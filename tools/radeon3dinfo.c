@@ -22,7 +22,8 @@ static void DumpSamples(const struct Radeon3DInfo *info)
     if (info->Size < RADEON3D_INFO_V4_SIZE || !info->SampleRing)
         return;
     printf("R3DCLOCK hz=%lu entries=%lu seq=%lu\n",
-           info->EClockHz, entries, seq);
+           (unsigned long)info->EClockHz, (unsigned long)entries,
+           (unsigned long)seq);
     if (!info->EClockHz || !entries || !seq)
         return;
     samples = (const struct Radeon3DSample *)info->SampleRing;
@@ -39,10 +40,11 @@ static void DumpSamples(const struct Radeon3DInfo *info)
             continue;
         printf("R3DSAMPLE seq=%lu wall=%lu type=%lu ok=%lu in=%lu "
                "out=%lu copy=%lu build=%lu submit=%lu\n",
-               copy.Seq, copy.WallTicks, copy.Type,
-               copy.Result, copy.RecordDwords,
-               copy.GeneratedDwords, copy.CopyTicks,
-               copy.BuildTicks, copy.SubmitTicks);
+               (unsigned long)copy.Seq, (unsigned long)copy.WallTicks,
+               (unsigned long)copy.Type, (unsigned long)copy.Result,
+               (unsigned long)copy.RecordDwords,
+               (unsigned long)copy.GeneratedDwords, (unsigned long)copy.CopyTicks,
+               (unsigned long)copy.BuildTicks, (unsigned long)copy.SubmitTicks);
     }
 }
 
@@ -74,8 +76,10 @@ int main(void)
            "generation=%lu device=%04lx caps=%08lx installed_vram=%lu "
            "p96_vram=%lu max_batch_dwords=%lu\n",
            (unsigned int)Radeon9200Base->lib_Version,
-           info.Version, info.Generation, info.DeviceId, info.Caps,
-           info.InstalledVram, info.Picasso96Vram, info.MaxBatchDwords);
+           (unsigned long)info.Version, (unsigned long)info.Generation,
+           (unsigned long)info.DeviceId, (unsigned long)info.Caps,
+           (unsigned long)info.InstalledVram, (unsigned long)info.Picasso96Vram,
+           (unsigned long)info.MaxBatchDwords);
 
     info.Size = sizeof(info);
     if (!Radeon3DGetInfo(device, &info)) {
@@ -86,9 +90,11 @@ int main(void)
             /* V2 tail: cumulative Execute phase attribution in microseconds. */
             printf("R3DEXEC calls=%lu record_dwords=%lu generated_dwords=%lu "
                    "copy_us=%lu build_us=%lu submit_us=%lu\n",
-                   info.ExecCalls, info.ExecRecordDwords,
-                   info.ExecGeneratedDwords, info.ExecCopyMicros,
-                   info.ExecBuildMicros, info.ExecSubmitMicros);
+                   (unsigned long)info.ExecCalls, (unsigned long)info.ExecRecordDwords,
+                   (unsigned long)info.ExecGeneratedDwords,
+                   (unsigned long)info.ExecCopyMicros,
+                   (unsigned long)info.ExecBuildMicros,
+                   (unsigned long)info.ExecSubmitMicros);
         }
         DumpSamples(&info);
     }

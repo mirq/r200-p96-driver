@@ -258,46 +258,37 @@ static ULONG CpStreamDword(const ULONG *commands, ULONG commandCount,
 
 /*
  * Ring stores go through the VRAM aperture, whose per-dword write cost
- * dominates submission. Burst eight staged longwords with movem instead
- * of issuing individual volatile stores; the caller's existing readback
- * of the final dword still orders everything before the WPTR update.
+ * dominates submission. Swap eight source longwords in registers and burst
+ * them with movem, without a stack staging buffer. The caller's existing
+ * final-dword readback still orders everything before the WPTR update.
+ * Source commands and destination ring span must be disjoint.
  */
-#if defined(__GNUC__) && defined(__m68k__)
-static void CpBurstStore8(volatile ULONG *dst, const ULONG *stage)
-{
-    __asm__ __volatile__ (
-        "movem.l (%1),%%d0-%%d7\n\t"
-        "movem.l %%d0-%%d7,(%0)"
-        :
-        : "a" (dst), "a" (stage)
-        : "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "memory");
-}
-#else
-static void CpBurstStore8(volatile ULONG *dst, const ULONG *stage)
-{
-    ULONG k;
-
-    for (k = 0; k < 8UL; ++k)
-        dst[k] = stage[k];
-}
-#endif
-
-/* Byte-swapped burst copy of commandCount stream words into the ring. */
 static void CpBurstCopySwapped(volatile ULONG *dst, const ULONG *src,
                                ULONG words)
 {
-    ULONG stage[8];
-
     while (words >= 8UL) {
-        stage[0] = SWAPLONG(src[0]);
-        stage[1] = SWAPLONG(src[1]);
-        stage[2] = SWAPLONG(src[2]);
-        stage[3] = SWAPLONG(src[3]);
-        stage[4] = SWAPLONG(src[4]);
-        stage[5] = SWAPLONG(src[5]);
-        stage[6] = SWAPLONG(src[6]);
-        stage[7] = SWAPLONG(src[7]);
-        CpBurstStore8(dst, stage);
+#if defined(__GNUC__) && defined(__m68k__)
+        __asm__ __volatile__ (
+            "movem.l (%1),%%d0-%%d7\n\t"
+            "rol.w #8,%%d0\n\tswap %%d0\n\trol.w #8,%%d0\n\t"
+            "rol.w #8,%%d1\n\tswap %%d1\n\trol.w #8,%%d1\n\t"
+            "rol.w #8,%%d2\n\tswap %%d2\n\trol.w #8,%%d2\n\t"
+            "rol.w #8,%%d3\n\tswap %%d3\n\trol.w #8,%%d3\n\t"
+            "rol.w #8,%%d4\n\tswap %%d4\n\trol.w #8,%%d4\n\t"
+            "rol.w #8,%%d5\n\tswap %%d5\n\trol.w #8,%%d5\n\t"
+            "rol.w #8,%%d6\n\tswap %%d6\n\trol.w #8,%%d6\n\t"
+            "rol.w #8,%%d7\n\tswap %%d7\n\trol.w #8,%%d7\n\t"
+            "movem.l %%d0-%%d7,(%0)"
+            :
+            : "a" (dst), "a" (src)
+            : "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7",
+              "cc", "memory");
+#else
+        ULONG k;
+
+        for (k = 0; k < 8UL; ++k)
+            dst[k] = SWAPLONG(src[k]);
+#endif
         dst += 8;
         src += 8;
         words -= 8;

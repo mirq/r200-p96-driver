@@ -1113,19 +1113,35 @@ static struct Radeon3DEmitSurface *Radeon3DEmitResolveSurface(
     return slot;
 }
 
+static APTR AllocExecuteMemory(struct ExecBase *SysBase, ULONG bytes)
+{
+    /* The PPC-task AllocMem hook redirects PUBLIC or FAST requests to PPC
+     * RAM, even when LOCAL is also set. Request only LOCAL for this private
+     * 68k working storage, then reject Chip RAM. Keep the old allocation
+     * path if local Fast RAM is unavailable. No shared/DMA buffer uses this. */
+    APTR memory = AllocMem(bytes, MEMF_LOCAL);
+
+    if (memory && !(TypeOfMem(memory) & MEMF_FAST)) {
+        FreeMem(memory, bytes);
+        memory = NULL;
+    }
+
+    return memory ? memory : AllocMem(bytes, MEMF_PUBLIC);
+}
+
 static BOOL EnsureExecuteBuffers(struct RadeonChipBase *base,
                                  struct Radeon3DDevice *device)
 {
     struct ExecBase *SysBase = base->ExecBase;
 
     if (!device->ExecuteGenerated)
-        device->ExecuteGenerated = AllocMem(
-            RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
+        device->ExecuteGenerated = AllocExecuteMemory(
+            SysBase, RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
     /* The emitter is session-owned rather than automatic: with lighting
      * state it is far too large for a client's stack. */
     if (!device->ExecuteEmitter)
-        device->ExecuteEmitter = AllocMem(
-            sizeof(*device->ExecuteEmitter), MEMF_PUBLIC);
+        device->ExecuteEmitter = AllocExecuteMemory(
+            SysBase, sizeof(*device->ExecuteEmitter));
     if (device->ExecuteGenerated && device->ExecuteEmitter) {
         device->ExecuteEmitter->Resolve = Radeon3DEmitResolveSurface;
         device->ExecuteEmitter->ResolveUser = device;
@@ -1156,8 +1172,8 @@ static BOOL EnsureStateBatchBuffer(struct RadeonChipBase *base,
     struct ExecBase *SysBase = base->ExecBase;
 
     if (!device->ExecuteTrusted)
-        device->ExecuteTrusted = AllocMem(
-            RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG), MEMF_PUBLIC);
+        device->ExecuteTrusted = AllocExecuteMemory(
+            SysBase, RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
     return device->ExecuteTrusted != NULL;
 }
 

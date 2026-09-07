@@ -727,3 +727,57 @@ the skip. On the accepted interface-16 baseline it measured neutral
 blit already forces the drain. The skip is retained on the mainline; the full
 Phase 2 implementation is preserved on the `phase2-cp-stream` branch
 (commit `32afdf1`, includes the V5 stage counters and measurement records).
+
+## Private 68k Working Memory (2026-09-07)
+
+The WarpOS/Sonnet task allocator was placing Radeon3D's private generated
+commands, emitter/captures and state-batch staging in PPC RAM. The 68k then
+paid PCI-memory access cost while constructing each batch. The allocator hook
+redirects PUBLIC/FAST requests even when LOCAL is set, so the corrected
+preference requests only MEMF_LOCAL and checks TypeOfMem for FAST afterward.
+Rejected Chip RAM is freed; ordinary public allocation remains the fallback.
+No GPU surface/vertex allocation, cache ordering, packet validation or ABI changes.
+
+Three bridge-cold-rebooted 600-frame PPC DLL precalc gears runs per build,
+640x480x32 fullscreen BLIT, no sync, two buffers, quiet priority -1 host:
+
+- Original `07A7193D`: 44.510, 44.313, 44.313 FPS; median 44.313.
+- Corrected `23ACBAEC`: 54.446, 54.844, 54.644 FPS; median 54.644 (+23.3%).
+- All runs: zero errors, 2,031 executions / 600 presents, clean exits.
+
+The matched `18A453D6` card, native library `2F05868E`, PPC DLL `31878AB6`,
+host `98DE2066`, compiler flags and mode data were unchanged. Live inspection
+confirmed all three working buffers moved to local RAM. Native phase5 stress,
+phase6 primitives/acceptance and the PPC 7,127-check texture-update test passed.
+The fix is active; both `.previous` files retain the original matched pair.
+These are bridge reboots, not physical power cycles; the recalled approximately
+100 FPS is not recovered. See [EXECUTE_MEMORY.md](EXECUTE_MEMORY.md) for the
+failed first preference, allocation tests, exact flags, raw logs and metadata.
+
+## Texture-Matrix And CP Copy Fixes (2026-09-07)
+
+Texture-only state changes could return before updating independently cached
+MVP/texgen/normal matrices. A two-record hardware probe reproduced stale
+transforms on `23ACBAEC`; the corrected common matrix path passes all four
+controls/regressions and 1,188 CPU checks without redundant lighting uploads.
+Texture-only correction `6B860EE0` was validated before changing CP code.
+
+The CP copy then fused source load, byte swapping and the existing MOVEM ring
+store, eliminating its eight-word stack stage. Fences, readbacks, wrap handling
+and publication remain unchanged. Actual 68k RAM tests passed 2,816 copy and
+1,966 commit cases, including four wraps and sequence rollover; host sanitizer
+coverage also passed the exhaustive 5,934-commit schedule.
+
+Three independently bridge-rebooted 600-frame runs per build (640x480x32 BLIT,
+two buffers, no sync, priority -1), with the texture correction in both builds:
+
+- Old CP: 53.956, 54.446, 54.844 FPS; median 54.446.
+- Fused CP: 57.034, 57.471, 57.251 FPS; median 57.251 (+5.2%).
+- CP submit elapsed: 2.582 -> 1.152 ms/frame, unchanged dword counts.
+
+Native phase5 stress, phase6 primitives/acceptance, phase7 lighting, paired RGB
+tests and the 7,127-check PPC texture-update test all pass. Active matched pair
+is `9768419A` / `18A453D6`; both `.previous` files hold `6B860EE0` / `18A453D6`.
+Compiler flags, native library, PPC DLL/host and mode data remain unchanged.
+See [CP_TEXTURE_FIXES.md](CP_TEXTURE_FIXES.md) for exact scope, bytecode proof,
+reboot method, samples, tests and remaining limits.
