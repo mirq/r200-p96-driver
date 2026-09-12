@@ -728,6 +728,22 @@ blit already forces the drain. The skip is retained on the mainline; the full
 Phase 2 implementation is preserved on the `phase2-cp-stream` branch
 (commit `32afdf1`, includes the V5 stage counters and measurement records).
 
+## Fixed-function lighting output fix (2026-09-04)
+
+MiniGL submitted a valid 133-dword interface-11 lighting record with options
+`0x7700`, normal matrices, one enabled light, material state and a 31-dword
+light block, but lit pixels remained identical to unlit pixels. The emitter
+enabled and populated the TCL lighting engine but wrote
+`R200_SE_TCL_OUTPUT_VTX_COMP_SEL` without `R200_OUTPUT_COLOR_0`; the computed
+primary colour was therefore not exported. `EmitExecuteState()` now adds
+`R200_OUTPUT_COLOR_0` when lighting is active, matching Mesa classic R200.
+
+Physical 68060/RV280 validation used `Radeon9200.chip` CRC `07A7193D` with the
+matched `Prometheus.card` CRC `18A453D6`. The MiniGL directional probe changed
+from an unchanged white pixel to a distinct lit value, phase7 passed all
+lighting checks, V19 parity passed 31/31, the core phase4/5/6 regressions passed,
+and the 32bpp MiniGL testsuite completed 24/24 PASS.
+
 ## Private 68k Working Memory (2026-09-07)
 
 The WarpOS/Sonnet task allocator was placing Radeon3D's private generated
@@ -781,3 +797,117 @@ is `9768419A` / `18A453D6`; both `.previous` files hold `6B860EE0` / `18A453D6`.
 Compiler flags, native library, PPC DLL/host and mode data remain unchanged.
 See [CP_TEXTURE_FIXES.md](CP_TEXTURE_FIXES.md) for exact scope, bytecode proof,
 reboot method, samples, tests and remaining limits.
+
+## Indirect Render Prerequisites (2026-09-10, Host Only)
+
+The trusted interface-18 indirect path now advertises optional
+`RADEON3D_CAP_INDIRECT_RENDER` (bit 27) alongside bit 26, only when the session
+version and streaming-segment pool make indirect dispatch eligible. Interface
+18 and the request/vector layouts are unchanged. Rendering consumers must
+require both bits; bit 26 alone is the older fetch/fence smoke path.
+
+`Radeon3DDispatchIndirect()` checks basic pointers and minimum descriptor size,
+then copies the fixed 24-byte V1 descriptor to local storage. All subsequent
+validation, segment selection, IB commands and count telemetry use only that
+snapshot. It validates the request and live lease before `RadeonPrepare3D()`.
+Since prepare can recover successfully while invalidating
+the session, dispatch then rechecks active device usability, the unchanged
+service generation/board, CP readiness and the unchanged lease under
+`ServiceLock`, with `BoardLock` held throughout. Stale state never reaches IB
+setup or submission. Existing CSQ partition/endian setup stays after prepare.
+Only a successful nonzero fence updates `LastFence` and marks 3D submitted;
+false submission or a missing fence recovers once without retry. Existing
+experimental diagnostics remain, with new rejection stages 107 (prepare) and
+108 (post-prepare stale state).
+
+Header and submission-contract text now state the actual trust boundary:
+extent checks bound the initial IB fetch only. Trusted packets can access
+registers and VRAM elsewhere, corrupt the desktop or hang the GPU; there is
+no packet sandbox. No emitter changes are part of these prerequisites.
+
+A descriptor-snapshot safety follow-up reproduced the former post-validation
+reread: changing the caller's offset/count/segment during Prepare changed the
+submitted IB address. The fixed path retains the validated address and count,
+even for an exact-end lease range, and retains snapshot count telemetry on both
+successful and failed submits. A header-only allocation is rejected before
+copying beyond its Size field. No unrelated overhead was optimized; benchmark
+work remains the priority and nothing from this follow-up will be deployed now.
+
+The final even-length guard follows the verified Linux v2.6.39
+`radeon_cp_dispatch_indirect()` source in `radeon_state.c` (linked in the
+submission contract): IB data must contain an even number of dwords, and odd
+streams are padded with a Type-2 CP packet before `IB_BASE/BUFSZ`. The service
+now rejects odd snapshot counts at stage 101 before BoardLock or Prepare,
+without changing the experimental CSQ/endian setup. Padding belongs to the
+producer: append one CP-native, once-swapped PACKET2 for an odd stream, include
+it in the lease extent/count and cache flush, and submit the even count.
+This is source-based hardware padding, not an arbitrary no-op workaround.
+Interface 18 and the fixed 24-byte request layout remain unchanged.
+
+Validation on the host, from commit
+`98192a217cf4fb7366c6937cb4817247f7cd9706` plus the preserved pre-existing
+dirty tree and these uncommitted prerequisites:
+
+- `python3 tools/test_indirect_dispatch.py`: PASS, 79 cases. Extracts the
+  production dispatch, usability and capability functions, structures and
+  constants; runs with 32-bit ULONG and ASan/UBSan. Covers hook ordering,
+  valid ID 0, malformed requests, bounds/overflow, prepare failure, successful
+  prepare with generation/session/board/CP/lease invalidation, failed submits,
+  missing fences, recovery without retry, `LastFence` before Mark, short
+  descriptors, and Prepare-time caller mutation with snapshot commands/counts.
+  Odd counts 1/3/8191 reject before hooks; even counts 2/8192 accept. Existing
+  upper-bound and lease-overrun cases use even counts to retain their coverage.
+- `python3 tools/test_execute_memory.py`: PASS, existing allocation regression.
+- `git diff --check`: PASS.
+- Isolated release matched-pair build: PASS using
+  `/opt/amiga/bin/m68k-amigaos-gcc` 6.5.0b and unchanged Makefile flags. Chip
+  compilation is warning-free with `-Werror`. The existing card recipe does
+  not enable `-Werror` and emits const/pointer-sign/unused-variable warnings
+  in untouched Prometheus sources; those defects remain outside this scope.
+
+Build command:
+
+```sh
+make BUILD_DIR=/tmp/opencode/ibdraw/driver TARGET=/tmp/opencode/ibdraw/Radeon9200.chip CARD_TARGET=/tmp/opencode/ibdraw/Prometheus.card
+```
+
+The first link failed because the existing Makefile prefixes absolute targets
+with the build directory. Creating the expected intermediate directories
+`driver/tmp/opencode/ibdraw` and
+`driver/prometheus-card/tmp/opencode/ibdraw` under `/tmp/opencode/ibdraw`, then
+rerunning the same command, completed both artifacts without Makefile edits.
+The descriptor-snapshot and even-length follow-ups reused those directories
+and rebuilt the chip without warnings; the matched card was already up to date.
+Final artifacts in `/tmp/opencode/ibdraw`:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `Radeon9200.chip` | 77940 | `7f253b21a6af38403c17330a4d8c9505de252481f1fb439dd1d3c02a41ba9636` |
+| `Prometheus.card` | 7796 | `b90c0a54b919b2ab8af2e198e55ace3ddad62ff6f53b69818107262f988d902b` |
+
+At the end of that prerequisite-only step, the new render path was **NOT hardware validated**. The then-installed
+older chip CRC `5341F8BF` performed fetch/fence smoke tests only, not the new
+PPC fixed clear/triangle render test. No hardware was contacted, no artifacts
+were deployed, and no commit was made for this work.
+
+## Physical CP-emitter validation and repository consolidation (2026-09-12)
+
+The later consumer work cold-loaded chip `CEB838A6` (77940 bytes) with the
+unchanged known-good card `18A453D6`. Triangle readback passed; CP texture-update
+acceptance passed 7,127 checks over two contexts and 18 updates; the final
+windowed 800x600x32 gears run completed 600 frames, 2,031 IB submissions and
+511,620 CP dwords at 68.337 FPS, with no GL or dispatch errors. Native bootstrap
+passed after the runs. Source and raw evidence are in the cooperating MiniGL
+repository's `backend_r200/HOST_LOADER_REGRESSION.md` and `host_loader_evidence/`.
+
+The 68k host's separate Sonnet loader misclassification and PPC wait-policy
+regressions were fixed in the consumer, not by further driver changes. Its
+quiet fullscreen 640x480x16, three-buffer precalc result recovered to 134.529
+FPS; that fullscreen run uses semantic submission, not fullscreen CP emission.
+
+Earlier cache-partition/endian/priming explanations remain historical hypotheses:
+the successful functional runs do not isolate those settings as performance
+causes. Debug-only bring-up probes are not a release workload or an instruction
+to recover hardware automatically after a hard hang. Consolidation corrected
+debug-stat version/count reporting and missing GPU-address log arguments; no
+release rendering behavior was changed by that diagnostic bookkeeping cleanup.

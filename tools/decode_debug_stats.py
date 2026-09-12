@@ -120,7 +120,20 @@ FIELDS.extend([
     "ExecuteCopyTicks", "ExecuteBuildTicks", "ExecuteSubmitTicks",
 ])
 
-KNOWN_VERSION = 18
+# Version 19/21: indirect-buffer bring-up probe (case 1 + cases 2 and 3).
+FIELDS.extend([
+    "IbProbeRun", "IbAllocSuccess", "IbGpuAddress", "IbDispatchAccepted",
+    "IbCsqStatSubmit", "IbFenceRetired", "IbCsqStatAfter",
+    "IbRbbmStatusAfter", "IbScratchValue", "IbFenceTicks",
+    "Ib2Gpu", "Ib2Dwords", "Ib2Accepted", "Ib2CsqSubmit", "Ib2Fence",
+    "Ib2CsqAfter", "Ib2Rbbm", "Ib2Scratch", "Ib2FenceTicks",
+    "Ib2NextReady", "Ib2CsqMode",
+    "Ib3Gpu", "Ib3Dwords", "Ib3Accepted", "Ib3CsqSubmit", "Ib3Fence",
+    "Ib3CsqAfter", "Ib3Rbbm", "Ib3Scratch", "Ib3FenceTicks",
+    "Ib3NextReady", "Ib3CsqMode",
+])
+
+KNOWN_VERSION = 22
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}

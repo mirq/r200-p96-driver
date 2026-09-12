@@ -728,6 +728,7 @@ static BOOL EmitExecuteState(struct Radeon3DEmitter *emitter,
     if (lighting) {
         ULONG light;
 
+        outputSelect |= R200_OUTPUT_COLOR_0;
         lightModelCtl0 |= R200_LIGHTING_ENABLE | R200_NORMALIZE_NORMALS;
         if (state->LightControl & RADEON3D_LIGHT_LOCAL_VIEWER)
             lightModelCtl0 |= R200_LOCAL_VIEWER;

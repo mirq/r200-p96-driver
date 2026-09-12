@@ -140,9 +140,11 @@ R3D_PHASE1_TEST := $(BUILD_DIR)/radeon3dphase1
 R3D_FORMATS_TEST := $(BUILD_DIR)/radeon3dformats
 R3D_STREAM_TEST := $(BUILD_DIR)/radeon3dstream
 R3D_REPLAY_TEST := $(BUILD_DIR)/r3dreplay
+R3D_TEXUPDATE_TEST := $(BUILD_DIR)/r3dtexupdate
+R3D_IB_TEST := $(BUILD_DIR)/r3dib
 VRAM_STREAM_TEST := $(BUILD_DIR)/vramstream
 
-.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay
+.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay r3dtexupdate r3dib
 
 all: $(TARGET) $(CARD_TARGET)
 
@@ -153,6 +155,24 @@ vramstream: $(VRAM_STREAM_TEST)
 r3dstream: $(R3D_STREAM_TEST)
 
 r3dreplay: $(R3D_REPLAY_TEST)
+
+r3dtexupdate: $(R3D_TEXUPDATE_TEST)
+
+r3dib: $(R3D_IB_TEST)
+
+$(R3D_IB_TEST): tools/r3dib.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d.h
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -Wmissing-prototypes \
+		-Wstrict-prototypes -m68020-60 -noixemul -Iinclude $< -lamiga -o $@
+
+$(R3D_TEXUPDATE_TEST): tools/r3dtexupdate.c include/radeon3d.h \
+		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d.h
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -Wmissing-prototypes \
+		-Wstrict-prototypes -m68020-60 -noixemul -Iinclude $< -lamiga -o $@
 
 $(R3D_REPLAY_TEST): tools/r3dreplay.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \

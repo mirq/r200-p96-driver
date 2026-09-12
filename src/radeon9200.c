@@ -283,7 +283,8 @@ BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
         (features & PROM_RADEON_FEATURE_TEXTSTAGE) != 0);
     RDEBUG_OPEN(bi, (features & PROM_RADEON_FEATURE_CP) != 0,
                 bi->MemorySpaceSize - bi->MemorySize,
-                (features & PROM_RADEON_FEATURE_HWSPRITE) != 0);
+                (features & PROM_RADEON_FEATURE_HWSPRITE) != 0,
+                base->StreamSegmentPool);
     RadeonInstallCallbacks(
         bi, (features & PROM_RADEON_FEATURE_HWSPRITE) != 0,
         (features & PROM_RADEON_FEATURE_HWTEXT) != 0);

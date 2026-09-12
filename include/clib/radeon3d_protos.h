@@ -39,5 +39,8 @@ BOOL Radeon3DCommitStateBatch(struct Radeon3DDevice *device,
 BOOL Radeon3DAllocSurface(struct Radeon3DDevice *device, ULONG width,
                           ULONG height, ULONG format,
                           struct Radeon3DSurface *surface);
+BOOL Radeon3DDispatchIndirect(struct Radeon3DDevice *device,
+                              const struct Radeon3DIndirect *indirect,
+                              ULONG *fenceOut);
 
 #endif

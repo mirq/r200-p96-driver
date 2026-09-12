@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   17UL
+#define RADEON3D_IFACE_VERSION   18UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -36,6 +36,11 @@
 #define RADEON3D_CAP_ORDERED_COMMITS        (1UL << 24)
 /* Radeon3DAllocSurface() is available and its pool was reserved. */
 #define RADEON3D_CAP_AUX_SURFACES           (1UL << 25)
+/* Radeon3DDispatchIndirect() is available (interface 18, segment pool live). */
+#define RADEON3D_CAP_INDIRECT_DISPATCH      (1UL << 26)
+/* Optional interface-18 render transitions; require with INDIRECT_DISPATCH
+ * for rendering, not just fetch/fence smoke tests. Not a packet sandbox. */
+#define RADEON3D_CAP_INDIRECT_RENDER        (1UL << 27)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
@@ -48,7 +53,7 @@
  * commits reference vertex data at GpuAddress + OffsetBytes instead of
  * carrying vertices inline in the Execute record. Segments are freed
  * automatically when the device closes. */
-#define RADEON3D_MAX_SEGMENTS      8UL
+#define RADEON3D_MAX_SEGMENTS      12UL
 #define RADEON3D_MAX_SEGMENT_BYTES (256UL * 1024UL)
 
 #define RADEON3D_SEGMENT_VERSION 1UL
@@ -149,6 +154,39 @@ struct Radeon3DStateBatch {
 typedef char Radeon3DStateBatchV1SizeCheck[
     sizeof(struct Radeon3DStateBatch) == RADEON3D_STATE_BATCH_V1_SIZE
         ? 1 : -1];
+
+/* Trusted indirect dispatch (interface 18). The caller builds a complete
+ * CP packet stream into a leased segment and Radeon3DDispatchIndirect()
+ * enqueues it with one PACKET0 write of CP_IB_BASE/CP_IB_BUFSZ. The
+ * service validates only the extent: segment identity, 16-byte offset
+ * alignment, nonzero even dword count and the byte range against the lease.
+ * DwordCount includes padding and must not exceed RADEON3D_MAX_BATCH_DWORDS.
+ * The producer pads odd streams with one CP-native PACKET2 before flushing
+ * and dispatch; the service rejects odd counts rather than padding in place.
+ * This follows Linux v2.6.39 radeon_cp_dispatch_indirect(). The stream
+ * contents are the trusted producer's responsibility. Extent validation
+ * bounds only the initial IB fetch, not packet effects: packets can access
+ * registers and VRAM elsewhere, corrupt the desktop or wedge the GPU.
+ * Rendering requires both INDIRECT_DISPATCH and INDIRECT_RENDER caps;
+ * the latter adds prepare/revalidation, submitted-state and recovery hooks.
+ * The producer must flush its data cache over the stream before dispatch. A
+ * retiring fence is always appended, so waiting on the returned fence
+ * proves the indirect buffer was consumed. */
+#define RADEON3D_INDIRECT_VERSION 1UL
+
+struct Radeon3DIndirect {
+    ULONG Size;
+    ULONG Version;
+    ULONG SegmentId;
+    ULONG ByteOffset;
+    ULONG DwordCount;
+    ULONG Flags;
+};
+
+#define RADEON3D_INDIRECT_V1_SIZE 24UL
+
+typedef char Radeon3DIndirectV1SizeCheck[
+    sizeof(struct Radeon3DIndirect) == RADEON3D_INDIRECT_V1_SIZE ? 1 : -1];
 
 #define RADEON3D_SUBMIT_FENCE (1UL << 0)
 #define RADEON3D_SUBMIT_FLAGS  RADEON3D_SUBMIT_FENCE
@@ -368,6 +406,7 @@ struct BitMap;
 #define RADEON3D_SAMPLE_COMMIT_BATCH 3UL
 #define RADEON3D_SAMPLE_STATE_BATCH  4UL
 #define RADEON3D_SAMPLE_SUBMIT       5UL
+#define RADEON3D_SAMPLE_DISPATCH     6UL
 
 #define RADEON3D_SAMPLE_RING_SIZE 1024UL
 
@@ -431,9 +470,9 @@ struct Radeon3DInfo {
 /* requestedVersion is the newest interface version understood by the caller. */
 
 /*
- * Submission accepts PACKET2 no-ops and the bounded immediate triangle-list
+ * Radeon3DSubmit accepts PACKET2 no-ops and the bounded immediate triangle-list
  * stream documented in RADEON3D_SUBMISSION.md. General register and draw
- * packet submission remains unavailable.
+ * packets are restricted to the separate trusted interface-18 indirect path.
  */
 
 /*

@@ -83,7 +83,7 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-            RADEON3D_IFACE_VERSION == 17UL);
+            RADEON3D_IFACE_VERSION == 18UL);
 ABI_CHECK(Radeon3DStreamSegmentCapability,
            RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
 ABI_CHECK(Radeon3DCommitStateReuseCapability,
@@ -114,7 +114,7 @@ ABI_CHECK(Radeon3DStateBatchHeaderOffset,
 ABI_CHECK(Radeon3DStateBatchDrawsOffset,
           offsetof(struct Radeon3DStateBatch, Draws) == 28);
 ABI_CHECK(Radeon3DMaxSegments,
-          RADEON3D_MAX_SEGMENTS == 8UL);
+          RADEON3D_MAX_SEGMENTS == 12UL);
 ABI_CHECK(Radeon3DTriangleStripOpcode,
           RADEON3D_EXEC_DRAW_TRI_STRIP == 3UL);
 ABI_CHECK(Radeon3DTriangleFanOpcode,
@@ -184,7 +184,19 @@ ABI_CHECK(Radeon3DExecuteVertexSize,
 ABI_CHECK(Radeon3DExecuteExtendedVertexSize,
           RADEON3D_EXEC_EXTENDED_VERTEX_DWORDS == 9UL);
 ABI_CHECK(Radeon3DExecuteHardwareTclVertexSize,
-          RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS == 10UL);
+           RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS == 10UL);
+ABI_CHECK(Radeon3DIndirectDispatchCapability,
+           RADEON3D_CAP_INDIRECT_DISPATCH == (1UL << 26));
+ABI_CHECK(Radeon3DIndirectSize,
+          sizeof(struct Radeon3DIndirect) == RADEON3D_INDIRECT_V1_SIZE);
+ABI_CHECK(Radeon3DIndirectSegmentOffset,
+          offsetof(struct Radeon3DIndirect, SegmentId) == 8);
+ABI_CHECK(Radeon3DIndirectOffsetOffset,
+          offsetof(struct Radeon3DIndirect, ByteOffset) == 12);
+ABI_CHECK(Radeon3DIndirectCountOffset,
+          offsetof(struct Radeon3DIndirect, DwordCount) == 16);
+ABI_CHECK(Radeon3DIndirectFlagsOffset,
+          offsetof(struct Radeon3DIndirect, Flags) == 20);
 
 void Radeon3DAbiCalls(void)
 {
@@ -210,6 +222,12 @@ void Radeon3DAbiCalls(void)
         (void)Radeon3DExecute(device, &command, 1, 0, &fence);
         batch.Size = sizeof(batch);
         (void)Radeon3DCommitStateBatch(device, &batch, &fence);
+        {
+            struct Radeon3DIndirect indirect;
+
+            indirect.Size = sizeof(indirect);
+            (void)Radeon3DDispatchIndirect(device, &indirect, &fence);
+        }
         (void)Radeon3DInvalidateForTest(device);
         Radeon3DClose(device);
     }

@@ -100,9 +100,14 @@ Do not expose unrestricted packets or client-controlled register writes. Follow
 [`RADEON3D_SUBMISSION.md`](RADEON3D_SUBMISSION.md) and reconcile changes with
 MiniGL's vendored consumer headers under
 `/home/mirek/minigl_ppc/third_party/radeon3d/include/` before changing the ABI.
-The current driver is version 3.0 and exposes Radeon3D interface 17; do not copy
+The current driver is version 3.0 and exposes Radeon3D interface 18; do not copy
 older interface numbers from consumer-side notes. Results are tracked in
 [`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
+
+Interface 18 additionally supports trusted producer-built indirect buffers.
+Rendering requires both INDIRECT_DISPATCH and INDIRECT_RENDER capabilities;
+extent checks do not sandbox packet register/VRAM references. The driver still
+owns submission, transitions, fences and recovery.
 
 Check any planned fixed-function behaviour against the Mesa implementation
 before writing it, and again before trusting a probe's expected values. Mesa
@@ -132,8 +137,21 @@ because changed code generation invalidates binary and hardware baselines. Keep
 `src/startup.c` and `src/library.c` first in link order so `_start` and resident
 data remain in the first code hunk. Treat warnings as defects.
 
-Install `Radeon9200.chip` and `Prometheus.card` as a matched pair and cold boot
-before testing the new driver. If a run also installs a new
+Install the active matched pair as `LIBS:Picasso96/Radeon9200.chip` and
+`LIBS:Picasso96/Prometheus.card`, then cold boot before testing the new driver.
+Never push, pull, copy, checksum, or otherwise mutate/query Amiga files in
+parallel. Serialize all Amiga filesystem and DOS operations; concurrent bridge
+requests can collide through shared temporary files and produce missing or
+misleading results.
+Keep the last known-good matched pair as
+`LIBS:Picasso96/Radeon9200.chip.previous` and
+`LIBS:Picasso96/Prometheus.card.previous`; never maintain or restore only one
+`.previous` component. Before installing an experimental pair, copy both active
+files to those exact recovery names. The `S:startup-sequence` recovery block
+runs before `LoadMonDrvs`: holding the right mouse button makes `C:TestRMB`
+return `WARN`, and the block copies both `.previous` files to their active names
+only when both recovery files exist. Do not hold the right mouse button for a
+normal experimental-driver boot. If a run also installs a new
 `LIBS:minigl.library`, execute `Avail Flush` before launching clients or
 AmigaOS may retain and reopen the old resident library despite a matching disk
 CRC.

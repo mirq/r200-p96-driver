@@ -496,8 +496,27 @@
 #define RADEON_CP_RB_WPTR                   0x0714UL
 #define RADEON_CP_RB_WPTR_DELAY             0x0718UL
 #define RADEON_CP_RB_RPTR_WR                0x071cUL
+/* Indirect buffer registers, from the Mesa classic radeon register map
+ * (src/mesa/drivers/dri/radeon/server/radeon_reg.h). The surrounding CP
+ * block matches the offsets this driver already uses; execution requires
+ * the RADEON_CSQ_PRIBM_INDBM queue mode CpConfigureRing already selects. */
+#define RADEON_CP_IB_BASE                   0x0738UL
+#define RADEON_CP_IB_BUFSZ                  0x073cUL
 #define RADEON_CP_CSQ_CNTL                  0x0740UL
 #define RADEON_CP_CSQ_MODE                  0x0744UL
+/* CSQ cache partition: INDIRECT1_START=16, INDIRECT2_START=80 of the
+ * 96-dword CP instruction cache, the split the kernel's r100_cp_init
+ * programs before its final magic. The 0x00004d4d magic starves the
+ * indirect1 region to 19 dwords and stalls indirect buffers of ~64
+ * dwords and larger on this RV280 (boot-probe matrix 2026-09-08: 8-dword
+ * IB passes and 48-dword IB passes under 0x4d4d, 64-dword IB times out
+ * under 0x4d4d and passes under 0x5010). */
+#define CP_CSQ_CACHE_PARTITION              0x00005010UL
+#define RADEON_CP_CSQ_STAT                  0x07f8UL
+#define RADEON_CSQ_RPTR_PRIMARY_MASK        (0xffUL << 0)
+#define RADEON_CSQ_WPTR_PRIMARY_MASK        (0xffUL << 8)
+#define RADEON_CSQ_RPTR_INDIRECT_MASK       (0xffUL << 16)
+#define RADEON_CSQ_WPTR_INDIRECT_MASK       (0xffUL << 24)
 #define RADEON_CSQ_PRIBM_INDBM              (4UL << 28)
 #define RADEON_SCRATCH_UMSK                 0x0770UL
 #define RADEON_SCRATCH_ADDR                 0x0774UL

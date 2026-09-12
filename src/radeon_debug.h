@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 18UL
+#define RADEON_DEBUG_VERSION 22UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -218,11 +218,57 @@ struct RadeonDebugStats {
     ULONG ExecuteCopyTicks;
     ULONG ExecuteBuildTicks;
     ULONG ExecuteSubmitTicks;
+    /*
+     * Version 19: indirect-buffer bring-up probe, kernel r100_ib_test
+     * shape. The CP consumes an 8-dword IB whose second dword is a
+     * scratch-register write; the fence state, the CSQ indirect-queue
+     * pointers and the scratch readback separate "dispatch not accepted"
+     * from "accepted but never fetched" from "executed".
+     */
+    ULONG IbProbeRun;
+    ULONG IbAllocSuccess;
+    ULONG IbGpuAddress;
+    ULONG IbDispatchAccepted;
+    ULONG IbCsqStatSubmit;
+    ULONG IbFenceRetired;
+    ULONG IbCsqStatAfter;
+    ULONG IbRbbmStatusAfter;
+    ULONG IbScratchValue;
+    ULONG IbFenceTicks;
+    /*
+     * Version 21: further indirect-buffer probe cases, run after the first
+     * (which passes), each preceded by recovery if its predecessor timed
+     * out. Ib2 isolates the address region (segment-pool 8-dword IB);
+     * Ib3 then isolates the size (pool 64-dword) or, when Ib2 fails, the
+     * size at the known-good low address (bump 64-dword).
+     */
+    ULONG Ib2Gpu;
+    ULONG Ib2Dwords;
+    ULONG Ib2Accepted;
+    ULONG Ib2CsqSubmit;
+    ULONG Ib2Fence;
+    ULONG Ib2CsqAfter;
+    ULONG Ib2Rbbm;
+    ULONG Ib2Scratch;
+    ULONG Ib2FenceTicks;
+    ULONG Ib2NextReady;
+    ULONG Ib2CsqMode;
+    ULONG Ib3Gpu;
+    ULONG Ib3Dwords;
+    ULONG Ib3Accepted;
+    ULONG Ib3CsqSubmit;
+    ULONG Ib3Fence;
+    ULONG Ib3CsqAfter;
+    ULONG Ib3Rbbm;
+    ULONG Ib3Scratch;
+    ULONG Ib3FenceTicks;
+    ULONG Ib3NextReady;
+    ULONG Ib3CsqMode;
 };
 
-#define RADEON_DEBUG_STATS_V18_SIZE 660UL
-typedef char RadeonDebugStatsV18SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V18_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V22_SIZE 788UL
+typedef char RadeonDebugStatsV22SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V22_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL
@@ -255,7 +301,8 @@ extern ULONG RadeonMonoProbeSample;
 extern ULONG RadeonMonoProbeSampleAlt;
 
 void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
-                     ULONG dmaRequested, ULONG spriteExperiment);
+                     ULONG dmaRequested, ULONG spriteExperiment,
+                     APTR segmentPool);
 void RadeonDebugClose(struct BoardInfo *bi);
 void RadeonDebugBegin(struct RadeonDebugSample *sample);
 void RadeonDebugEndFill(const struct RadeonDebugSample *sample);
@@ -289,8 +336,8 @@ void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords);
 
 #define RDEBUG_COUNT_READ()      (++RadeonDebugReads)
 #define RDEBUG_COUNT_WRITE()     (++RadeonDebugWrites)
-#define RDEBUG_OPEN(bi, cp, dma, sprite) \
-    RadeonDebugOpen((bi), (cp), (dma), (sprite))
+#define RDEBUG_OPEN(bi, cp, dma, sprite, pool) \
+    RadeonDebugOpen((bi), (cp), (dma), (sprite), (pool))
 #define RDEBUG_CLOSE(bi)         RadeonDebugClose(bi)
 #define RDEBUG_SAMPLE            struct RadeonDebugSample rdSample;
 #define RDEBUG_BEGIN()           RadeonDebugBegin(&rdSample)
@@ -337,7 +384,7 @@ void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords);
 
 #define RDEBUG_COUNT_READ()      ((void)0)
 #define RDEBUG_COUNT_WRITE()     ((void)0)
-#define RDEBUG_OPEN(bi, cp, dma, sprite) ((void)0)
+#define RDEBUG_OPEN(bi, cp, dma, sprite, pool) ((void)(pool), (void)0)
 #define RDEBUG_CLOSE(bi)         ((void)0)
 #define RDEBUG_SAMPLE
 #define RDEBUG_BEGIN()           ((void)0)

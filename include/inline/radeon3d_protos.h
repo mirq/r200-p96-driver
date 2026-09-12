@@ -81,6 +81,11 @@ BOOL __Radeon3DAllocSurface(
     __reg("d1") ULONG height,
     __reg("d2") ULONG format,
     __reg("a1") struct Radeon3DSurface *surface) = "\tjsr\t-138(a6)";
+BOOL __Radeon3DDispatchIndirect(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device,
+    __reg("a1") const struct Radeon3DIndirect *indirect,
+    __reg("a2") ULONG *fenceOut) = "\tjsr\t-144(a6)";
 #ifndef RADEON3D_BASE_NAME
 #define RADEON3D_BASE_NAME Radeon9200Base
 #endif
@@ -121,5 +126,8 @@ BOOL __Radeon3DAllocSurface(
 #define Radeon3DAllocSurface(device, width, height, format, surface) \
     __Radeon3DAllocSurface(RADEON3D_BASE_NAME, (device), (width), (height), \
                            (format), (surface))
+#define Radeon3DDispatchIndirect(device, indirect, fenceOut) \
+    __Radeon3DDispatchIndirect(RADEON3D_BASE_NAME, (device), (indirect), \
+                               (fenceOut))
 
 #endif

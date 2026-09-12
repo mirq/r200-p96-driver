@@ -25,4 +25,7 @@ VOID Radeon3DReleaseSurface(struct Radeon3DDevice *device, struct Radeon3DSurfac
 BOOL Radeon3DExecute(struct Radeon3DDevice *device, const ULONG *records, ULONG recordDwords, ULONG flags, ULONG *fenceOut) (a0,a1,d0,d1,a2)
 ==bias 132
 BOOL Radeon3DCommitStateBatch(struct Radeon3DDevice *device, const struct Radeon3DStateBatch *batch, ULONG *fenceOut) (a0,a1,a2)
+==version 4
+==bias 144
+BOOL Radeon3DDispatchIndirect(struct Radeon3DDevice *device, const struct Radeon3DIndirect *indirect, ULONG *fenceOut) (a0,a1,a2)
 ==end

@@ -548,6 +548,9 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
         info->Caps |= RADEON3D_CAP_ORDERED_COMMITS;
     if (interfaceVersion >= 17UL && base->AuxSurfacePool)
         info->Caps |= RADEON3D_CAP_AUX_SURFACES;
+    if (interfaceVersion >= 18UL && base->StreamSegmentPool)
+        info->Caps |= RADEON3D_CAP_INDIRECT_DISPATCH |
+                      RADEON3D_CAP_INDIRECT_RENDER;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -1911,6 +1914,163 @@ BOOL Radeon3DCommitStateBatch(
                      emitter->Count, copyTicks, buildTicks, submitTicks,
                      result);
     UnlockServiceBoard(base, bi, device);
+    return result;
+}
+
+BOOL Radeon3DDispatchIndirect(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(const struct Radeon3DIndirect *indirect),
+    __REGA2(ULONG *fenceOut),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    struct BoardInfo *bi;
+    struct Radeon3DSegmentSlot *slot;
+    struct Radeon3DSegmentSlot lease;
+    struct Radeon3DIndirect request;
+    ULONG commands[3];
+    ULONG generation;
+    ULONG phase, submitTicks;
+    ULONG fence = 0;
+    BOOL result;
+
+    if (base)
+        COMMIT_FAIL(base, 100UL);
+    if (fenceOut)
+        *fenceOut = 0x80000000UL | 100UL;
+    if (!base || !indirect ||
+        indirect->Size < RADEON3D_INDIRECT_V1_SIZE) {
+        if (base)
+            COMMIT_FAIL(base, 101UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 101UL;
+        return FALSE;
+    }
+    /* Validate and consume one fixed-size snapshot, even if the caller
+     * changes its descriptor while Prepare synchronizes the engine. */
+    request = *indirect;
+    if (request.Size < RADEON3D_INDIRECT_V1_SIZE ||
+        request.Version != RADEON3D_INDIRECT_VERSION ||
+        request.Flags || !request.DwordCount ||
+        (request.DwordCount & 1UL) ||
+        request.DwordCount > RADEON3D_MAX_BATCH_DWORDS ||
+        (request.ByteOffset & 15UL)) {
+        COMMIT_FAIL(base, 101UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 101UL;
+        return FALSE;
+    }
+    bi = LockServiceBoard(base, &device);
+    if (!bi) {
+        COMMIT_FAIL(base, 102UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 102UL;
+        return FALSE;
+    }
+    if (device->InterfaceVersion < 18UL ||
+        !base->StreamSegmentPool ||
+        request.SegmentId >= RADEON3D_MAX_SEGMENTS ||
+        !device->Segments[request.SegmentId].Allocated) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 103UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 103UL;
+        return FALSE;
+    }
+    slot = &device->Segments[request.SegmentId];
+    if (request.ByteOffset >= slot->Bytes ||
+        request.DwordCount >
+            (slot->Bytes - request.ByteOffset) / sizeof(ULONG)) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 104UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 104UL;
+        return FALSE;
+    }
+    if (slot->GpuAddress > ~(ULONG)0 - request.ByteOffset) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 105UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 105UL;
+        return FALSE;
+    }
+    generation = base->ServiceGeneration;
+    lease = *slot;
+    if (!RadeonPrepare3D(bi)) {
+        COMMIT_FAIL(base, 107UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 107UL;
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    /* Prepare may recover successfully but invalidate this session. Keep
+     * BoardLock held and recheck before any indirect setup or submission. */
+    ObtainSemaphore(&base->ServiceLock);
+    result = FindActiveDevice(base, device) && IsUsableDevice(base, device) &&
+             base->ServiceGeneration == generation && base->BoardInfo == bi &&
+             base->StreamSegmentPool && slot->Allocated &&
+             slot->CpuAddress == lease.CpuAddress &&
+             slot->GpuAddress == lease.GpuAddress && slot->Bytes == lease.Bytes;
+    ReleaseSemaphore(&base->ServiceLock);
+    if (!result) {
+        COMMIT_FAIL(base, 108UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 108UL;
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    /* PACKET0(count=1) writes IB_BASE then IB_BUFSZ consecutively; the CP
+     * fetches DwordCount dwords from the address and returns to the ring.
+     * The retiring fence tail appended by RadeonCpSubmitStream executes
+     * only after the indirect buffer, so a retired fence proves fetch. */
+    commands[0] = RADEON_CP_PACKET0(RADEON_CP_IB_BASE, 1);
+    commands[1] = slot->GpuAddress + request.ByteOffset;
+    commands[2] = request.DwordCount;
+    {
+        ULONG csqMode = RadeonRead32(bi, RADEON_CP_CSQ_MODE);
+        ULONG dpDatatype;
+
+        if (csqMode != CP_CSQ_CACHE_PARTITION) {
+            /* A clobbered partition starves the indirect fetch and stalls
+             * the CP mid-buffer; restore before every dispatch. */
+            (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE,
+                                CP_CSQ_CACHE_PARTITION);
+            csqMode = CP_CSQ_CACHE_PARTITION;
+        }
+        /* The indirect fetch follows DP_DATATYPE's host-endian bit while
+         * the ring fetch does not: RestoreEngineState() sets
+         * HOST_BIG_ENDIAN_EN on every Prepare3D transition, and with it
+         * set the producer's CP-native (pre-swapped) stream decodes as
+         * garbage and the CP stalls mid-buffer (2026-09-08 matrix). Clear
+         * it for the dispatch; 2D host-data paths program their own swap
+         * in RBBM_GUICNTL per operation and the next Prepare3D transition
+         * restores the 2D baseline. */
+        dpDatatype = RadeonRead32(bi, RADEON_DP_DATATYPE);
+        if (dpDatatype & RADEON_HOST_BIG_ENDIAN_EN)
+            (void)RadeonWrite32(bi, RADEON_DP_DATATYPE,
+                                dpDatatype & ~RADEON_HOST_BIG_ENDIAN_EN);
+        /* Diagnostic trail: mode byte + endian bit + write pointer of the
+         * indirect queue, readable via GetInfo after a failed fence. */
+        base->CommitFailStage = 0xc5000000UL | ((csqMode & 0xffUL) << 16) |
+                                (((dpDatatype >> 29) & 1UL) << 8) |
+                                ((RadeonRead32(bi, RADEON_CP_CSQ_STAT) >>
+                                  24) & 0xffUL);
+    }
+    phase = ServiceExecTicks(base);
+    result = RadeonCpSubmitStream(bi, commands, 3UL, TRUE, &fence);
+    submitTicks = ServiceExecTicks(base) - phase;
+    if (result && fence) {
+        device->LastFence = fence;
+        RadeonMark3DSubmitted(bi);
+    } else {
+        result = FALSE;
+        (void)RadeonRecoverAcceleration(bi);
+    }
+    RecordExecSample(base, RADEON3D_SAMPLE_DISPATCH, request.DwordCount,
+                     3UL, 0UL, 0UL, submitTicks, result);
+    UnlockServiceBoard(base, bi, device);
+    if (fenceOut)
+        *fenceOut = result ? fence : (0x80000000UL | 106UL);
     return result;
 }
 

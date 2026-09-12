@@ -22,7 +22,6 @@
 
 #define CP_RB_CNTL_VALUE \
     (17UL | (9UL << 8) | (1UL << 18) | RADEON_RB_NO_UPDATE)
-#define CP_CSQ_CACHE_PARTITION 0x00004d4dUL
 #define CP_TEST_BEFORE         0xcafedeadUL
 #define CP_TEST_AFTER          0xdeadbeefUL
 #define CP_CACHE_FLUSH_ALL     0x0000000fUL
@@ -43,6 +42,7 @@ struct RadeonCpState {
     UBYTE Ready;
     UBYTE BusConfigured;
     UBYTE TimerOpen;
+    UBYTE PrimeBusy;
     struct MsgPort TimerPort;
     struct timerequest TimerRequest;
     UBYTE StagingStorage[CP_MAX_COMMAND_DWORDS * sizeof(ULONG) + 7UL];

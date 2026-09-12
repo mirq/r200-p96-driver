@@ -290,7 +290,9 @@ The service enables TCL lighting with hardware normal normalization, derives
 `PER_LIGHT_CTL` local/spot/attenuation flags exactly as Mesa's classic r200
 driver does, uploads lights through the interleaved vector/scalar memory
 layout, sources all material channels from the submitted material block, and
-keeps vertex colour as the unlit fallback input. Two-sided lighting,
+selects `R200_OUTPUT_COLOR_0` so the TCL-computed primary colour reaches the
+rasterizer. The submitted vertex colour remains the unlit fallback input.
+Two-sided lighting,
 colour-material source selection, and user clip planes remain unavailable.
 Interface-10 sessions reject normals and lighting records.
 
@@ -331,3 +333,88 @@ diagnostic build it exercises the production recovery sequence: invalidate
 existing sessions, reset the engine, reload and test the CP, then re-arm the
 service. Existing sessions remain stale after a successful recovery, so clients
 must reopen and reimport their resources.
+
+## Interface-v18 trusted indirect dispatch
+
+Interface-18 sessions with `RADEON3D_CAP_INDIRECT_DISPATCH` (advertised only
+when the streaming-segment pool exists) may call `Radeon3DDispatchIndirect()`.
+The caller builds a complete CP packet stream into a leased segment and the
+service enqueues it with a single `PACKET0(CP_IB_BASE, 1)` write carrying the
+segment GPU address and the dword count, followed by the usual retiring fence.
+This is a trusted raw-packet path, unlike the bounded semantic entry points:
+
+- The service validates only the *extent*: session interface version, segment
+  identity (`SegmentId` must be a live lease of the calling session),
+  16-byte `ByteOffset` alignment, nonzero even `DwordCount`, `DwordCount` bounded
+  by `RADEON3D_MAX_BATCH_DWORDS`, the byte range against the leased segment,
+  and a GPU-address overflow guard. The client never supplies a raw address.
+- The stream *contents* are the trusted producer's responsibility. There is
+  no per-dword validation inside an indirect buffer. A malformed stream can
+  wedge the CP; recovery is the same `RadeonRecoverAcceleration()` sequence
+  as any other CP fault, and a hard GPU hang still requires a power cycle.
+  Extent validation bounds only the initial IB fetch, not packet effects.
+  Packets can access registers, reference further buffers and read or write
+  VRAM outside the lease, including desktop storage. It is not a sandbox.
+- `Flags` must be zero. `Size` must be at least `RADEON3D_INDIRECT_V1_SIZE`.
+- `DwordCount` includes padding and must be even (2 through 8192). This follows
+  Linux v2.6.39 [`radeon_cp_dispatch_indirect()` in `radeon_state.c`](https://github.com/torvalds/linux/blob/v2.6.39/drivers/gpu/drm/radeon/radeon_state.c),
+  which explicitly pads odd lengths with a Type-2 CP packet before writing
+  `CP_IB_BASE/CP_IB_BUFSZ`. For an odd stream, the producer must append one
+  CP-native PACKET2 (byte-swapped exactly once for the big-endian producer),
+  account for it in the lease extent/count, and flush it with the stream. The
+  service does not pad in place: it rejects odd snapshot counts at stage 101 before
+  locking the board or calling Prepare. This is the source-based hardware
+  padding contract, not an arbitrary no-op workaround; interface 18 and the
+  fixed 24-byte descriptor layout are unchanged.
+- After basic pointer/minimum-size checks, the service copies the fixed
+  24-byte V1 descriptor to local storage. All further validation, segment
+  selection, IB commands and count telemetry use only this snapshot, never
+  rereading the caller's fields after validation or prepare.
+- The producer must complete and data-cache-flush the stream before
+  dispatching, and must not change or release it until the fence retires.
+  Packets in the segment are CP-native (pre-swapped), unlike the host-endian
+  records supplied to `Radeon3DExecute()`. The retiring fence is appended after
+  the indirect packet in ring order, so `Radeon3DWaitFence()` on the returned
+  token proves the CP consumed the buffer.
+- CP ring ownership, wrap accounting, lockup detection, reset, 2D
+  coexistence and interrupts are unchanged and remain service-owned.
+- The stream must consist of packets the R200 CP accepts in
+  `RADEON_CSQ_PRIBM_INDBM` mode. Submitting register writes for surfaces the
+  session does not own remains prohibited by the trust contract even though
+  the service no longer parses the stream.
+
+Interface-17 and earlier sessions do not receive the capability and the
+vector rejects them. Earlier interface versions are unaffected.
+
+### Optional indirect render transitions
+
+`RADEON3D_CAP_INDIRECT_RENDER` (bit 27) supplements
+`RADEON3D_CAP_INDIRECT_DISPATCH` (bit 26), without changing interface 18 or
+any structure/vector layout. Both bits are advertised together only for
+interface-18 sessions with a streaming-segment pool. Rendering clients must
+require both bits; bit 26 alone identifies the earlier fetch/fence smoke path,
+not a driver with the 2D/3D transitions required for rendering.
+
+After request and lease validation, dispatch calls `RadeonPrepare3D()` with
+`BoardLock` held. Prepare may recover and return TRUE while invalidating the
+session. Before CSQ/endian setup or IB submission, dispatch rechecks active
+session usability, the unchanged service generation and board, CP readiness,
+and the unchanged live lease under `ServiceLock`, still holding `BoardLock`.
+A failed prepare or stale state is rejected without IB submission. The existing
+CSQ partition restoration and `DP_DATATYPE` host-endian-bit clearing run only
+after prepare and successful revalidation.
+
+Only submission success with a nonzero fence updates `LastFence` and calls
+`RadeonMark3DSubmitted()`, so later P96 work drains/restores the 3D state. A
+failed submit or missing fence returns FALSE and calls
+`RadeonRecoverAcceleration()` once, with no retry. Existing experimental
+diagnostics are retained: the output on failure is not a usable fence; stage
+106 identifies submission failure, 107 prepare failure, and 108 stale state
+after prepare. Check the BOOL result before using a fence token.
+
+Physical validation subsequently used chip CRC `CEB838A6` with card `18A453D6`:
+PPC-generated triangle readback passed, texture-update acceptance passed 7,127
+checks, and 600-frame CP-emitter gears runs completed 2,031 indirect submissions
+without errors. This validates those workloads, not arbitrary trusted packets.
+See the 2026-09-12 continuation in `R200_3D_PROGRESS.md` and the MiniGL consumer's
+`backend_r200/HOST_LOADER_REGRESSION.md` for exact artifacts and limits.

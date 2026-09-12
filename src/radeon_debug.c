@@ -194,6 +194,291 @@ static void MeasureCpBatch(struct BoardInfo *bi,
     stats->CpDirectTicks = Clock() - start;
 }
 
+static ULONG ByteReverse(ULONG value)
+{
+    return ((value & 0x000000ffUL) << 24) |
+           ((value & 0x0000ff00UL) << 8) |
+           ((value & 0x00ff0000UL) >> 8) |
+           ((value & 0xff000000UL) >> 24);
+}
+
+struct IbCase {
+    ULONG Gpu;
+    ULONG Dwords;
+    ULONG Accepted;
+    ULONG CsqSubmit;
+    ULONG Fence;
+    ULONG CsqAfter;
+    ULONG Rbbm;
+    ULONG Scratch;
+    ULONG FenceTicks;
+    ULONG NextReady;
+    ULONG CsqMode;
+};
+
+/*
+ * One indirect-buffer case, kernel r100_ib_test shape: dwords of a
+ * scratch-write packet followed by PACKET2, stored CP-native
+ * (byte-reversed, matching the software-pre-swapped ring), dispatched
+ * with PACKET0(CP_IB_BASE,1) and retired by the ring fence. On a fence
+ * timeout the engine is recovered so the next case starts clean; NextReady
+ * records whether that recovery left the CP usable.
+ */
+static void RunIbCase(struct BoardInfo *bi, APTR cpu, ULONG gpu,
+                      ULONG dwords, struct IbCase *out)
+{
+    volatile ULONG *ib = (volatile ULONG *)cpu;
+    ULONG commands[3];
+    ULONG fence = 0;
+    ULONG start;
+    ULONG index;
+    BOOL submitted;
+
+    out->Gpu = gpu;
+    out->Dwords = dwords;
+    ib[0] = ByteReverse(RADEON_CP_PACKET0(RADEON_SCRATCH_REG1, 0));
+    ib[1] = ByteReverse(0xdeadbeefUL);
+    for (index = 2; index < dwords; ++index)
+        ib[index] = ByteReverse(RADEON_CP_PACKET2);
+    (void)ib[dwords - 1UL];
+    (void)RadeonWrite32(bi, RADEON_SCRATCH_REG1, 0);
+    out->CsqMode = RadeonRead32(bi, RADEON_CP_CSQ_MODE);
+    commands[0] = RADEON_CP_PACKET0(RADEON_CP_IB_BASE, 1);
+    commands[1] = gpu;
+    commands[2] = dwords;
+    start = Clock();
+    submitted = RadeonCpSubmitStream(bi, commands, 3UL, TRUE, &fence);
+    out->CsqSubmit = RadeonRead32(bi, RADEON_CP_CSQ_STAT);
+    out->Accepted = submitted ? 1UL : 0UL;
+    if (submitted && fence) {
+        out->Fence = RadeonCpWaitFence(bi, fence, 3000UL) ? 1UL : 0UL;
+        if (!out->Fence)
+            (void)RadeonRecoverAcceleration(bi);
+    }
+    out->FenceTicks = Clock() - start;
+    out->CsqAfter = RadeonRead32(bi, RADEON_CP_CSQ_STAT);
+    out->Rbbm = RadeonRead32(bi, RADEON_RBBM_STATUS);
+    if (out->Fence) {
+        for (index = 0; index < 50000UL; ++index) {
+            if (RadeonRead32(bi, RADEON_SCRATCH_REG1) == 0xdeadbeefUL)
+                break;
+        }
+        out->Scratch = RadeonRead32(bi, RADEON_SCRATCH_REG1);
+    }
+    out->NextReady = RadeonCpIsReady(bi) ? 1UL : 0UL;
+}
+
+static void FillIb2(struct RadeonDebugStats *stats,
+                    const struct IbCase *out)
+{
+    stats->Ib2Gpu = out->Gpu;
+    stats->Ib2Dwords = out->Dwords;
+    stats->Ib2Accepted = out->Accepted;
+    stats->Ib2CsqSubmit = out->CsqSubmit;
+    stats->Ib2Fence = out->Fence;
+    stats->Ib2CsqAfter = out->CsqAfter;
+    stats->Ib2Rbbm = out->Rbbm;
+    stats->Ib2Scratch = out->Scratch;
+    stats->Ib2FenceTicks = out->FenceTicks;
+    stats->Ib2NextReady = out->NextReady;
+    stats->Ib2CsqMode = out->CsqMode;
+}
+
+static void FillIb3(struct RadeonDebugStats *stats,
+                    const struct IbCase *out)
+{
+    stats->Ib3Gpu = out->Gpu;
+    stats->Ib3Dwords = out->Dwords;
+    stats->Ib3Accepted = out->Accepted;
+    stats->Ib3CsqSubmit = out->CsqSubmit;
+    stats->Ib3Fence = out->Fence;
+    stats->Ib3CsqAfter = out->CsqAfter;
+    stats->Ib3Rbbm = out->Rbbm;
+    stats->Ib3Scratch = out->Scratch;
+    stats->Ib3FenceTicks = out->FenceTicks;
+    stats->Ib3NextReady = out->NextReady;
+    stats->Ib3CsqMode = out->CsqMode;
+}
+
+/*
+ * Indirect-buffer bring-up probe. Case 1 uses a private-VRAM block from
+ * the low bump area with 8 dwords (the kernel-proven shape). Case 2
+ * repeats it from the streaming-segment pool, isolating the address
+ * region. Case 3 then varies the size: 64 dwords at the pool when case 2
+ * passed, otherwise 64 dwords at the low block, isolating the size at
+ * whichever address region works.
+ */
+static void TestIndirectBuffer(struct BoardInfo *bi,
+                               struct RadeonDebugStats *stats,
+                               APTR segmentPool)
+{
+    struct RadeonBoardData *data;
+    struct IbCase caseTwo;
+    APTR scratch;
+    volatile ULONG *ib;
+    ULONG memoryBase;
+    ULONG gpuAddress;
+    ULONG index;
+
+    stats->IbProbeRun = 1UL;
+    if (!RadeonCpIsReady(bi))
+        return;
+    data = RadeonGetBoardData(bi);
+    if (!data || !bi->MemoryBase)
+        return;
+    scratch = RadeonAllocatePrivateVram(bi, 4096UL);
+    if (!scratch)
+        return;
+    stats->IbAllocSuccess = 1UL;
+    memoryBase = (ULONG)bi->MemoryBase;
+    if ((ULONG)scratch < memoryBase ||
+        data->FramebufferGpuBase >
+            ~0UL - ((ULONG)scratch - memoryBase)) {
+        (void)RadeonFreePrivateVram(bi, scratch, 4096UL);
+        return;
+    }
+    gpuAddress = data->FramebufferGpuBase +
+                 ((ULONG)scratch - memoryBase);
+    stats->IbGpuAddress = gpuAddress;
+    ib = (volatile ULONG *)scratch;
+    ib[0] = ByteReverse(RADEON_CP_PACKET0(RADEON_SCRATCH_REG1, 0));
+    ib[1] = ByteReverse(0xdeadbeefUL);
+    for (index = 2; index < 8UL; ++index)
+        ib[index] = ByteReverse(RADEON_CP_PACKET2);
+    (void)ib[7UL];
+    (void)RadeonWrite32(bi, RADEON_SCRATCH_REG1, 0);
+    RunIbCase(bi, scratch, gpuAddress, 8UL, &caseTwo);
+    stats->IbCsqStatSubmit = caseTwo.CsqSubmit;
+    stats->IbDispatchAccepted = caseTwo.Accepted;
+    stats->IbFenceRetired = caseTwo.Fence;
+    stats->IbCsqStatAfter = caseTwo.CsqAfter;
+    stats->IbRbbmStatusAfter = caseTwo.Rbbm;
+    stats->IbScratchValue = caseTwo.Scratch;
+    stats->IbFenceTicks = caseTwo.FenceTicks;
+    RLOG("Radeon9200: IB case1 gpu=%08lx dwords=8 accepted=%lu "
+         "csq_submit=%08lx fence=%lu csq_after=%08lx rbbm=%08lx "
+         "scratch=%08lx ticks=%lu ready=%lu\n",
+         (unsigned long)gpuAddress,
+         (unsigned long)caseTwo.Accepted,
+         (unsigned long)caseTwo.CsqSubmit,
+         (unsigned long)caseTwo.Fence,
+         (unsigned long)caseTwo.CsqAfter,
+         (unsigned long)caseTwo.Rbbm,
+         (unsigned long)caseTwo.Scratch,
+         (unsigned long)caseTwo.FenceTicks,
+         (unsigned long)caseTwo.NextReady);
+
+    if (!caseTwo.NextReady)
+        goto done;
+    if (segmentPool) {
+        struct IbCase poolCase;
+        struct IbCase bigCase;
+        struct IbCase bisectCase;
+        ULONG poolGpu = data->FramebufferGpuBase +
+                        ((ULONG)segmentPool - memoryBase);
+
+        RunIbCase(bi, segmentPool, poolGpu, 8UL, &poolCase);
+        FillIb2(stats, &poolCase);
+        RLOG("Radeon9200: IB case2 pool gpu=%08lx dwords=8 accepted=%lu "
+             "csq_submit=%08lx fence=%lu csq_after=%08lx rbbm=%08lx "
+             "scratch=%08lx ticks=%lu ready=%lu\n",
+             (unsigned long)poolCase.Gpu,
+             (unsigned long)poolCase.Accepted,
+             (unsigned long)poolCase.CsqSubmit,
+             (unsigned long)poolCase.Fence,
+             (unsigned long)poolCase.CsqAfter,
+             (unsigned long)poolCase.Rbbm,
+             (unsigned long)poolCase.Scratch,
+             (unsigned long)poolCase.FenceTicks,
+             (unsigned long)poolCase.NextReady);
+        if (!poolCase.NextReady)
+            goto done;
+        if (poolCase.Fence) {
+            /* Case 3: pool, 64 dwords, default partition (known to fail
+             * on the first matrix boot). */
+            RunIbCase(bi, segmentPool, poolGpu, 64UL, &bigCase);
+            FillIb3(stats, &bigCase);
+            RLOG("Radeon9200: IB case3 gpu=%08lx dwords=64 accepted=%lu "
+                 "csq_submit=%08lx fence=%lu csq_after=%08lx rbbm=%08lx "
+                 "scratch=%08lx ticks=%lu ready=%lu\n",
+                 (unsigned long)bigCase.Gpu,
+                 (unsigned long)bigCase.Accepted,
+                 (unsigned long)bigCase.CsqSubmit,
+                 (unsigned long)bigCase.Fence,
+                 (unsigned long)bigCase.CsqAfter,
+                 (unsigned long)bigCase.Rbbm,
+                 (unsigned long)bigCase.Scratch,
+                 (unsigned long)bigCase.FenceTicks,
+                 (unsigned long)bigCase.NextReady);
+        } else {
+            /* Case 3 fallback: pool failed at 8 dwords; test the size at
+             * the known-good low address instead. */
+            RunIbCase(bi, scratch, gpuAddress, 64UL, &bigCase);
+            FillIb3(stats, &bigCase);
+            RLOG("Radeon9200: IB case3 bump gpu=%08lx dwords=64 "
+                 "accepted=%lu csq_submit=%08lx fence=%lu "
+                 "csq_after=%08lx rbbm=%08lx scratch=%08lx ticks=%lu "
+                 "ready=%lu\n",
+                 (unsigned long)bigCase.Gpu,
+                 (unsigned long)bigCase.Accepted,
+                 (unsigned long)bigCase.CsqSubmit,
+                 (unsigned long)bigCase.Fence,
+                 (unsigned long)bigCase.CsqAfter,
+                 (unsigned long)bigCase.Rbbm,
+                 (unsigned long)bigCase.Scratch,
+                 (unsigned long)bigCase.FenceTicks,
+                 (unsigned long)bigCase.NextReady);
+        }
+        if (!bigCase.NextReady)
+            goto done;
+        /* Case 4 (overwrites the Ib2 slots): pool, 64 dwords, with the
+         * CSQ cache partition the kernel intended before the 0x4d4d
+         * magic: INDIRECT1_START=16, INDIRECT2_START=80. Restored after. */
+        if (1) {
+            /* Case 4: pool, 64 dwords, with the CSQ cache partition the
+             * kernel intended before the 0x4d4d magic: INDIRECT1_START=16
+             * (bits 0-7), INDIRECT2_START=80 (bits 8-15). Restored after. */
+            (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE, 0x00005010UL);
+            RunIbCase(bi, segmentPool, poolGpu, 64UL, &bigCase);
+            FillIb2(stats, &bigCase);
+            RLOG("Radeon9200: IB case4 partition=5010 gpu=%08lx "
+                 "dwords=64 accepted=%lu csq_submit=%08lx fence=%lu "
+                 "csq_after=%08lx rbbm=%08lx scratch=%08lx ticks=%lu "
+                 "ready=%lu\n",
+                 (unsigned long)bigCase.Gpu,
+                 (unsigned long)bigCase.Accepted,
+                 (unsigned long)bigCase.CsqSubmit,
+                 (unsigned long)bigCase.Fence,
+                 (unsigned long)bigCase.CsqAfter,
+                 (unsigned long)bigCase.Rbbm,
+                 (unsigned long)bigCase.Scratch,
+                 (unsigned long)bigCase.FenceTicks,
+                 (unsigned long)bigCase.NextReady);
+            (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE, 0x00004d4dUL);
+        }
+        /* Case 5 (overwrites the Ib3 slots): pool, 48 dwords, default
+         * partition. Bisects the size threshold if case 4 still fails. */
+        if (bigCase.NextReady) {
+            RunIbCase(bi, segmentPool, poolGpu, 48UL, &bisectCase);
+            FillIb3(stats, &bisectCase);
+            RLOG("Radeon9200: IB case5 gpu=%08lx dwords=48 accepted=%lu "
+                 "csq_submit=%08lx fence=%lu csq_after=%08lx rbbm=%08lx "
+                 "scratch=%08lx ticks=%lu ready=%lu\n",
+                 (unsigned long)bisectCase.Gpu,
+                 (unsigned long)bisectCase.Accepted,
+                 (unsigned long)bisectCase.CsqSubmit,
+                 (unsigned long)bisectCase.Fence,
+                 (unsigned long)bisectCase.CsqAfter,
+                 (unsigned long)bisectCase.Rbbm,
+                 (unsigned long)bisectCase.Scratch,
+                 (unsigned long)bisectCase.FenceTicks,
+                 (unsigned long)bisectCase.NextReady);
+        }
+    }
+done:
+    (void)RadeonFreePrivateVram(bi, scratch, 4096UL);
+}
+
 static void TestCpFunction(struct BoardInfo *bi,
                            struct RadeonDebugStats *stats)
 {
@@ -219,7 +504,8 @@ static void TestCpFunction(struct BoardInfo *bi,
 }
 
 void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
-                     ULONG dmaRequested, ULONG spriteExperiment)
+                     ULONG dmaRequested, ULONG spriteExperiment,
+                     APTR segmentPool)
 {
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
@@ -251,6 +537,7 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     MeasureMmio(bi, stats);
     MeasureCpBatch(bi, stats);
     TestCpFunction(bi, stats);
+    TestIndirectBuffer(bi, stats, segmentPool);
     stats->CpActive = RadeonCpIsReady(bi);
 
     /* Counting starts clean so the first RectFill run is not polluted. */

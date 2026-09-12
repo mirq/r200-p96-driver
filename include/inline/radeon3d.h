@@ -117,4 +117,11 @@
         struct Radeon3DSurface *, surface, a1, \
         , RADEON3D_BASE_NAME)
 
+#define Radeon3DDispatchIndirect(device, indirect, fenceOut) \
+    LP3(0x90, BOOL, Radeon3DDispatchIndirect, \
+        struct Radeon3DDevice *, device, a0, \
+        const struct Radeon3DIndirect *, indirect, a1, \
+        ULONG *, fenceOut, a2, \
+        , RADEON3D_BASE_NAME)
+
 #endif

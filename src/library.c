@@ -54,6 +54,7 @@ static APTR FunctionTable[] USED = {
     (APTR)Radeon3DCommitBatch,
     (APTR)Radeon3DCommitStateBatch,
     (APTR)Radeon3DAllocSurface,
+    (APTR)Radeon3DDispatchIndirect,
     (APTR)-1
 };
 

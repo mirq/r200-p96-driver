@@ -369,6 +369,11 @@ BOOL Radeon3DAllocSurface(__REGA0(struct Radeon3DDevice *device),
                           __REGD2(ULONG format),
                           __REGA1(struct Radeon3DSurface *surface),
                           __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DDispatchIndirect(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(const struct Radeon3DIndirect *indirect),
+    __REGA2(ULONG *fenceOut),
+    __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
                          __REGA6(struct RadeonChipBase *base));
 
