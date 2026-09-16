@@ -551,6 +551,10 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     if (interfaceVersion >= 18UL && base->StreamSegmentPool)
         info->Caps |= RADEON3D_CAP_INDIRECT_DISPATCH |
                       RADEON3D_CAP_INDIRECT_RENDER;
+    /* Ranged fence validation ships in the same service build as interface
+     * 18; a driver from before this bit does not set it. */
+    if (interfaceVersion >= 18UL)
+        info->Caps |= RADEON3D_CAP_MULTI_FENCE;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -2085,8 +2089,14 @@ static BOOL IsSessionFence(struct RadeonChipBase *base,
         return FALSE;
     ObtainSemaphore(&base->ServiceLock);
     active = FindDevice(base, device);
+    /* Accept any fence this session has submitted, not only device->LastFence:
+     * a consumer may keep several submissions in flight and retire them in
+     * order (RADEON3D_CAP_MULTI_FENCE). The CP scratch counter is monotonic
+     * per session and CpFenceReached handles wrap; this range check only
+     * bounds the value so a stale handle cannot test an arbitrary one. */
     valid = active && active->Magic == RADEON3D_SESSION_MAGIC &&
-            active->Base == base && active->LastFence == fence;
+            active->Base == base && active->LastFence &&
+            (LONG)(active->LastFence - fence) >= 0;
     ReleaseSemaphore(&base->ServiceLock);
     return valid;
 }

@@ -32,7 +32,8 @@
 #define RADEON3D_CAP_COMMIT_STATE_REUSE     (1UL << 22)
 #define RADEON3D_CAP_COMMIT_STATE_BATCH     (1UL << 23)
 /* Commit streams enter one CP FIFO in call order. Waiting on the most recent
- * fence retires all earlier commits; only that latest fence is waitable. */
+ * fence retires all earlier commits; without CAP_MULTI_FENCE only that latest
+ * fence is waitable. */
 #define RADEON3D_CAP_ORDERED_COMMITS        (1UL << 24)
 /* Radeon3DAllocSurface() is available and its pool was reserved. */
 #define RADEON3D_CAP_AUX_SURFACES           (1UL << 25)
@@ -41,6 +42,11 @@
 /* Optional interface-18 render transitions; require with INDIRECT_DISPATCH
  * for rendering, not just fetch/fence smoke tests. Not a packet sandbox. */
 #define RADEON3D_CAP_INDIRECT_RENDER        (1UL << 27)
+/* Test/WaitFence validate any fence the session has submitted, not only
+ * device->LastFence, so a consumer may keep several submissions in flight
+ * and retire them in order. Interface-18 hosts that need it must check this
+ * bit; without it only the latest fence is waitable (single-fence model). */
+#define RADEON3D_CAP_MULTI_FENCE            (1UL << 28)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
