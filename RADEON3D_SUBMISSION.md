@@ -320,10 +320,14 @@ before execution; the service drains the final texture byte before submitting
 texture fetches.
 
 Interface-v1 sessions cannot call `Radeon3DExecute()` and do not receive its
-capability. Fence tokens are accepted only by the session that most recently
-received them. `Radeon3DWaitFence()` treats a nonzero timeout as a wall-clock
-budget, clamps it to 60 seconds, and returns when its EClock deadline expires.
-A zero timeout performs one nonblocking fence test.
+capability. Fence tokens are accepted by the session that submitted them while
+they are inside the submitted range `(0, LastFence]` (fences are monotonic per
+session; `CpFenceReached` handles wrap). `RADEON3D_CAP_MULTI_FENCE` advertises
+this ranged validation; a driver without the bit accepts only
+`device->LastFence`, so a consumer that keeps several submissions in flight
+must check the capability. `Radeon3DWaitFence()` treats a nonzero timeout as a
+wall-clock budget, clamps it to 60 seconds, and returns when its EClock
+deadline expires. A zero timeout performs one nonblocking fence test.
 
 Interface-v5 diagnostic clients may use `Radeon3DInvalidateForTest()` only when
 `RADEON3D_CAP_TEST_INVALIDATE` is present. The capability is advertised only by
