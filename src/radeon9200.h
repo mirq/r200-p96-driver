@@ -294,9 +294,14 @@ BOOL RadeonCpDebugRunTests(struct BoardInfo *bi,
 #endif
 
 #ifdef DEBUG
-#include <clib/debug_protos.h>
-#define RLOG(format, ...) \
-    KPrintF((CONST_STRPTR)(format), ##__VA_ARGS__)
+/*
+ * No console output in the chip: KPrintF/libdebug routes raw DOS/exec debug
+ * console work during LoadMonDrvs and was implicated in two unrecoverable
+ * boot hangs (2026-09-17/18, real 68060). Diagnostics transfer through the
+ * passive Radeon9200.Debug port instead; the chip stays silent in DEBUG
+ * builds exactly as in release builds.
+ */
+#define RLOG(...) ((void)0)
 #else
 #define RLOG(...) ((void)0)
 #endif

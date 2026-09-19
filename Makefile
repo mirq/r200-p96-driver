@@ -1,6 +1,11 @@
 CROSS ?= /opt/amiga/bin/m68k-amigaos-
 DEBUG ?= 0
 FASTWAIT ?= 0
+# PROBES=1 compiles the boot-time engine experiments (MMIO/VRAM sampling,
+# CP no-op batches, CP function matrix, indirect-buffer matrix, fallback
+# probe) into DEBUG chip builds. Default 0: the debug chip then boots with
+# only the passive debug port and counters active.
+PROBES ?= 0
 CC := $(CROSS)gcc
 STRIP := $(CROSS)strip
 
@@ -27,6 +32,7 @@ CARD_BUILD_DIR := $(BUILD_DIR)/prometheus-card
 P96_SCREEN_TEST := $(BUILD_DIR)/p96screen
 P96_OVERLAP_TEST := $(BUILD_DIR)/p96overlap
 P96_WINDOWMOVE_TEST := $(BUILD_DIR)/p96windowmove
+RTG_PRESENT_TEST := $(BUILD_DIR)/rtgpresent
 
 P96_DIR := Picasso96Develop
 BYTESWAP_DIR := OpenPci2.1-SDK290208/Include
@@ -67,6 +73,9 @@ CPPFLAGS := \
 
 ifeq ($(DEBUG),1)
 CPPFLAGS += -DDEBUG
+endif
+ifeq ($(PROBES),1)
+CPPFLAGS += -DRADEON_BOOT_PROBES=1
 endif
 ifeq ($(FASTWAIT),1)
 CPPFLAGS += -DRADEON_FAST_WAIT
@@ -148,7 +157,8 @@ VRAM_STREAM_TEST := $(BUILD_DIR)/vramstream
 
 all: $(TARGET) $(CARD_TARGET)
 
-tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST)
+tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST) \
+	$(RTG_PRESENT_TEST)
 
 vramstream: $(VRAM_STREAM_TEST)
 
@@ -259,6 +269,11 @@ $(P96_OVERLAP_TEST): tools/p96overlap.c
 		-Iinclude $< -lamiga -o $@
 
 $(P96_WINDOWMOVE_TEST): tools/p96windowmove.c
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
+		-Iinclude $< -lamiga -o $@
+
+$(RTG_PRESENT_TEST): tools/rtgpresent.c
 	mkdir -p $(dir $@)
 	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
 		-Iinclude $< -lamiga -o $@

@@ -147,10 +147,22 @@ Keep the last known-good matched pair as
 `LIBS:Picasso96/Radeon9200.chip.previous` and
 `LIBS:Picasso96/Prometheus.card.previous`; never maintain or restore only one
 `.previous` component. Before installing an experimental pair, copy both active
-files to those exact recovery names. The `S:startup-sequence` recovery block
-runs before `LoadMonDrvs`: holding the right mouse button makes `C:TestRMB`
-return `WARN`, and the block copies both `.previous` files to their active names
-only when both recovery files exist. Do not hold the right mouse button for a
+files to those exact recovery names. Two recovery layers exist in
+`S:startup-sequence`:
+
+1. Automatic: the sequence writes `S:driver-boot-failed` just before
+   `LoadMonDrvs` and clears it at boot end only when `C:RTGPresent` reports
+   an RTG screen. If a boot stalls (marker survives) or the driver fails and
+   the machine falls back to the native PAL display (`C:RTGPresent` returns
+   WARN, and it writes `RAM:driver-fallback`), the next boot restores both
+   `.previous` files to their active names and leaves a proof note in
+   `RAM:driver-autorecovered`. After a normal RTG boot the marker is gone;
+   do not create it manually except when deliberately simulating a failed
+   boot. Successful RTG boots never delete `RAM:` notes from earlier boots,
+   so check both note files when investigating an automatic restore.
+2. Manual: holding the right mouse button makes `C:TestRMB` return `WARN`,
+   and the block copies both `.previous` files to their active names only
+   when both recovery files exist. Do not hold the right mouse button for a
 normal experimental-driver boot. If a run also installs a new
 `LIBS:minigl.library`, execute `Avail Flush` before launching clients or
 AmigaOS may retain and reopen the old resident library despite a matching disk

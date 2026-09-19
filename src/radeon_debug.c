@@ -22,6 +22,18 @@
 #define CP_PROBE_DWORDS    4096UL
 #define FALLBACK_PROBE_CALLS 8192UL
 
+/*
+ * Boot-time engine experiments (MMIO/VRAM sampling, CP no-op batches, CP
+ * function matrix, indirect-buffer matrix, fallback acceleration probe).
+ * These submit work to the GPU during LoadMonDrvs and were implicated in a
+ * boot hang on 2026-09-17 (debug chip 97548/B2D34778), so they are opt-in:
+ * define RADEON_BOOT_PROBES=1 to compile them in. The passive debug port,
+ * counters, and per-call accounting always remain active in DEBUG builds.
+ */
+#ifndef RADEON_BOOT_PROBES
+#define RADEON_BOOT_PROBES 0
+#endif
+
 ULONG RadeonDebugReads;
 ULONG RadeonDebugWrites;
 ULONG RadeonMonoProbeResult;
@@ -104,6 +116,7 @@ static ULONG Clock(void)
  * hammering it cannot overflow the 2D command FIFO or disturb the CP fence in
  * SCRATCH_REG0.
  */
+#if RADEON_BOOT_PROBES
 static void MeasureMmio(struct BoardInfo *bi,
                          struct RadeonDebugStats *stats)
 {
@@ -166,7 +179,9 @@ static void MeasureMmio(struct BoardInfo *bi,
 
     stats->MmioSamples = MMIO_SAMPLE_COUNT;
 }
+#endif /* RADEON_BOOT_PROBES */
 
+#if RADEON_BOOT_PROBES
 static void MeasureCpBatch(struct BoardInfo *bi,
                             struct RadeonDebugStats *stats)
 {
@@ -431,12 +446,13 @@ static void TestIndirectBuffer(struct BoardInfo *bi,
         }
         if (!bigCase.NextReady)
             goto done;
-        /* Case 4 (overwrites the Ib2 slots): pool, 64 dwords, with the
-         * CSQ cache partition the kernel intended before the 0x4d4d
-         * magic: INDIRECT1_START=16, INDIRECT2_START=80. Restored after. */
+        /* Case 4 (overwrites the Ib2 slots): pool, 64 dwords, under the
+         * kernel's natural partition INDIRECT1_START=16, INDIRECT2_START=80.
+         * Production now boots with this partition (CP_CSQ_CACHE_PARTITION),
+         * so this case measures the shipping configuration; restore the
+         * production value afterwards. */
         if (1) {
-            /* Case 4: pool, 64 dwords, with the CSQ cache partition the
-             * kernel intended before the 0x4d4d magic: INDIRECT1_START=16
+            /* Case 4: pool, 64 dwords, partition INDIRECT1_START=16
              * (bits 0-7), INDIRECT2_START=80 (bits 8-15). Restored after. */
             (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE, 0x00005010UL);
             RunIbCase(bi, segmentPool, poolGpu, 64UL, &bigCase);
@@ -454,7 +470,8 @@ static void TestIndirectBuffer(struct BoardInfo *bi,
                  (unsigned long)bigCase.Scratch,
                  (unsigned long)bigCase.FenceTicks,
                  (unsigned long)bigCase.NextReady);
-            (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE, 0x00004d4dUL);
+            (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE,
+                                CP_CSQ_CACHE_PARTITION);
         }
         /* Case 5 (overwrites the Ib3 slots): pool, 48 dwords, default
          * partition. Bisects the size threshold if case 4 still fails. */
@@ -478,7 +495,9 @@ static void TestIndirectBuffer(struct BoardInfo *bi,
 done:
     (void)RadeonFreePrivateVram(bi, scratch, 4096UL);
 }
+#endif /* RADEON_BOOT_PROBES */
 
+#if RADEON_BOOT_PROBES
 static void TestCpFunction(struct BoardInfo *bi,
                            struct RadeonDebugStats *stats)
 {
@@ -502,6 +521,7 @@ static void TestCpFunction(struct BoardInfo *bi,
     stats->CpFenceTimeoutSuccess = result.FenceTimeoutSuccess;
     stats->CpFenceTimeoutTicks = result.FenceTimeoutTicks;
 }
+#endif /* RADEON_BOOT_PROBES */
 
 void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
                      ULONG dmaRequested, ULONG spriteExperiment,
@@ -510,7 +530,6 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct RadeonDebugStats *stats;
-    struct EClockVal value;
 
     if (!SysBase || !data || DebugNode)
         return;
@@ -532,12 +551,19 @@ void RadeonDebugOpen(struct BoardInfo *bi, ULONG cpRequested,
     stats->MonoFromMemory = RadeonMonoProbeResult;
     stats->MonoProbeSample = RadeonMonoProbeSample;
     stats->MonoProbeSampleAlt = RadeonMonoProbeSampleAlt;
-    stats->EClockRate = OpenTimer(SysBase) ? ReadEClock(&value) : 0;
+    /* Timer.device is opened lazily by the first accounting entry point
+     * (RadeonDebugBoardLock) once the system is through LoadMonDrvs;
+     * EClock-based fields read zero until then. */
+    stats->EClockRate = 0;
 
+#if RADEON_BOOT_PROBES
     MeasureMmio(bi, stats);
     MeasureCpBatch(bi, stats);
     TestCpFunction(bi, stats);
     TestIndirectBuffer(bi, stats, segmentPool);
+#else
+    (void)segmentPool;
+#endif
     stats->CpActive = RadeonCpIsReady(bi);
 
     /* Counting starts clean so the first RectFill run is not polluted. */
@@ -556,6 +582,11 @@ void RadeonDebugBoardLock(struct BoardInfo *bi)
 
     if (!DebugNode || !SysBase)
         return;
+    /* Lazy timer.device open: first accelerated 2D callback happens only
+     * after LoadMonDrvs and Workbench are running, so device work is out
+     * of the boot-critical path. */
+    if (!TimerBase)
+        (void)OpenTimer(SysBase);
     task = FindTask(NULL);
     ++DebugNode->Stats.BoardLockChecks;
     if (bi->BoardLock.ss_Owner == task)
@@ -593,6 +624,25 @@ void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords)
     stats->ExecuteGeneratedDwords += generatedDwords;
 }
 
+void RadeonDebugStateBatchFail(ULONG detail, ULONG draws, ULONG header,
+                               ULONG primitive)
+{
+    struct RadeonDebugStats *stats;
+
+    if (!DebugNode)
+        return;
+    stats = &DebugNode->Stats;
+    /* Record the first rejection only: the caller latches on it and later
+     * failures are consequences of the same wedge. */
+    if (!stats->StateBatchFailCount) {
+        stats->StateBatchFailStage = detail;
+        stats->StateBatchFailDraws = draws;
+        stats->StateBatchFailHeader = header;
+        stats->StateBatchFailPrim = primitive;
+    }
+    ++stats->StateBatchFailCount;
+}
+
 void RadeonDebugFallbackDrain(ULONG skipped)
 {
     if (!DebugNode)
@@ -603,6 +653,7 @@ void RadeonDebugFallbackDrain(ULONG skipped)
         ++DebugNode->Stats.FallbackDrainRequired;
 }
 
+#if RADEON_BOOT_PROBES
 void RadeonDebugFallbackProbe(struct BoardInfo *bi)
 {
     struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
@@ -668,6 +719,12 @@ void RadeonDebugFallbackProbe(struct BoardInfo *bi)
     vram[64] = savedNext;
     FreeMem(memory, 64UL * 64UL);
 }
+#else
+void RadeonDebugFallbackProbe(struct BoardInfo *bi)
+{
+    (void)bi;
+}
+#endif /* RADEON_BOOT_PROBES */
 
 void RadeonDebugClose(struct BoardInfo *bi)
 {

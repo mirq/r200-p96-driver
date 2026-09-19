@@ -911,3 +911,103 @@ causes. Debug-only bring-up probes are not a release workload or an instruction
 to recover hardware automatically after a hard hang. Consolidation corrected
 debug-stat version/count reporting and missing GPU-address log arguments; no
 release rendering behavior was changed by that diagnostic bookkeeping cleanup.
+
+## Debug-chip boot hang and probe gating (2026-09-17)
+
+A freshly built DEBUG chip (version 23 StateBatchFail diagnostics, size 97548,
+CRC `B2D34778`) was installed as the active pair on the physical machine with
+the matching debug card (`1DC1ABC0`, 7804 bytes). The machine did not return
+from that boot: the bridge never came up and an operator cold-power cycle was
+required. Recovery used the documented `S:startup-sequence` right-mouse-button
+block; both `.previous` files pre-existed and were the working release pair.
+The installed release pair was re-verified unchanged afterwards (chip
+`F46026B4`, card `18A453D6`).
+
+Post-mortem code review found two defects in the DEBUG-only boot path:
+
+1. The boot-time indirect-buffer probe's case 4 "restore" wrote the stale
+   `0x4d4d` CSQ cache partition. Production moved to `CP_CSQ_CACHE_PARTITION`
+   (`0x5010`) on 2026-09-08 because 64-dword indirect buffers time out under
+   `0x4d4d`; the probe therefore left the CP in the starved partition for the
+   whole boot. Fixed to restore `CP_CSQ_CACHE_PARTITION`.
+2. `RadeonDebugOpen` unconditionally ran MMIO/VRAM sampling, CP no-op batches,
+   the CP function matrix, the indirect-buffer matrix, and the 8192-call
+   fallback probe during `LoadMonDrvs`. Any of these can wedge the engine at
+   a point from which the machine cannot recover without a cold cycle, and no
+   emulator or bridge control can observe a pre-bridge hang. These probes are
+   where an earlier debug build differed from every booting release build.
+
+Both are now opt-in: DEBUG builds gate the boot-time engine experiments behind
+`RADEON_BOOT_PROBES`, selected with `make DEBUG=1 PROBES=1` (default 0). The
+passive debug port, run counters, and per-call accounting always stay active,
+and the version-23 StateBatchFail capture is unaffected. Artifacts built and
+verified locally, hardware NOT touched:
+
+| Artifact | Bytes | CRC32 |
+| --- | ---: | --- |
+| `Radeon9200.chip` (release) | 77928 | `F46026B4` (byte-identical to installed) |
+| DEBUG chip, probes off | 93092 | `FE2B54BA` |
+| DEBUG chip, probes on | 97548 | `DA8CAF5F` |
+
+The exact cause of the 2026-09-17 boot hang remains unidentified; the probe
+matrix and the partition regression are the most plausible candidates. Any
+future debug-chip install must use the probes-off build first, with the
+operator's explicit go-ahead for the cold boot.
+
+## Boot-safe debug build and automatic driver recovery (2026-09-18)
+
+The second hung boot isolated the cause further: with the boot-time engine
+probes compiled out, the DEBUG chip still differed from release by linking
+`-ldebug` (kdebug.o `KPrintF`). Analysis of libdebug's kdebug.o shows every
+put-char path jumps through a cached library base and exec RawDoFmt/raw
+console output. RLOG (KPrintF) is therefore now a no-op in all chip builds;
+the chip is silent in DEBUG exactly as in release. Side effects fixed: the
+`-Werror` unused-variable fallout in `radeon_bios.c` (`i2c`) and the removal
+of the only new binary difference between the debug and release init paths
+aside from counter/accounting code.
+
+Also gated behind `RADEON_BOOT_PROBES`: the DEBUG-only `DumpStreamFile`
+(first Execute/CommitBatch stream dumps) which ran dos.library calls through
+the chip's uninitialized `_DOSBase` from inside render callbacks.
+
+New local artifacts (hardware not touched at this point):
+
+| Artifact | Bytes | CRC32 |
+| --- | ---: | --- |
+| Release chip | 77928 | `F46026B4` (still byte-identical) |
+| DEBUG chip, probes off (silent, boot-safe class) | 86504 | `1FE4C2D3` |
+| DEBUG chip, probes on (needs `-lc`; `T:` dumps) | 90052 | `A7844F5F` |
+
+The card build embeds `__DATE__ ", " __TIME__` (`vbcc_libinit.c:74`), so its
+CRC changes per rebuild; a deployed card is verified by the push CRC check,
+not by a stable reference value.
+
+`S:startup-sequence` gained an automatic recovery layer: marker
+`S:driver-boot-failed` written just before `LoadMonDrvs`, deleted only after
+a full boot; the next boot restores both `.previous` files if the marker
+survived and writes `RAM:driver-autorecovered` as proof. The right-mouse
+TestRMB block stays as the manual override. Deployed `S:startup-sequence`
+CRC `FD2550C7` (3397 bytes); backup of the previous sequence in
+`S:startup-sequence.backup-rmb`. The recovery block shape was verified
+on the live machine by pushing the identical statements to `S:recov-test`
+and executing the file (nested `IF EXISTS` + copies + evidence file);
+inline multi-line script execution through the bridge was found
+unreliable (long/nested blocks) and is not a substitute for executing
+real files.
+
+## RTG-fallback-aware failsafe (2026-09-18)
+
+The first failsafe version cleared `S:driver-boot-failed` at the end of any
+boot that reached `EndCLI`. Hardware showed that a failed RTG driver does not
+stall the machine: it falls back to the native PAL display and the sequence
+completes, so the marker was cleared and the next boot retried the failed
+pair. Added `C:RTGPresent` (tools/rtgpresent.c, 3236 bytes, CRC `10F8C296`):
+it locks the default public screen, treats mode IDs with the RTG
+(`0x80000000`) flag or a >900-wide screen as RTG, and returns 5 (WARN)
+otherwise. The startup sequence now clears the marker only when RTGPresent
+succeeds, so a PAL-fallback boot leaves the marker and the next boot restores
+both `.previous` files. Deployed sequence CRC `2FC1B8FC` (3767 bytes);
+RTGPresent live-tested on the RTG Workbench (reports OK).
+
+Note: the deployment directory on the Amiga is `C:RTGPresent` (AmigaDOS
+`C:`), not the local `build/` path.

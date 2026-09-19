@@ -12,6 +12,15 @@
 
 #define USED __attribute__((used))
 
+/*
+ * The resident name must stay "Radeon9200.chip" in every build, including
+ * DEBUG. The card loads the file, so its name is free to change; but
+ * minigl.library's MGLInit() opens the chip by this exact internal name
+ * (OpenLibrary("Radeon9200.chip")) and refuses to initialize if that fails.
+ * A debug chip installed under its own name therefore breaks every MiniGL
+ * client. Debug builds are installed AS Radeon9200.chip with the standard
+ * card instead, and are identified by CRC.
+ */
 static const char LibName[] = "Radeon9200.chip";
 static const char LibIdString[] =
     "Radeon9200.chip 3.0 (2.9.2026)\r\n";

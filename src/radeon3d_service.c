@@ -13,8 +13,13 @@
 /*
  * Temporary diagnostics: dump the first Execute and the first CommitBatch
  * (record chain + generated CP stream) so the host can disassemble exactly
- * what the card was asked to do.
+ * what the card was asked to do. Compiled only with RADEON_BOOT_PROBES: the
+ * dump path runs dos.library calls (Open/Write/Close via libc's _DOSBase,
+ * which this chip-based freestanding build never initializes) inside render
+ * callbacks, and file I/O there is a wedge risk. Post-boot stream capture
+ * must not be part of an ordinary boot path.
  */
+#ifdef RADEON_BOOT_PROBES
 static void DumpStreamFile(struct ExecBase *SysBase, const char *path,
                            const ULONG *records, ULONG recordDwords,
                            const ULONG *generated, ULONG generatedDwords)
@@ -41,7 +46,8 @@ static void DumpStreamFile(struct ExecBase *SysBase, const char *path,
 
 static LONG FirstExecuteDumpPending = 1;
 static LONG FirstCommitDumpPending = 1;
-#endif
+#endif /* RADEON_BOOT_PROBES */
+#endif /* DEBUG */
 
 #define RADEON3D_SESSION_MAGIC 0x52334453UL
 
@@ -1273,7 +1279,7 @@ BOOL Radeon3DExecute(
     } else {
         (void)RadeonRecoverAcceleration(bi);
     }
-#ifdef DEBUG
+#if defined(DEBUG) && defined(RADEON_BOOT_PROBES)
     if (FirstExecuteDumpPending) {
         FirstExecuteDumpPending = 0;
         DumpStreamFile(base->ExecBase, "T:r3d_first_execute.bin",
@@ -1743,7 +1749,7 @@ BOOL Radeon3DCommitBatch(
                            commit->VertexOffsets, commit->RecordCount, slot,
                            commit->Flags, fenceOut,
                            RADEON3D_SAMPLE_COMMIT_BATCH);
-#ifdef DEBUG
+#if defined(DEBUG) && defined(RADEON_BOOT_PROBES)
     if (FirstCommitDumpPending) {
         FirstCommitDumpPending = 0;
         DumpStreamFile(base->ExecBase, "T:r3d_first_commit.bin",
@@ -1884,6 +1890,9 @@ BOOL Radeon3DCommitStateBatch(
             COMMIT_FAIL(base, 84UL);
         else if (streamBuilt)
             COMMIT_FAIL(base, 85UL);
+        if (!streamBuilt)
+            RDEBUG_STATEBATCH_FAIL(emitter->FailStage, request.DrawCount,
+                                   request.HeaderDwords, primitiveType);
         if (fenceOut)
             *fenceOut = 0x80000000UL | (9UL << 16) |
                         (base->CommitFailStage & 0xffffUL);

@@ -133,7 +133,13 @@ FIELDS.extend([
     "Ib3NextReady", "Ib3CsqMode",
 ])
 
-KNOWN_VERSION = 22
+# Version 23: StateBatch emitter rejection detail.
+FIELDS.extend([
+    "StateBatchFailStage", "StateBatchFailDraws", "StateBatchFailHeader",
+    "StateBatchFailPrim", "StateBatchFailCount",
+])
+
+KNOWN_VERSION = 23
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -147,7 +153,10 @@ def load(path):
         line = re.sub(r"^\s*[0-9a-fA-F]{6,8}[: ]", " ", line)
         line = re.sub(r"\s{2,}\S*$", "", line)
         for token in line.split():
-            if re.fullmatch(r"[0-9a-fA-F]{2}", token):
+            if re.fullmatch(r"[0-9a-fA-F]{8}", token):
+                # dbgdump prints one statistics long per line.
+                out += int(token, 16).to_bytes(4, "big")
+            elif re.fullmatch(r"[0-9a-fA-F]{2}", token):
                 out.append(int(token, 16))
     return bytes(out)
 

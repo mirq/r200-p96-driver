@@ -442,6 +442,8 @@ static void LogDviBiosInfo(const struct RadeonBios *bios)
     UWORD i2c = TableOffset(bios, COMBIOS_I2C_INFO);
     UWORD index;
 
+    /* RLOG is a no-op now, so variables that only fed it are unused. */
+    (void)i2c;
     RLOG("Radeon9200: COMBIOS DVI tables conn=%lx dfp=%lx ext=%lx i2c=%lx\n",
          (ULONG)connector, (ULONG)dfp, (ULONG)external, (ULONG)i2c);
     if (connector) {
