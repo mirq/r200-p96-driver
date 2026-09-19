@@ -1868,8 +1868,11 @@ BOOL Radeon3DEmitDraw(                             struct Radeon3DEmitter *emitt
         (fragmentStatePresent &&
          (options & (RADEON3D_DRAW_BILINEAR |
                                 RADEON3D_DRAW_ALPHA_BLEND))) ||
-        (fragmentStatePresent &&
-         ((textureState & ~RADEON3D_TEX_STATE_MASK) ||
+         /* Content serials are semantic cache-generation tags, not filter
+          * bits. Accept them on both units without admitting reserved low
+          * bits; retain the serial for the texture-cache invalidation path. */
+         (fragmentStatePresent &&
+          ((textureState & ~(RADEON3D_TEX_STATE_MASK | RADEON3D_TEX_CONTENT_MASK)) ||
                      minFilter > RADEON3D_TEX_MIN_LINEAR_MIPMAP_LINEAR ||
                      (fragmentState & ~RADEON3D_FRAGMENT_STATE_MASK) ||
                      sourceBlend > RADEON3D_BLEND_SRC_ALPHA_SATURATE ||
@@ -1879,7 +1882,7 @@ BOOL Radeon3DEmitDraw(                             struct Radeon3DEmitter *emitt
           ((vertexState & RADEON3D_VERTEX_CLIP_COORDINATES) &&
                        emitter->InterfaceVersion < 8UL) ||
                       (fog && perspective) ||
-                     (texture1State & ~RADEON3D_TEX_STATE_MASK) ||
+                      (texture1State & ~(RADEON3D_TEX_STATE_MASK | RADEON3D_TEX_CONTENT_MASK)) ||
                      minFilter1 >
                          RADEON3D_TEX_MIN_LINEAR_MIPMAP_LINEAR ||
                      (fogColor & 0xff000000UL))) ||

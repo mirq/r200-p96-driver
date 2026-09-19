@@ -24,11 +24,12 @@ def main():
             "typedef uint8_t UBYTE; typedef int8_t BYTE;\n"
             "#define TRUE 1\n#define FALSE 0\n")
         # Host pointers are 64-bit; ABI sizes are checked by the real 68k build.
-        # Keep every declaration/constant, omitting only seven ABI size asserts.
+        # Keep declarations/constants, omitting eight target ABI size asserts
+        # (including the interface-18 indirect request).
         abi, removed = re.subn(
             r"typedef char Radeon3D\w+SizeCheck\[[^\]]*\];", "",
             (ROOT / "include/radeon3d.h").read_text())
-        if removed != 7:
+        if removed != 8:
             raise SystemExit("review changed Radeon3D ABI size checks")
         (path / "radeon3d.h").write_text(abi)
         (path / "radeon3d_emit.h").write_text(
