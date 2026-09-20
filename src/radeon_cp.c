@@ -35,6 +35,13 @@ struct RadeonCpState {
     ULONG RingGpuAddress;
     ULONG WritePointer;
     ULONG PendingFence;
+    /* Interface-19 fence coalescing: submissions made without a fence since
+     * the last fenced one. The 2D engine transition (SynchronizeEngine) must
+     * not touch the shared engine baseline while these are still being
+     * fetched by the CP, because the per-dispatch fence used to provide that
+     * mutual exclusion. RadeonCpWait() covers them when a later fence exists;
+     * RadeonCpWaitDrained() covers the fence-less tail by polling RB_RPTR. */
+    ULONG PendingUnfenced;
     ULONG NextFence;
     ULONG SavedBusCntl;
     ULONG EClockRate;
@@ -792,6 +799,7 @@ BOOL RadeonCpRecover(struct BoardInfo *bi)
     }
 
     state->PendingFence = 0;
+    state->PendingUnfenced = 0;
     state->NextFence = 1;
     RLOG("Radeon9200: R200 CP recovered ring=%lx gpu=%lx\n",
          (ULONG)state->RingMemory, state->RingGpuAddress);
@@ -903,8 +911,12 @@ BOOL RadeonCpSubmitStream(struct BoardInfo *bi, const ULONG *commands,
         return FALSE;
     if (addFence) {
         state->PendingFence = sequence;
+        /* A fenced submission covers every earlier one, fence-less included. */
+        state->PendingUnfenced = 0;
         if (fenceOut)
             *fenceOut = sequence;
+    } else if (state->PendingUnfenced != ~0UL) {
+        ++state->PendingUnfenced;
     }
     return TRUE;
 }
@@ -981,9 +993,53 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
             if (!CpInvalidateHostReadBuffer(bi))
                 return FALSE;
             state->PendingFence = 0;
+            /* The fence retires only after every earlier submission was
+             * consumed, fence-less ones included. */
+            state->PendingUnfenced = 0;
             return TRUE;
         }
         RadeonDelayUs(1);
     }
     return FALSE;
+}
+
+/* Wait until the CP has consumed the whole ring (RB_RPTR catches WPTR),
+ * covering fence-less submissions that PendingFence cannot name. The 2D
+ * engine transition needs this before it rewrites the shared baseline
+ * (HOST_PATH_CNTL/RB3D_CNTL/DP_DATATYPE): the per-dispatch fence used to
+ * make that rewrite safe, and coalescing removed it. A drained ring costs
+ * one register read. */
+/* Wait until the CP and engines are truly idle, covering fence-less
+ * submissions that PendingFence cannot name. RB_RPTR is NOT sufficient: for
+ * an indirect dispatch the CP advances the read pointer as soon as it reads
+ * the 3-dword ring entry, while the IB fetch/execution is still in progress
+ * (the 2026-09-20 console-rise corruption). CpWaitGuiIdle() gives the same
+ * full-idle guarantee the old per-dispatch WAIT_UNTIL provided, and is only
+ * paid at MMIO-poking transitions (2D baseline restore), not per dispatch. */
+BOOL RadeonCpWaitDrained(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+
+    if (!data || !data->CpState || !data->CpState->Ready)
+        return FALSE;
+    state = data->CpState;
+    if (!state->PendingUnfenced)
+        return TRUE;
+    if (!CpWaitGuiIdle(bi))
+        return FALSE;
+    state->PendingUnfenced = 0;
+    return TRUE;
+}
+
+/* TRUE while fence-less submissions are in flight. MMIO writes to the
+ * engine baseline (CSQ_MODE/DP_DATATYPE guard, 2D RestoreEngineState) must
+ * not happen then; the fetch the CP may be performing depends on them. */
+BOOL RadeonCpUnfencedPending(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!data || !data->CpState || !data->CpState->Ready)
+        return FALSE;
+    return data->CpState->PendingUnfenced != 0;
 }

@@ -124,4 +124,12 @@
         ULONG *, fenceOut, a2, \
         , RADEON3D_BASE_NAME)
 
+/* Interface 19: close a run of RADEON3D_INDIRECT_NO_FENCE dispatches.
+ * The fence retires only when every earlier submission has drained. */
+#define Radeon3DSubmitFence(device, fenceOut) \
+    LP2(0x96, BOOL, Radeon3DSubmitFence, \
+        struct Radeon3DDevice *, device, a0, \
+        ULONG *, fenceOut, a1, \
+        , RADEON3D_BASE_NAME)
+
 #endif

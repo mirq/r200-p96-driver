@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   18UL
+#define RADEON3D_IFACE_VERSION   19UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -47,6 +47,15 @@
  * and retire them in order. Interface-18 hosts that need it must check this
  * bit; without it only the latest fence is waitable (single-fence model). */
 #define RADEON3D_CAP_MULTI_FENCE            (1UL << 28)
+/* Interface 19 fence coalescing. The producer may dispatch indirect
+ * buffers WITHOUT a fence (RADEON3D_INDIRECT_NO_FENCE) and close a run of
+ * such dispatches later with Radeon3DSubmitFence(), which retires only
+ * when every earlier submission has fully drained. In-order CP execution
+ * makes the closing fence cover all preceding dispatches, so fewer full
+ * idle drains are paid while every fence keeps its exact "everything up
+ * to the fence serial is complete" meaning. A service without this bit
+ * rejects RADEON3D_INDIRECT_NO_FENCE and has no Radeon3DSubmitFence. */
+#define RADEON3D_CAP_FENCE_COALESCE         (1UL << 29)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
@@ -179,6 +188,15 @@ typedef char Radeon3DStateBatchV1SizeCheck[
  * retiring fence is always appended, so waiting on the returned fence
  * proves the indirect buffer was consumed. */
 #define RADEON3D_INDIRECT_VERSION 1UL
+
+/* Interface 19, requires RADEON3D_CAP_FENCE_COALESCE. Suppresses the
+ * per-dispatch fence. The dispatch is still ordered by the CP ring, but
+ * nothing proves it was consumed until a later submission's fence (or
+ * Radeon3DSubmitFence) retires. The caller MUST close every run of
+ * no-fence dispatches with a fence before it relies on retirement,
+ * releases referenced storage or presents. fenceOut is set to 0. */
+#define RADEON3D_INDIRECT_NO_FENCE (1UL << 1)
+#define RADEON3D_INDIRECT_FLAGS    RADEON3D_INDIRECT_NO_FENCE
 
 struct Radeon3DIndirect {
     ULONG Size;

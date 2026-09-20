@@ -561,6 +561,9 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
      * 18; a driver from before this bit does not set it. */
     if (interfaceVersion >= 18UL)
         info->Caps |= RADEON3D_CAP_MULTI_FENCE;
+    /* Interface 19: fence-less indirect dispatch + Radeon3DSubmitFence. */
+    if (interfaceVersion >= 19UL)
+        info->Caps |= RADEON3D_CAP_FENCE_COALESCE;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -1945,6 +1948,7 @@ BOOL Radeon3DDispatchIndirect(
     ULONG generation;
     ULONG phase, submitTicks;
     ULONG fence = 0;
+    BOOL addFence;
     BOOL result;
 
     if (base)
@@ -1964,7 +1968,7 @@ BOOL Radeon3DDispatchIndirect(
     request = *indirect;
     if (request.Size < RADEON3D_INDIRECT_V1_SIZE ||
         request.Version != RADEON3D_INDIRECT_VERSION ||
-        request.Flags || !request.DwordCount ||
+        (request.Flags & ~RADEON3D_INDIRECT_FLAGS) || !request.DwordCount ||
         (request.DwordCount & 1UL) ||
         request.DwordCount > RADEON3D_MAX_BATCH_DWORDS ||
         (request.ByteOffset & 15UL)) {
@@ -1981,6 +1985,8 @@ BOOL Radeon3DDispatchIndirect(
         return FALSE;
     }
     if (device->InterfaceVersion < 18UL ||
+        ((request.Flags & RADEON3D_INDIRECT_NO_FENCE) &&
+         device->InterfaceVersion < 19UL) ||
         !base->StreamSegmentPool ||
         request.SegmentId >= RADEON3D_MAX_SEGMENTS ||
         !device->Segments[request.SegmentId].Allocated) {
@@ -2039,6 +2045,14 @@ BOOL Radeon3DDispatchIndirect(
     commands[0] = RADEON_CP_PACKET0(RADEON_CP_IB_BASE, 1);
     commands[1] = slot->GpuAddress + request.ByteOffset;
     commands[2] = request.DwordCount;
+    /* The guard below writes the engine baseline over MMIO. While an earlier
+     * fence-less (interface-19) submission may still be fetching its
+     * indirect buffer, that write can corrupt the in-flight fetch, so it is
+     * withheld until the ring is quiescent. It is then still guaranteed to
+     * run before the next fetch: only a 2D transition can clobber the
+     * baseline, and every 2D transition drains first (RadeonCpWaitDrained),
+     * which clears PendingUnfenced. */
+    if (!RadeonCpUnfencedPending(bi))
     {
         ULONG csqMode = RadeonRead32(bi, RADEON_CP_CSQ_MODE);
         ULONG dpDatatype;
@@ -2070,10 +2084,23 @@ BOOL Radeon3DDispatchIndirect(
                                   24) & 0xffUL);
     }
     phase = ServiceExecTicks(base);
-    result = RadeonCpSubmitStream(bi, commands, 3UL, TRUE, &fence);
+    /* Interface 19: NO_FENCE suppresses the per-dispatch drain tail. The
+     * dispatch is still ring-ordered; the caller closes the run with
+     * Radeon3DSubmitFence() (or a later fenced submission) before relying
+     * on retirement. LastFence tracks only fenced submissions, so a
+     * subsequent release that waits on it is not misled: every release
+     * path runs a full drain first, and the closing fence is a submission
+     * at least as new as any unfenced dispatch. */
+    addFence = (request.Flags & RADEON3D_INDIRECT_NO_FENCE) == 0;
+    result = RadeonCpSubmitStream(bi, commands, 3UL, addFence, &fence);
     submitTicks = ServiceExecTicks(base) - phase;
-    if (result && fence) {
+    if (result && addFence && fence) {
         device->LastFence = fence;
+        RadeonMark3DSubmitted(bi);
+    } else if (result && !addFence) {
+        /* Unfenced dispatch still handed the engine to the CP; a fenced
+         * submission that returned no fence stays a failure below. */
+        fence = 0;
         RadeonMark3DSubmitted(bi);
     } else {
         result = FALSE;
@@ -2084,6 +2111,115 @@ BOOL Radeon3DDispatchIndirect(
     UnlockServiceBoard(base, bi, device);
     if (fenceOut)
         *fenceOut = result ? fence : (0x80000000UL | 106UL);
+    return result;
+}
+
+/* Interface 19: close a run of RADEON3D_INDIRECT_NO_FENCE dispatches.
+ * Two CP-native no-ops ride the ring; the standard fence tail appended by
+ * RadeonCpSubmitStream performs the cache flush and the full idle wait, so
+ * the fence retires only when every earlier submission (fenced or not) has
+ * completely drained. That keeps one fence meaning for every consumer:
+ * "everything up to this serial is done". */
+BOOL Radeon3DSubmitFence(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(ULONG *fenceOut),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct BoardInfo *bi;
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    ULONG commands[2];
+    ULONG generation;
+    ULONG phase, submitTicks = 0;
+    ULONG fence = 0;
+    BOOL result;
+
+    if (base)
+        COMMIT_FAIL(base, 110UL);
+    if (fenceOut)
+        *fenceOut = 0;
+    if (!SysBase) {
+        if (base)
+            COMMIT_FAIL(base, 111UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 111UL;
+        return FALSE;
+    }
+    bi = LockServiceBoard(base, &device);
+    if (!bi) {
+        COMMIT_FAIL(base, 112UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 112UL;
+        return FALSE;
+    }
+    if (device->InterfaceVersion < 19UL) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 113UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 113UL;
+        return FALSE;
+    }
+    generation = base->ServiceGeneration;
+    if (!RadeonPrepare3D(bi)) {
+        COMMIT_FAIL(base, 114UL);
+        UnlockServiceBoard(base, bi, device);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 114UL;
+        return FALSE;
+    }
+    /* Prepare may recover successfully but invalidate this session. Keep
+     * BoardLock held and recheck before submitting. */
+    ObtainSemaphore(&base->ServiceLock);
+    result = FindActiveDevice(base, device) && IsUsableDevice(base, device) &&
+             base->ServiceGeneration == generation && base->BoardInfo == bi;
+    ReleaseSemaphore(&base->ServiceLock);
+    if (!result) {
+        COMMIT_FAIL(base, 115UL);
+        UnlockServiceBoard(base, bi, device);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 115UL;
+        return FALSE;
+    }
+    /* A real register write rather than bare PACKET2 no-ops: this is the
+     * stream shape the ring has executed for every other service call, so
+     * the fence-only kick cannot introduce an untried packet form. */
+    commands[0] = RADEON_CP_PACKET0(RADEON_SCRATCH_REG1, 0);
+    commands[1] = 0UL;
+    if (!RadeonCpUnfencedPending(bi))
+    {
+        /* Same guard as the indirect path, withheld for the same reason:
+         * MMIO baseline writes must not race an in-flight IB fetch. */
+        ULONG csqMode = RadeonRead32(bi, RADEON_CP_CSQ_MODE);
+        ULONG dpDatatype;
+
+        if (csqMode != CP_CSQ_CACHE_PARTITION) {
+            (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE,
+                                CP_CSQ_CACHE_PARTITION);
+            csqMode = CP_CSQ_CACHE_PARTITION;
+        }
+        dpDatatype = RadeonRead32(bi, RADEON_DP_DATATYPE);
+        if (dpDatatype & RADEON_HOST_BIG_ENDIAN_EN)
+            (void)RadeonWrite32(bi, RADEON_DP_DATATYPE,
+                                dpDatatype & ~RADEON_HOST_BIG_ENDIAN_EN);
+        base->CommitFailStage = 0xc5000000UL | ((csqMode & 0xffUL) << 16) |
+                                (((dpDatatype >> 29) & 1UL) << 8) |
+                                ((RadeonRead32(bi, RADEON_CP_CSQ_STAT) >>
+                                  24) & 0xffUL);
+    }
+    phase = ServiceExecTicks(base);
+    result = RadeonCpSubmitStream(bi, commands, 2UL, TRUE, &fence);
+    submitTicks = ServiceExecTicks(base) - phase;
+    if (result && fence) {
+        device->LastFence = fence;
+        RadeonMark3DSubmitted(bi);
+    } else {
+        result = FALSE;
+        (void)RadeonRecoverAcceleration(bi);
+    }
+    RecordExecSample(base, RADEON3D_SAMPLE_DISPATCH, 2UL, 2UL,
+                     0UL, 0UL, submitTicks, result);
+    UnlockServiceBoard(base, bi, device);
+    if (fenceOut)
+        *fenceOut = result ? fence : (0x80000000UL | 116UL);
     return result;
 }
 

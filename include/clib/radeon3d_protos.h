@@ -42,5 +42,6 @@ BOOL Radeon3DAllocSurface(struct Radeon3DDevice *device, ULONG width,
 BOOL Radeon3DDispatchIndirect(struct Radeon3DDevice *device,
                               const struct Radeon3DIndirect *indirect,
                               ULONG *fenceOut);
+BOOL Radeon3DSubmitFence(struct Radeon3DDevice *device, ULONG *fenceOut);
 
 #endif

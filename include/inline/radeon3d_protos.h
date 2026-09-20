@@ -86,6 +86,10 @@ BOOL __Radeon3DDispatchIndirect(
     __reg("a0") struct Radeon3DDevice *device,
     __reg("a1") const struct Radeon3DIndirect *indirect,
     __reg("a2") ULONG *fenceOut) = "\tjsr\t-144(a6)";
+BOOL __Radeon3DSubmitFence(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device,
+    __reg("a1") ULONG *fenceOut) = "\tjsr\t-150(a6)";
 #ifndef RADEON3D_BASE_NAME
 #define RADEON3D_BASE_NAME Radeon9200Base
 #endif
@@ -129,5 +133,7 @@ BOOL __Radeon3DDispatchIndirect(
 #define Radeon3DDispatchIndirect(device, indirect, fenceOut) \
     __Radeon3DDispatchIndirect(RADEON3D_BASE_NAME, (device), (indirect), \
                                (fenceOut))
+#define Radeon3DSubmitFence(device, fenceOut) \
+    __Radeon3DSubmitFence(RADEON3D_BASE_NAME, (device), (fenceOut))
 
 #endif

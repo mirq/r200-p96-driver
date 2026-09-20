@@ -50,13 +50,15 @@ class IndirectDispatchTests(unittest.TestCase):
             *re.findall(r"^#define (RADEON3D_CAP_\w+)", public, re.M),
             "RADEON3D_IFACE_VERSION", "RADEON3D_MAX_SEGMENTS",
             "RADEON3D_MAX_BATCH_DWORDS", "RADEON3D_INDIRECT_VERSION",
+            "RADEON3D_INDIRECT_NO_FENCE", "RADEON3D_INDIRECT_FLAGS",
             "RADEON3D_INDIRECT_V1_SIZE", "RADEON3D_INFO_V1_SIZE",
             "RADEON3D_INFO_V2_SIZE", "RADEON3D_INFO_V3_SIZE",
             "RADEON3D_INFO_V4_SIZE", "RADEON3D_SAMPLE_RING_SIZE",
             "RADEON3D_SAMPLE_DISPATCH",
         ))
         constants += "\n" + "\n".join(define(registers, name) for name in (
-            "RADEON_CP_PACKET0", "RADEON_CP_IB_BASE", "RADEON_CP_CSQ_MODE",
+            "RADEON_CP_PACKET0", "RADEON_CP_PACKET2", "RADEON_CP_IB_BASE",
+            "RADEON_CP_CSQ_MODE", "RADEON_SCRATCH_REG1",
             "CP_CSQ_CACHE_PARTITION", "RADEON_CP_CSQ_STAT",
             "RADEON_DP_DATATYPE", "RADEON_HOST_BIG_ENDIAN_EN",
         ))
@@ -71,6 +73,7 @@ class IndirectDispatchTests(unittest.TestCase):
         usable = block(source, r"^static BOOL IsUsableDevice\(")
         implementation = "\n".join(block(source, pattern) for pattern in (
             r"^static void FillInfo\(", r"^BOOL Radeon3DDispatchIndirect\(",
+            r"^BOOL Radeon3DSubmitFence\(",
         ))
         harness = r"""
 #include <assert.h>
@@ -112,9 +115,13 @@ struct RadeonChipBase {
 _Static_assert(sizeof(ULONG) == 4, "Amiga ULONG width");
 _Static_assert(sizeof(struct Radeon3DIndirect) == RADEON3D_INDIRECT_V1_SIZE,
                "indirect request layout");
-_Static_assert(RADEON3D_IFACE_VERSION == 18, "interface remains 18");
+_Static_assert(RADEON3D_IFACE_VERSION == 19, "interface advances to 19");
 _Static_assert(RADEON3D_CAP_INDIRECT_DISPATCH == (1UL << 26), "dispatch bit");
 _Static_assert(RADEON3D_CAP_INDIRECT_RENDER == (1UL << 27), "render bit");
+_Static_assert(RADEON3D_CAP_FENCE_COALESCE == (1UL << 29), "coalesce bit");
+_Static_assert(RADEON3D_INDIRECT_NO_FENCE == (1UL << 1), "no-fence flag");
+_Static_assert(RADEON3D_INDIRECT_FLAGS == RADEON3D_INDIRECT_NO_FENCE,
+               "only the no-fence flag is legal");
 static struct ExecBase exec;
 static struct BoardInfo board, other_board;
 static struct RadeonBoardData data;
@@ -128,6 +135,8 @@ static int pool, segment_memory;
 static BOOL active, lock_ok, prepare_ok, submit_ok, recover_ok, output_fence;
 static BOOL board_locked, service_locked, prepared, restore_setup;
 static BOOL mutate_request;
+static BOOL expect_nofence, submit_packet2;
+static BOOL unfenced_pending;
 static ULONG submit_fence, csq_mode, datatype, ticks;
 static unsigned submits, marks, recoveries, samples, cases, event_count;
 static char events[128];
@@ -199,6 +208,11 @@ static struct Radeon3DDevice *FindActiveDevice(struct RadeonChipBase *base,
     assert(board_locked && service_locked && prepared);
     Event('V');
     return active ? device : NULL;
+}
+static BOOL RadeonCpUnfencedPending(struct BoardInfo *bi)
+{
+    assert(bi == &board && board_locked);
+    return unfenced_pending;
 }
 static BOOL RadeonPrepare3D(struct BoardInfo *bi)
 {
@@ -273,25 +287,40 @@ static BOOL RadeonCpSubmitStream(struct BoardInfo *bi, const ULONG *commands,
         &session.Segments[expected_request.SegmentId];
 
     assert(bi == &board && board_locked && !service_locked && prepared);
-    assert(csq_mode == CP_CSQ_CACHE_PARTITION);
-    assert(!(datatype & RADEON_HOST_BIG_ENDIAN_EN));
-    assert(count == 3 && fence_needed && *fence == 0 && submits == 0);
-    assert(commands[0] == RADEON_CP_PACKET0(RADEON_CP_IB_BASE, 1));
-    assert(commands[1] == slot->GpuAddress + expected_request.ByteOffset);
-    assert(commands[2] == expected_request.DwordCount && session.LastFence == 23);
-    assert(!(commands[2] & 1UL));
-    assert(expected_request.ByteOffset < slot->Bytes);
-    assert(commands[2] <= (slot->Bytes - expected_request.ByteOffset) / sizeof(ULONG));
+    /* With the guard withheld (an earlier fence-less submission may be
+     * fetching), the synthetic restore_setup clobber is allowed to persist:
+     * production cannot reach that combination because only a 2D transition
+     * clobbers the baseline and every 2D transition drains first. */
+    assert(csq_mode == CP_CSQ_CACHE_PARTITION || unfenced_pending);
+    assert(!(datatype & RADEON_HOST_BIG_ENDIAN_EN) || unfenced_pending);
+    assert(*fence == 0 && submits == 0);
+    if (submit_packet2) {
+        /* Interface-19 fence-only submission. */
+        assert(count == 2 && fence_needed && session.LastFence == 23);
+        assert(commands[0] == RADEON_CP_PACKET0(RADEON_SCRATCH_REG1, 0));
+        assert(commands[1] == 0UL);
+    } else {
+        assert(count == 3 && fence_needed == !expect_nofence);
+        assert(commands[0] == RADEON_CP_PACKET0(RADEON_CP_IB_BASE, 1));
+        assert(commands[1] == slot->GpuAddress + expected_request.ByteOffset);
+        assert(commands[2] == expected_request.DwordCount && session.LastFence == 23);
+        assert(!(commands[2] & 1UL));
+        assert(expected_request.ByteOffset < slot->Bytes);
+        assert(commands[2] <= (slot->Bytes - expected_request.ByteOffset) / sizeof(ULONG));
+    }
     Event('S');
     ++submits;
-    *fence = submit_fence;
+    if (fence_needed)
+        *fence = submit_fence;
     return submit_ok;
 }
 static void RadeonMark3DSubmitted(struct BoardInfo *bi)
 {
     assert(bi == &board && board_locked && !service_locked);
     assert(submits == 1 && submit_ok && submit_fence && !marks && !recoveries);
-    assert(session.LastFence == submit_fence);
+    /* A fence-less dispatch leaves LastFence untouched: nothing is proven
+     * consumed until a closing fence exists. */
+    assert(session.LastFence == (expect_nofence ? 23UL : submit_fence));
     Event('M');
     ++marks;
 }
@@ -309,10 +338,20 @@ static void RecordExecSample(struct RadeonChipBase *base, ULONG type,
                               ULONG records, ULONG generated, ULONG copy,
                               ULONG build, ULONG submit, BOOL ok)
 {
+    BOOL expected_ok;
+
     assert(base == &chip && board_locked && !service_locked);
-    assert(type == RADEON3D_SAMPLE_DISPATCH && records == expected_request.DwordCount);
-    assert(generated == 3 && !copy && !build && submit == 1 && !samples);
-    assert(ok == (submit_ok && submit_fence != 0));
+    assert(type == RADEON3D_SAMPLE_DISPATCH);
+    if (submit_packet2) {
+        assert(records == 2 && generated == 2);
+        expected_ok = submit_ok && submit_fence != 0;
+    } else {
+        assert(records == expected_request.DwordCount && generated == 3);
+        expected_ok = expect_nofence ? submit_ok
+                                     : (submit_ok && submit_fence != 0);
+    }
+    assert(!copy && !build && submit == 1 && !samples);
+    assert(ok == expected_ok);
     Event('N');
     ++samples;
 }
@@ -343,6 +382,8 @@ static void Reset(void)
     board.Ready = other_board.Ready = TRUE;
     board_locked = service_locked = prepared = FALSE;
     mutate_request = FALSE;
+    expect_nofence = submit_packet2 = FALSE;
+    unfenced_pending = FALSE;
     restore_setup = TRUE;
     mutation = NONE;
     csq_mode = CP_CSQ_CACHE_PARTITION;
@@ -364,10 +405,43 @@ static void Check(ULONG stage, const char *expected)
                 cases + 1, stage, ok, events, expected);
     assert(ok == (stage == 0) && !strcmp(events, expected));
     assert(!board_locked && !service_locked);
-    assert(session.LastFence == (ok ? submit_fence : 23));
+    assert(session.LastFence == (ok && !expect_nofence ? submit_fence : 23UL));
     assert(marks == (unsigned)ok);
     assert(recoveries == (stage == 106));
     assert(submits == (unsigned)(ok || stage == 106) && samples == submits);
+    if (output_fence)
+        assert(fence == (ok ? (expect_nofence ? 0UL : submit_fence)
+                            : (0x80000000UL | stage)));
+    if (base_arg) {
+        /* The diagnostic trail is written by the MMIO guard; a withheld
+         * guard leaves the previous value, so it is only checked when the
+         * guard ran. */
+        if (submits && !unfenced_pending)
+            assert(chip.CommitFailStage == (0xc510005aUL |
+                                           (restore_setup ? 0x100UL : 0)));
+        else if (!submits)
+            assert(chip.CommitFailStage == stage);
+    }
+    ++cases;
+}
+/* Interface-19 fence-only submission: closes a run of fence-less
+ * dispatches. Same stage/event conventions as Check(). */
+static void CheckFence(ULONG stage, const char *expected)
+{
+    ULONG fence = 0xdeadbeefUL;
+    BOOL ok;
+
+    ok = Radeon3DSubmitFence(device_arg, output_fence ? &fence : NULL,
+                             base_arg);
+    if (ok != (stage == 0) || strcmp(events, expected))
+        fprintf(stderr, "fence case %u: stage %u, result %d, events %s expected %s\n",
+                cases + 1, stage, ok, events, expected);
+    assert(ok == (stage == 0) && !strcmp(events, expected));
+    assert(!board_locked && !service_locked);
+    assert(session.LastFence == (ok ? submit_fence : 23UL));
+    assert(marks == (unsigned)ok);
+    assert(recoveries == (stage == 116));
+    assert(submits == (unsigned)(ok || stage == 116) && samples == submits);
     if (output_fence)
         assert(fence == (ok ? submit_fence : (0x80000000UL | stage)));
     if (base_arg) {
@@ -400,6 +474,8 @@ int main(void)
                 FillInfo(&chip, &info, version);
                 assert((info.Caps & indirect_caps) ==
                        (version >= 18 && pool_live ? indirect_caps : 0));
+                assert(!!(info.Caps & RADEON3D_CAP_FENCE_COALESCE) ==
+                       (version >= 19));
                 assert(!!(info.Caps & RADEON3D_CAP_CP_READY) == cp_ready);
                 assert(info.Version == version && info.Generation == 9);
                 ++cases;
@@ -485,6 +561,50 @@ int main(void)
     Reset(); mutate_request = TRUE; Check(0, success);
     Reset(); request.ByteOffset = 240; mutate_request = TRUE; Check(0, success);
     Reset(); mutate_request = TRUE; submit_ok = FALSE; Check(106, failure);
+
+    /* Interface 19: RADEON3D_INDIRECT_NO_FENCE drops the per-dispatch
+     * fence; retirement is deferred to a closing submission. */
+    Reset(); expect_nofence = TRUE; session.InterfaceVersion = 18;
+    request.Flags = RADEON3D_INDIRECT_NO_FENCE;
+    Check(103, "LU");                 /* needs interface 19 */
+    Reset(); expect_nofence = TRUE; session.InterfaceVersion = 19;
+    request.Flags = RADEON3D_INDIRECT_NO_FENCE;
+    Check(0, success);                /* unfenced: fenceOut 0, LastFence stays */
+    Reset(); expect_nofence = TRUE; session.InterfaceVersion = 19;
+    request.Flags = RADEON3D_INDIRECT_NO_FENCE;
+    output_fence = FALSE; Check(0, success);
+    Reset(); expect_nofence = TRUE; session.InterfaceVersion = 19;
+    request.Flags = RADEON3D_INDIRECT_NO_FENCE;
+    submit_ok = FALSE; recover_ok = TRUE; Check(106, failure);
+    Reset(); session.InterfaceVersion = 19; request.Flags = 3;
+    Check(101, "");                   /* bit 0 is not a legal flag */
+    /* The MMIO baseline guard is withheld while an earlier fence-less
+     * submission may still be fetching its indirect buffer (events lose the
+     * c/C/d/D/q register pokes). */
+    Reset(); expect_nofence = TRUE; session.InterfaceVersion = 19;
+    request.Flags = RADEON3D_INDIRECT_NO_FENCE; unfenced_pending = TRUE;
+    Check(0, "LP[V]tStMNU");
+
+    /* Interface 19: Radeon3DSubmitFence closes the run with one full idle
+     * fence; the service rejects it before interface 19. */
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    CheckFence(0, success);
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    output_fence = FALSE; CheckFence(0, success);
+    Reset(); session.InterfaceVersion = 18; submit_packet2 = TRUE;
+    CheckFence(113, "LU");
+    Reset(); chip.ExecBase = NULL; submit_packet2 = TRUE;
+    CheckFence(111, "");
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    prepare_ok = FALSE; CheckFence(114, "LPU");
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    mutation = GENERATION; CheckFence(115, "LP[V]U");
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    submit_ok = FALSE; recover_ok = TRUE; CheckFence(116, failure);
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    submit_fence = 0; CheckFence(116, failure);
+    Reset(); session.InterfaceVersion = 19; submit_packet2 = TRUE;
+    lock_ok = FALSE; CheckFence(112, "L");
     printf("indirect dispatch: %u cases passed (production functions, no hardware)\n",
            cases);
     return 0;

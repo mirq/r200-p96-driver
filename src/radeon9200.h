@@ -271,6 +271,13 @@ BOOL RadeonCpTestFence(struct BoardInfo *bi, ULONG fence);
 BOOL RadeonCpWaitFence(struct BoardInfo *bi, ULONG fence,
                        ULONG timeoutMs);
 BOOL RadeonCpWait(struct BoardInfo *bi);
+/* Covers fence-less (coalesced) submissions: waits until the CP has consumed
+ * the ring. Required before any 2D engine transition rewrites the shared
+ * baseline, because no queued fence can name those submissions. */
+BOOL RadeonCpWaitDrained(struct BoardInfo *bi);
+/* TRUE while interface-19 fence-less submissions are in flight; MMIO writes
+ * to the shared engine baseline must be withheld then. */
+BOOL RadeonCpUnfencedPending(struct BoardInfo *bi);
 #ifdef DEBUG
 struct RadeonCpDebugResult {
     ULONG WrapBefore;
@@ -379,6 +386,9 @@ BOOL Radeon3DDispatchIndirect(
     __REGA1(const struct Radeon3DIndirect *indirect),
     __REGA2(ULONG *fenceOut),
     __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DSubmitFence(__REGA0(struct Radeon3DDevice *device),
+                         __REGA1(ULONG *fenceOut),
+                         __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
                          __REGA6(struct RadeonChipBase *base));
 

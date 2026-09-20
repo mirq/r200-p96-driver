@@ -372,8 +372,13 @@ static BOOL SynchronizeEngine(struct BoardInfo *bi)
     if (!data || !data->AccelPending)
         return !data || data->AccelState != RADEON_ACCEL_UNSAFE;
     pending = data->AccelPending;
+    /* The CP-pending path must also cover interface-19 fence-less
+     * submissions: the per-dispatch fence used to be the only thing that
+     * made the baseline rewrite below safe, and coalescing removed it.
+     * RadeonCpWait() handles fenced work; RadeonCpWaitDrained() handles the
+     * fence-less tail by waiting for the ring to be consumed. */
     if ((pending == RADEON_PENDING_CP && RadeonCpWait(bi) &&
-         RestoreEngineState(bi)) ||
+         RadeonCpWaitDrained(bi) && RestoreEngineState(bi)) ||
         (pending == RADEON_PENDING_MMIO && WaitIdleAndFlush(bi))) {
         data->AccelPending = RADEON_PENDING_NONE;
         data->Need2DRestore = FALSE;
