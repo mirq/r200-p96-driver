@@ -752,9 +752,10 @@ static BOOL ValidateTriangleBatch(struct Radeon3DDevice *device,
 {
     struct Radeon3DSurfaceHandle *target;
     /* This is the published wire contract for the immediate triangle list,
-     * not an internal choice: it must keep matching RADEON3D_SUBMISSION.md
-     * exactly. Alpha shading is deliberately absent because the stream only
-     * targets RGB565, which has no alpha channel to interpolate. */
+     * not an internal choice: it must keep matching
+     * docs/02-service-abi-reference.md exactly. Alpha shading is deliberately
+     * absent because the stream only targets RGB565, which has no alpha
+     * channel to interpolate. */
     ULONG seControl = R200_BFACE_SOLID | R200_FFACE_SOLID |
                       R200_DIFFUSE_SHADE_GOURAUD |
                       R200_VTX_PIX_CENTER_OGL |

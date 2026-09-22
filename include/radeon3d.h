@@ -495,14 +495,15 @@ struct Radeon3DInfo {
 
 /*
  * Radeon3DSubmit accepts PACKET2 no-ops and the bounded immediate triangle-list
- * stream documented in RADEON3D_SUBMISSION.md. General register and draw
- * packets are restricted to the separate trusted interface-18 indirect path.
+ * stream documented in docs/02-service-abi-reference.md. General register and
+ * draw packets are restricted to the separate trusted interface-18 indirect
+ * path.
  */
 
 /*
  * Interface-v2 execution records are host-endian and self-contained. Handles
  * are the opaque values returned in Radeon3DSurface.Handle. See
- * RADEON3D_SUBMISSION.md for exact record layouts and restrictions.
+ * docs/02-service-abi-reference.md for exact record layouts and restrictions.
  */
 
 typedef char Radeon3DInfoV4SizeCheck[

@@ -1,5 +1,33 @@
 # Radeon9200.chip Development Notes
 
+## Documentation is part of every change
+
+The reference documentation lives in [`docs/`](docs/README.md) and is written
+PPC-consumer-first. It is not optional and it is not a follow-up task:
+
+- **Any change that is committed and pushed to the remote must update the
+  affected documents in the same commit, or in a follow-up commit pushed
+  immediately afterwards.** A commit that changes behaviour without updating
+  the docs is incomplete.
+- At minimum: ABI/capability/limit changes update
+  [`docs/02-service-abi-reference.md`](docs/02-service-abi-reference.md) and
+  [`docs/01-ppc-client-guide.md`](docs/01-ppc-client-guide.md); performance
+  changes update [`docs/04-performance.md`](docs/04-performance.md) (add new
+  measured figures and mark superseded ones historical); build flags,
+  ToolTypes, install paths or recovery changes update
+  [`docs/05-build-deploy-run.md`](docs/05-build-deploy-run.md); test/probe
+  changes update [`docs/06-testing.md`](docs/06-testing.md); every release or
+  physical-validation run appends a dated entry with artifact identities to
+  [`docs/07-history.md`](docs/07-history.md).
+- Every performance statement must carry the metadata that produced it
+  (artifact hashes, cold/warm boot, ToolTypes, mode). Never restate an old
+  number as a current result.
+- New documentation goes into `docs/` as a numbered topic file and is linked
+  from [`docs/README.md`](docs/README.md); do not create new root-level `.md`
+  files for driver documentation.
+- When the ABI changes, reconcile the vendored consumer header under
+  `/home/mirek/minigl_ppc/third_party/radeon3d/include/` before committing.
+
 ## Target and safety
 
 The reference target is a physical 68060 Amiga, not an emulator. Do not use
@@ -97,17 +125,20 @@ acceleration resumes. Failed recovery must not permit unsafe VRAM rendering.
 
 The Radeon3D API is an active bounded service, not a future raw-register path.
 Do not expose unrestricted packets or client-controlled register writes. Follow
-[`RADEON3D_SUBMISSION.md`](RADEON3D_SUBMISSION.md) and reconcile changes with
-MiniGL's vendored consumer headers under
+[`docs/02-service-abi-reference.md`](docs/02-service-abi-reference.md) and
+reconcile changes with MiniGL's vendored consumer headers under
 `/home/mirek/minigl_ppc/third_party/radeon3d/include/` before changing the ABI.
-The current driver is version 3.0 and exposes Radeon3D interface 18; do not copy
-older interface numbers from consumer-side notes. Results are tracked in
-[`R200_3D_PROGRESS.md`](R200_3D_PROGRESS.md).
+The current driver is version 3.0 and exposes Radeon3D interface 19; do not copy
+older interface numbers from consumer-side notes. Chronology and decisions are
+tracked in [`docs/07-history.md`](docs/07-history.md).
 
 Interface 18 additionally supports trusted producer-built indirect buffers.
 Rendering requires both INDIRECT_DISPATCH and INDIRECT_RENDER capabilities;
 extent checks do not sandbox packet register/VRAM references. The driver still
-owns submission, transitions, fences and recovery.
+owns submission, transitions, fences and recovery. Interface 19 fence
+coalescing (`RADEON3D_INDIRECT_NO_FENCE` + `Radeon3DSubmitFence`) is parked and
+not deployable: three hardware attempts failed (hard wedge, corrupted
+rendering, silent stall). Keep it default-off and inert.
 
 Check any planned fixed-function behaviour against the Mesa implementation
 before writing it, and again before trusting a probe's expected values. Mesa

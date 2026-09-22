@@ -83,7 +83,7 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-            RADEON3D_IFACE_VERSION == 18UL);
+            RADEON3D_IFACE_VERSION == 19UL);
 ABI_CHECK(Radeon3DStreamSegmentCapability,
            RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
 ABI_CHECK(Radeon3DCommitStateReuseCapability,
@@ -187,6 +187,16 @@ ABI_CHECK(Radeon3DExecuteHardwareTclVertexSize,
            RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS == 10UL);
 ABI_CHECK(Radeon3DIndirectDispatchCapability,
            RADEON3D_CAP_INDIRECT_DISPATCH == (1UL << 26));
+ABI_CHECK(Radeon3DIndirectRenderCapability,
+           RADEON3D_CAP_INDIRECT_RENDER == (1UL << 27));
+ABI_CHECK(Radeon3DMultiFenceCapability,
+           RADEON3D_CAP_MULTI_FENCE == (1UL << 28));
+ABI_CHECK(Radeon3DFenceCoalesceCapability,
+           RADEON3D_CAP_FENCE_COALESCE == (1UL << 29));
+ABI_CHECK(Radeon3DIndirectNoFenceFlag,
+           RADEON3D_INDIRECT_NO_FENCE == (1UL << 1));
+ABI_CHECK(Radeon3DIndirectFlagsMask,
+           RADEON3D_INDIRECT_FLAGS == RADEON3D_INDIRECT_NO_FENCE);
 ABI_CHECK(Radeon3DIndirectSize,
           sizeof(struct Radeon3DIndirect) == RADEON3D_INDIRECT_V1_SIZE);
 ABI_CHECK(Radeon3DIndirectSegmentOffset,
@@ -228,6 +238,7 @@ void Radeon3DAbiCalls(void)
             indirect.Size = sizeof(indirect);
             (void)Radeon3DDispatchIndirect(device, &indirect, &fence);
         }
+        (void)Radeon3DSubmitFence(device, &fence);
         (void)Radeon3DInvalidateForTest(device);
         Radeon3DClose(device);
     }
