@@ -247,6 +247,51 @@ Safety rules for the probe (both sides enforce what they can):
   are unchanged. A hard hang still requires the operator cold power cycle
   ([`08-troubleshooting.md`](08-troubleshooting.md#10-hard-hang-grey-screen-guru)).
 
+### 7.1 First physical results (2026-09-23)
+
+Both halves ran on the physical machine (bridge `192.168.1.21:2345`, cold
+state unknown, `InitPPC` run once, no 3D clients active, matched pair
+installed, `CP=YES`). Deployed artifacts: `Work:phase0host` 14,960 bytes CRC32
+`2EA469BD`, `Work:ppcphase0` 11,616 bytes CRC32 `00FAB4BA`.
+Control address `0x43b00000` (segment slot 0), EClock 709,379 Hz.
+BAR0 = `0x40000000` (full 128 MiB aperture - larger than the 64 MiB P96
+window), BAR2 = `0x48010000` (64 KiB).
+
+| Operation | 68060 (same boot) | PPC / WarpOS | Note |
+|---|---:|---:|---|
+| MMIO register read | 722 ns | 999 ns | reads cannot be posted; both plausible |
+| MMIO posted write | 642 ns | **239 ns** | PPC bridge posts aggressively |
+| MMIO write + readback | 1386 ns | 1208 ns | the driver's publication shape |
+| Aperture store, committed | 607 ns/dw = 6.6 MB/s | **44.6 ns/dw = 89.5 MB/s** | `dcbf` inside the timed loop |
+| Aperture store, byte-reversed (`stwbrx`, ring shape) | ~750 ns/dw (historical) | **63.4 ns/dw = 63 MB/s** | swap included on the PPC |
+| Aperture read (cache-cold) | - | 202 ns | first run's 29 ns was a PPC-cache artifact |
+
+Cross-checks all green: `scratch_match=1` (PPC byte-reversed MMIO store
+verified by the 68k through its own aperture), `arena_match=1` (the PPC's
+timed committed stores verified by the 68k at three offsets),
+`stwbrx_ok=1`, EClock cross-reported.
+
+Methodology notes recorded with the first run (both fixed in the tool before
+these numbers):
+
+1. The first instrumentation run published KB/s scaled by 1000 instead of
+   1e6 and used only `eieio`/`sync` between store passes - `sync` does not
+   push dirty PPC cache lines to the bus, so the store figure could have been
+   cache absorption. The tool now runs `dcbf` (flush + invalidate) inside the
+   timed window and the 68k verifies the arena pattern through its own
+   aperture, so the store numbers above are committed, cross-verified
+   bandwidth.
+2. The aperture read figure now starts each pass cache-cold (`dcbf`
+   invalidates); the first run's 29 ns read was PPC cache latency, not VRAM.
+
+Conclusions for the design: the PPC reaches both BAR2 MMIO and the VRAM
+aperture through the 1:1 alias, its committed store bandwidth into the
+aperture is roughly **13x the 68k's**, and its MMIO posted writes are ~2.7x
+faster - while reads are ~1.4x slower. Option C is viable on every measured
+axis; the ring writer's dominant cost model becomes `dwords * 44.6 ns`
+(committed) plus one `WPTR` MMIO kick per batch and one MMIO read per
+reservation poll.
+
 Acceptance criteria for Phase 0 (what "go" looks like):
 
 - PPC can read and write BAR2 MMIO through the aliased address map (scratch

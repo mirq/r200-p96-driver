@@ -80,7 +80,7 @@ static ULONG KiloBytesPerSecond(ULONG bytes, ULONG passes, ULONG micros)
 
     if (!micros)
         return 0;
-    return (ULONG)(total * 1000ULL /
+    return (ULONG)(total * 1000000ULL /
                    ((unsigned long long)micros * 1024ULL));
 }
 
@@ -132,6 +132,7 @@ int main(int argc, char **argv)
     ULONG scratchValue = 0;
     ULONG stage = P0_STAGE_ARGS;
     ULONG allowMmioWrite = 0;
+    ULONG validated = 0;
     ULONG index;
     int result = 20;
 
@@ -156,9 +157,28 @@ int main(int argc, char **argv)
     stage = P0_STAGE_VERSION;
     if (block[P0_I_VERSION] != P0_VERSION)
         goto publish;
+    /* From here the control address is proven: the magic and version dwords
+     * read back as the published ABI, so the failure paths below may write
+     * their status into the block. */
+    validated = 1;
     stage = P0_STAGE_HOST_DONE;
-    if (block[P0_I_HOST_DONE] != P0_HOST_DONE)
-        goto publish;
+    if (block[P0_I_HOST_DONE] != P0_HOST_DONE) {
+        /* Tolerate being launched while the 68k host is still measuring:
+         * bounded re-reads (reads of VRAM are always safe), roughly 1 s. */
+        ULONG wait;
+        volatile ULONG sink = 0;
+
+        for (wait = 0; wait < 40UL; ++wait) {
+            if (block[P0_I_HOST_DONE] == P0_HOST_DONE)
+                break;
+            for (index = 0; index < 2000000UL; ++index) {
+                sink ^= index;
+            }
+        }
+        (void)sink;
+        if (block[P0_I_HOST_DONE] != P0_HOST_DONE)
+            goto publish;
+    }
     if (!(block[P0_I_FLAGS] & P0_FLAG_MMIO_WRITE_OK))
         allowMmioWrite = 0;
     stage = P0_STAGE_BAR2_RANGE;
@@ -216,7 +236,11 @@ int main(int argc, char **argv)
     }
 
     /* 3. Aperture store bandwidth: one burst per pass, native big-endian
-     * and stwbrx byte-reversed, barrier between passes. */
+     * and stwbrx byte-reversed. dcbf flush (writeback + invalidate) runs
+     * INSIDE the timed loop, so the measurement is committed-to-VRAM
+     * bandwidth: a store that stays in the PPC cache is paid here. The 68k
+     * host verifies the final pattern through its own aperture, which is
+     * the cross-visibility proof. */
     stage = P0_STAGE_APER_STORE;
     {
         ULONG dwords = P0_APER_BURST_BYTES / sizeof(ULONG);
@@ -224,12 +248,12 @@ int main(int argc, char **argv)
 
         for (index = 0; index < dwords; ++index)
             arena[index] = P0_APER_PATTERN ^ index;
-        P0WriteBarrier();
+        P0FlushRange((void *)arena, P0_APER_BURST_BYTES);
 
         GetSysTimePPC(&start);
         for (pass = 0; pass < P0_APER_PASSES; ++pass) {
             P0FillBurstNative(arena, P0_APER_PATTERN ^ pass, dwords);
-            P0WriteBarrier();
+            P0FlushRange((void *)arena, P0_APER_BURST_BYTES);
         }
         GetSysTimePPC(&end);
         nativeMicros = ElapsedMicros(&start, &end);
@@ -237,31 +261,45 @@ int main(int argc, char **argv)
         GetSysTimePPC(&start);
         for (pass = 0; pass < P0_APER_PASSES; ++pass) {
             P0FillBurstBr(arena, P0_APER_PATTERN ^ (pass + 1UL), dwords);
-            P0WriteBarrier();
+            P0FlushRange((void *)arena, P0_APER_BURST_BYTES);
         }
         GetSysTimePPC(&end);
         brMicros = ElapsedMicros(&start, &end);
     }
 
-    /* 4. Aperture read cost. */
+    /* 4. Aperture read cost. Each pass starts cache-cold: P0FlushRange's
+     * dcbf also invalidates the lines, so loads must reach VRAM instead of
+     * hitting PPC cache (the first run's 29 ns read figure was a cache
+     * artifact). The flush runs outside the timed interval. */
     stage = P0_STAGE_APER_READ;
-    GetSysTimePPC(&start);
-    for (index = 0; index < 8UL; ++index)
-        readSum ^= P0SumBurst(arena, P0_APER_BURST_BYTES / sizeof(ULONG));
-    GetSysTimePPC(&end);
-    aperReadMicros = ElapsedMicros(&start, &end);
+    {
+        ULONG dwords = P0_APER_BURST_BYTES / sizeof(ULONG);
+        ULONG pass;
+
+        for (pass = 0; pass < 8UL; ++pass) {
+            P0FlushRange((void *)arena, P0_APER_BURST_BYTES);
+            GetSysTimePPC(&start);
+            readSum ^= P0SumBurst(arena, dwords);
+            GetSysTimePPC(&end);
+            aperReadMicros += ElapsedMicros(&start, &end);
+        }
+    }
 
     /* 5. stwbrx byte-order verification against the little-endian dword
-     * 0x5a5aa5a5, whose bytes on the bus are A5 A5 5A 5A. */
+     * 0x5a5aa5a5, whose bytes on the bus are A5 A5 5A 5A. The test dword is
+     * restored afterwards so the arena stays uniform for the host's
+     * visibility check. */
     stage = P0_STAGE_STWBRX;
     {
         volatile UBYTE *bytes = (volatile UBYTE *)arena;
 
         P0FillBurstBr(arena, P0_APER_PATTERN, 1UL);
-        P0WriteBarrier();
+        P0FlushRange((void *)arena, sizeof(ULONG));
         if (bytes[0] == 0xA5 && bytes[1] == 0xA5 && bytes[2] == 0x5A &&
             bytes[3] == 0x5A)
             stwbrxOk = 1;
+        P0FillBurstBr(arena, P0_APER_PATTERN ^ P0_APER_PASSES, 1UL);
+        P0FlushRange((void *)arena, sizeof(ULONG));
         selfRead = P0MmioRead32((volatile void *)arena);
         scratchValue = P0MmioRead32(scratch1);
     }
@@ -270,7 +308,7 @@ int main(int argc, char **argv)
     result = 0;
 
 publish:
-    if (block) {
+    if (block && validated) {
         if (stage) {
             block[P0_I_PPC_STATUS] = 1UL;
             block[P0_I_PPC_STAGE] = stage;

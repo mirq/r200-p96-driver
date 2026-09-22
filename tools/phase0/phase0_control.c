@@ -444,6 +444,30 @@ int main(void)
             hostScratch != block[P0_I_PPC_MMIO_SCRATCH] && !result)
             result = 10;
     }
+    /* Arena visibility proof: the PPC's timed store loops ended with one
+     * byte-reversed pass writing P0_APER_PATTERN^P0_APER_PASSES to every
+     * dword (the byte-order test restores dword 0 afterwards). The host
+     * reads VRAM through its big-endian view, so the raw dword must be
+     * byte-swapped before comparison. Stale memory here means the measured
+     * bandwidth absorbed stores in the PPC cache. */
+    if (!block[P0_I_PPC_STATUS]) {
+        volatile ULONG *aperture = (volatile ULONG *)arena.CpuAddress;
+        ULONG dwords = P0_APER_BURST_BYTES / sizeof(ULONG);
+        ULONG expected = P0_APER_PATTERN ^ P0_APER_PASSES;
+        ULONG first = __builtin_bswap32(aperture[0]);
+        ULONG middle = __builtin_bswap32(aperture[dwords / 2UL]);
+        ULONG last = __builtin_bswap32(aperture[dwords - 1UL]);
+        ULONG match = first == expected && middle == expected &&
+                      last == expected;
+
+        printf("P0PPC arena68k=%08lx,%08lx,%08lx arena_expected=%08lx "
+               "arena_match=%lu\n",
+               (unsigned long)first, (unsigned long)middle,
+               (unsigned long)last, (unsigned long)expected,
+               (unsigned long)match);
+        if (!match && !result)
+            result = 10;
+    }
     result = block[P0_I_PPC_STATUS] ? 10 : result;
 
 done:
