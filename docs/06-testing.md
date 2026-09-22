@@ -46,6 +46,7 @@ them; if a refactor moves code the tests cannot find, they fail loudly.
 | `p96overlap` | 2D | layers.library split workload: empty vs 19 `ClipRect` overlap, median of seven trials | result table with `ClipRect` counts |
 | `p96windowmove` | 2D | Intuition window move empty vs over a populated target, whole-process and stage timing | `TOTAL`, `STAGES`, `TRIALS`, `RESULT` |
 | `rtgpresent` | - | Startup-sequence helper: RTG screen detection (returns 5/WARN otherwise) | exit code |
+| `phase0host` + `ppcphase0` (WarpOS) | 0 | PPC reachability probe for the direct-ring design (`docs/09-ppc-direct-ring-design.md`): BAR2 MMIO read/write cost from the PPC, aperture store bandwidth (native and `stwbrx`), cross-CPU control-block ordering, 68k baseline measured in the same boot | `P0HOST`/`P0PPC`/`PPCPHASE0` lines; 0 ok |
 | `chiptest`, `mglprobe`, `mglprobe2`, `dbgdump` | - | Small ad-hoc diagnostics | - |
 
 ## 3. Required hardware sequence
@@ -139,6 +140,34 @@ default. Compare `us_per_move`, the overlap ratio and the absolute overlap
 penalty using the exact same executable and display mode. Note that
 `p96windowmove` was written for a **1024x768x16** private screen; the version
 in this tree may require that mode to be available.
+
+### 3.6 Phase-0 PPC reachability probe
+
+Build both halves with `make phase0` (the PPC half needs the local
+`vbcc` `+warpos` target; see the `phase0` target in the Makefile). Deploy
+`build/phase0host` and `build/phase0/ppcphase0` to the machine (short names,
+CRC-verified). Run with the matched pair installed, `CP=YES` active, and **no
+3D client rendering**:
+
+```text
+Work:phase0host
+```
+
+The host prints the BAR addresses, the 68k baseline measurements, and the
+exact command line to run on the same machine:
+
+```text
+Work:ppcphase0 <controlSegmentAddressHex>
+```
+
+Then read the joint summary from the host's console (`P0PPC ...` lines,
+including the `scratch68k`/`scratch_match` cross-check that proves the PPC's
+byte-reversed MMIO store reached the register in the expected shape). Accept
+the probe only if: the block handshake completes, MMIO reads return sane
+register values, `stwbrx_ok=1`, `scratch_match=1`, and both bandwidth
+figures are plausible against the 68k baseline. Record the output with the
+standard artifact metadata. The host times out after 120 s if the PPC never
+acknowledges; both segments are freed on every exit path.
 
 ## 4. Baseline procedure
 

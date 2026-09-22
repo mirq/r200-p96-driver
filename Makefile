@@ -153,7 +153,19 @@ R3D_TEXUPDATE_TEST := $(BUILD_DIR)/r3dtexupdate
 R3D_IB_TEST := $(BUILD_DIR)/r3dib
 VRAM_STREAM_TEST := $(BUILD_DIR)/vramstream
 
-.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay r3dtexupdate r3dib
+# Phase-0 PPC reachability probe (docs/09-ppc-direct-ring-design.md):
+# a 68k companion plus a WarpOS PPC client. The PPC half needs the local
+# vbcc +warpos target; see the targets below for the exact environment.
+PHASE0_DIR := tools/phase0
+PHASE0_HOST := $(BUILD_DIR)/phase0host
+PHASE0_PPC_DIR := build/phase0
+PHASE0_PPC := $(PHASE0_PPC_DIR)/ppcphase0
+PHASE0_PPC_ASM := $(PHASE0_PPC_DIR)/phase0ppc_asm.o
+VBCC_ROOT ?= /home/mirek/vbcc
+VBCC_NDK ?= /opt/amiga/m68k-amigaos/ndk-include
+PPC_INCLUDE := $(VBCC_ROOT)/build/targets/ppc-warpos/include
+
+.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay r3dtexupdate r3dib phase0
 
 all: $(TARGET) $(CARD_TARGET)
 
@@ -169,6 +181,32 @@ r3dreplay: $(R3D_REPLAY_TEST)
 r3dtexupdate: $(R3D_TEXUPDATE_TEST)
 
 r3dib: $(R3D_IB_TEST)
+
+phase0: $(PHASE0_HOST) $(PHASE0_PPC)
+
+$(PHASE0_HOST): $(PHASE0_DIR)/phase0_control.c $(PHASE0_DIR)/phase0_regs.h \
+		include/radeon3d.h include/clib/radeon3d_protos.h \
+		include/inline/radeon3d.h
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -Wmissing-prototypes \
+		-Wstrict-prototypes -m68020-60 -noixemul -Iinclude \
+		-I$(PHASE0_DIR) -IPrometheus/PromLib \
+		-IPrometheus/PrometheusCard $< -lamiga -o $@
+
+$(PHASE0_PPC_DIR):
+	mkdir -p $(PHASE0_PPC_DIR)
+
+$(PHASE0_PPC_ASM): $(PHASE0_DIR)/phase0ppc.s | $(PHASE0_PPC_DIR)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		$(VBCC_ROOT)/build/bin/vasmppc_std -quiet -big -m7410 \
+		-Fhunk -sdreg=2 -opt-branch $< -o $@
+
+$(PHASE0_PPC): $(PHASE0_DIR)/ppcphase0.c $(PHASE0_DIR)/phase0_regs.h \
+		$(PHASE0_PPC_ASM)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		$(VBCC_ROOT)/build/bin/vc +warpos -c99 -O2 -amiga-align \
+		-I$(PHASE0_DIR) -I$(PPC_INCLUDE) -I$(VBCC_NDK) $< \
+		$(PHASE0_PPC_ASM) -lamiga -o $@
 
 $(R3D_IB_TEST): tools/r3dib.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \

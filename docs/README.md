@@ -103,6 +103,9 @@ Driver developers (68k):
    design looks the way it does.
 5. [`08-troubleshooting.md`](08-troubleshooting.md) - stage codes, recovery,
    bring-up hazards.
+6. [`09-ppc-direct-ring-design.md`](09-ppc-direct-ring-design.md) - the
+   PPC-owned ring data plane: design options, expected savings, Phase-0
+   probe.
 
 ```mermaid
 flowchart TD
@@ -130,6 +133,7 @@ flowchart TD
 | [`06-testing.md`](06-testing.md) | Test/probe inventory, acceptance procedures, metadata requirements |
 | [`07-history.md`](07-history.md) | Condensed chronological log, artifact identities, rejected and parked work |
 | [`08-troubleshooting.md`](08-troubleshooting.md) | Failure stages, error encodings, recovery recipes, hardware hazards |
+| [`09-ppc-direct-ring-design.md`](09-ppc-direct-ring-design.md) | PPC direct-ring design proposal, expected savings, Phase-0 probe |
 
 ## Documentation maintenance rule
 
