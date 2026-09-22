@@ -35,6 +35,29 @@ cache-flushed), and submit through `Radeon3DExecute` /
 the 68k service through an Exec message-port host; native 68k clients call the
 vectors directly.
 
+```mermaid
+flowchart LR
+    subgraph PPC["PPC / WarpOS"]
+        APP["Application or engine"] --> MGL["minigl.library<br/>R200 backend"]
+        MGL --> HOSTPROC["68k host process"]
+    end
+    subgraph HOSTCPU["68060 host"]
+        LIB["Radeon9200.chip<br/>Radeon3D service + emitter"]
+        CP["CP ring 1 MiB"]
+        ACCEL["Picasso96 2D<br/>direct MMIO"]
+        LIB --> CP
+    end
+    subgraph CARD["RV280"]
+        GPU["R200 3D engine"]
+        VRAM["VRAM + private pools"]
+    end
+    HOSTPROC -->|"Radeon3D vectors"| LIB
+    NATIVE["Native 68k client"] --> LIB
+    CP --> GPU
+    GPU --> VRAM
+    ACCEL --> VRAM
+```
+
 Start with the documentation:
 
 | Document | For |

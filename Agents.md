@@ -25,6 +25,10 @@ PPC-consumer-first. It is not optional and it is not a follow-up task:
 - New documentation goes into `docs/` as a numbered topic file and is linked
   from [`docs/README.md`](docs/README.md); do not create new root-level `.md`
   files for driver documentation.
+- Flows, state machines, memory layouts and sequences are documented as
+  Mermaid diagrams inside those files. When one of them changes, update the
+  matching diagram in the same commit. Validate diagram syntax before pushing
+  (any Mermaid parser is enough; broken diagrams render as raw text on GitHub).
 - When the ABI changes, reconcile the vendored consumer header under
   `/home/mirek/minigl_ppc/third_party/radeon3d/include/` before committing.
 

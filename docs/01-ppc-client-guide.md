@@ -43,6 +43,20 @@ of them, but the call cost is not:
 | WarpOS cross-CPU call | PPC code calls the 68k library vector through the WarpOS/`amiga.lib` PPC-to-68k bridge. | Cross-CPU context switch per call, no extra process |
 | Native 68k | 68k code calls the vectors directly (probes, replay tool, 68k clients). | Cheapest; used for reference measurements |
 
+```mermaid
+flowchart TB
+    subgraph T1["A. Native 68k client"]
+        A1["68k program"] -->|"direct LVO call"| A2["Radeon9200.chip"]
+    end
+    subgraph T2["B. WarpOS cross-CPU call"]
+        B1["PPC code"] -->|"amiga.lib PPC-to-68k bridge"| B2["Radeon9200.chip"]
+    end
+    subgraph T3["C. 68k host process, the MiniGL WarpOS shape"]
+        C1["PPC frontend"] -->|"Exec message port"| C2["68k host task"]
+        C2 -->|"direct LVO call"| C3["Radeon9200.chip"]
+    end
+```
+
 Two consequences dominate client design:
 
 - **Per-call overhead is large relative to small commands.** Batch many draws
@@ -134,6 +148,22 @@ Rules:
   CP abort/recovery). Compare it before reusing cached surface handles; a
   generation change means your handles and segments are gone and the session
   must be reopened.
+
+```mermaid
+stateDiagram-v2
+    [*] --> LibraryClosed
+    LibraryClosed --> SessionOpen : OpenLibrary
+    SessionOpen --> Active : Radeon3DOpen grants interface
+    Active --> Active : submissions, fences, GetInfo
+    Active --> Closing : Radeon3DClose
+    Closing --> LibraryClosed : last fence retired, owner pin released
+    Active --> Stale : generation advanced by detach or recovery
+    Stale --> Closing : Radeon3DClose
+    note right of Stale
+        Handles and segments are gone.
+        Reopen and reimport resources.
+    end note
+```
 
 ### 2.1 Capability negotiation
 
@@ -245,6 +275,15 @@ Segment rules for PPC producers:
    texture byte before submitting texture fetches, but the producer is
    responsible for its own cache flush.
 
+```mermaid
+flowchart LR
+    A["PPC producer"] -->|"1. byte-swap"| B["segment CpuAddress<br/>little-endian GPU data"]
+    B -->|"2. cache flush"| C["Radeon3DCommitBatch<br/>headers + offsets"]
+    C -->|"3. emitter"| D["CP ring<br/>vertex-fetch draw"]
+    D -->|"4. VAP fetch"| E["vertices at<br/>GpuAddress + OffsetBytes"]
+    B -.-> E
+```
+
 ## 5. The submission paths
 
 Use the cheapest path that can express your work:
@@ -258,6 +297,19 @@ Use the cheapest path that can express your work:
 | `Radeon3DSubmit` | 1 | Fixed immediate triangle list / PACKET2 | Legacy smoke tests only |
 | `Radeon3DDispatchIndirect` | 18+ | Pre-swapped CP packets in a segment | Trusted producer that emits its own R200 packets |
 | `Radeon3DSubmitFence` | 19+ | nothing | Closing a run of fence-less indirect dispatches (parked; see below) |
+
+```mermaid
+flowchart TD
+    W["What are you submitting?"] --> Q1{"Trusted producer with<br/>its own CP packets?"}
+    Q1 -->|yes| IB["Radeon3DDispatchIndirect<br/>interface 18+"]
+    Q1 -->|no| Q2{"Vertices already in a<br/>streaming segment?"}
+    Q2 -->|yes| Q3{"One state block,<br/>many draws?"}
+    Q3 -->|yes| SB["Radeon3DCommitStateBatch<br/>interface 15+"]
+    Q3 -->|no| CB["Radeon3DCommitBatch<br/>interface 13+"]
+    Q2 -->|no| Q4{"Legacy fixed immediate<br/>triangle list?"}
+    Q4 -->|yes| SUB["Radeon3DSubmit<br/>interface 1"]
+    Q4 -->|no| EX["Radeon3DExecute<br/>semantic records"]
+```
 
 ### 5.1 Semantic records - `Radeon3DExecute()`
 
@@ -443,6 +495,28 @@ working buffers out of PPC RAM raised a 600-frame gears median from 44.3 to
 [`04-performance.md`](04-performance.md#7-ppc-memory-placement).
 
 ## 8. Worked integration sequence
+
+A frame in the streaming shape, from the client's point of view:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PPC as PPC client
+    participant SVC as Radeon3D service
+    participant CP as R200 CP + GPU
+
+    PPC->>SVC: Radeon3DExecute(clear records, FENCE)
+    SVC->>CP: ring submit + fence tail
+    PPC->>PPC: write TCL vertices into free segment
+    Note over PPC: byte-swap dwords, flush data cache
+    PPC->>SVC: Radeon3DCommitBatch(headers + offsets, FENCE)
+    SVC->>CP: vertex-fetch draw stream + fence tail
+    PPC->>PPC: present frame
+    PPC->>SVC: Radeon3DTestFence(slot fence)
+    SVC->>CP: read SCRATCH_REG0
+    CP-->>SVC: fence value
+    SVC-->>PPC: TRUE when retired
+```
 
 ```text
 MGLInit / driver start:

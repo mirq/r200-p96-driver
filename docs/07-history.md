@@ -10,6 +10,30 @@ values. A rebuild changes them.
 
 ## 1. Interface evolution
 
+```mermaid
+timeline
+    title Radeon3D interface evolution
+    1 : Discovery, PACKET2, fences, bitmap import
+    2 : Semantic Execute records
+    3 : Depth comparison functions
+    4 : Texture state, alpha test, blending
+    5 : Fog and two texture units
+    6 : CLUT8 and B8G8R8A8 color targets
+    7 : Native strip and fan primitives
+    8 : Native quad lists, perspective W
+    9 : Hardware transform and clip
+    10 : Object-linear texgen
+    11 : Normals and fixed-function lighting
+    12 : Sphere-map texgen, compact TCL vertex
+    13 : Streaming segments and vertex-fetch commits
+    14 : State-reuse records
+    15 : Homogeneous state batches
+    16 : Ordered commits
+    17 : Auxiliary render surfaces
+    18 : Trusted indirect dispatch, multi-fence
+    19 : Fence coalescing, parked
+```
+
 | Interface | Added | Key capabilities |
 |---:|---|---|
 | 1 | first service | Discovery, PACKET2/immediate triangle submission, fences, bitmap import |

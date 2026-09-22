@@ -38,6 +38,16 @@ The EClock resolution is about 1.4 us, so per-call numbers for tiny batches
 are quantised. Trust accumulated totals and frame-level sums; `ReadEClock()`
 itself was measured well under a microsecond.
 
+Where a frame's time goes, with the measured order of magnitude on each hop:
+
+```mermaid
+flowchart LR
+    C["PPC client<br/>builds records or vertices"] -->|"driver CPU 2.2-2.6 ms/frame"| S["68k service<br/>validate + emit"]
+    S -->|"~30 cycles/dword<br/>~6.1 MB/s"| A["PCI aperture<br/>ring commands only"]
+    A -->|"~1.4 KB/frame"| G["R200 GPU<br/>fill 370-900 MB/s"]
+    G --> F["presented frame"]
+```
+
 ## 2. Cycle-cost table
 
 All values measured on the reference machine; "cycles" is the derived 68060
@@ -168,6 +178,14 @@ driver interface 16, generation 5, warm session - not a formal baseline):
 | Full, 32bpp, offscreen target | 54.6 | 18.31 |
 | Geometry only, 32bpp, offscreen | 70.2 | 14.25 |
 
+```mermaid
+xychart-beta
+    title "r3dreplay 800x600 medians"
+    x-axis ["clear 32", "clear 16", "geom 32", "geom 16", "full 32", "full 16"]
+    y-axis "FPS" 0 --> 950
+    bar [476, 903, 63.4, 119.3, 57.75, 104.4]
+```
+
 Readings:
 
 - The R200 clear (two huge triangles) runs at **~900 MB/s** - native engine
@@ -207,6 +225,13 @@ Measured attribution (elapsed phase intervals, **not** exclusive CPU):
 | serfast PPC stack (300 frames) | 17.1 ms | 2.64 ms median | build 50.6%, submit 35.3%, copy 14.2% |
 | Synchronous 68k client | - | 2.23 ms/frame | - |
 | Pre-serialized replay | - | 1.05 ms/frame (103 record dwords) | GPU-bound loop with multi-ms submit stalls |
+
+```mermaid
+pie title Driver CPU per frame, serfast 2.64 ms median
+    "Build + prepare" : 50.6
+    "CP submit" : 35.3
+    "Trusted copy" : 14.2
+```
 
 The driver is ~15% of the serfast frame; the client and GPU own the rest. For
 the older asynchronous host shape, ring wall-clock phase times are inflated by

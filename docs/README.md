@@ -12,6 +12,39 @@ this card, start with [`01-ppc-client-guide.md`](01-ppc-client-guide.md) and
 material (68k code, locks, command processor, Picasso96 callbacks) follows in
 [`03-driver-architecture.md`](03-driver-architecture.md).
 
+```mermaid
+flowchart LR
+    subgraph PPC["PPC / WarpOS side (big-endian)"]
+        APP["Application or engine"]
+        MGL["minigl.library 7.x<br/>R200 backend"]
+        HOST["68k host process<br/>MGLPPCTransport"]
+        APP --> MGL
+        MGL -->|"Exec message port"| HOST
+    end
+
+    subgraph HOSTCPU["68060 host side"]
+        LIB["Radeon9200.chip<br/>Radeon3D service"]
+        EMIT["Emitter<br/>radeon3d_emit.c"]
+        CP["Command processor<br/>1 MiB ring"]
+        ACCEL["Picasso96 2D<br/>direct MMIO"]
+        LIB --> EMIT
+        EMIT --> CP
+    end
+
+    subgraph CARD["RV280 Radeon 9200"]
+        GPU["R200 3D engine"]
+        ENG2D["2D engine"]
+        VRAM["VRAM<br/>P96 + private pools"]
+    end
+
+    HOST -->|"Radeon3D vectors"| LIB
+    NATIVE["Native 68k client"] -->|"direct LVO calls"| LIB
+    CP --> GPU
+    ACCEL --> ENG2D
+    GPU --> VRAM
+    ENG2D --> VRAM
+```
+
 ## Current identity snapshot
 
 Read from the source tree at the time this documentation was written; always
@@ -71,6 +104,20 @@ Driver developers (68k):
 5. [`08-troubleshooting.md`](08-troubleshooting.md) - stage codes, recovery,
    bring-up hazards.
 
+```mermaid
+flowchart TD
+    START["What are you doing?"] --> Q1{"PPC / WarpOS<br/>client work?"}
+    Q1 -->|yes| C1["01 PPC client guide"]
+    C1 --> C2["02 Service ABI reference"]
+    C2 --> C3["04 Performance"]
+    C3 --> C4["06 Testing"]
+    Q1 -->|no, driver work| D1["03 Driver architecture"]
+    D1 --> D2["04 Performance"]
+    D2 --> D3["05 Build and deploy"]
+    D3 --> D4["06 Testing"]
+    D4 --> D5["08 Troubleshooting"]
+```
+
 ## Document map
 
 | File | Contents |
@@ -110,6 +157,9 @@ old number as a current result; move it to a clearly labelled historical table.
 
 ## Conventions used in these documents
 
+- Diagrams are [Mermaid](https://mermaid.js.org/) blocks; they render directly
+  on GitHub and in any Mermaid-capable Markdown viewer. When a flow, state
+  machine or layout changes, update the matching diagram in the same commit.
 - "Host CPU" means the 68k CPU (the 68060) that runs AmigaOS and this driver.
   "PPC" means the WarpOS CPU (e.g. MPC7410 on the reference machine).
 - Register and packet dwords are described as seen by the host CPU unless the

@@ -4,6 +4,19 @@ Read [`05-build-deploy-run.md`](05-build-deploy-run.md) first for the recovery
 layers and the physical-machine rules. This document maps symptoms to likely
 causes.
 
+```mermaid
+flowchart TD
+    S["Symptom"] --> Q1{"Service will not open?"}
+    Q1 -->|yes| A1["check rtg.library, state READY,<br/>CP ready, ToolTypes, DMASIZE"]
+    Q1 -->|no| Q2{"Submission returns FALSE?"}
+    Q2 -->|yes| A2["read fenceOut and CommitFailStage,<br/>map stage to the 02 table"]
+    Q2 -->|no| Q3{"Rendering artifact?"}
+    Q3 -->|yes| A3["check producer cache flush,<br/>byte order, texture serial"]
+    Q3 -->|no| Q4{"Slow?"}
+    Q4 -->|yes| A4["check fallbacks, drain pacing,<br/>performance counters"]
+    Q4 -->|no| A5["hard hang: operator cold power cycle"]
+```
+
 ## 1. Service will not open
 
 `Radeon3DOpen()` returns NULL when any of these fail:

@@ -350,6 +350,19 @@ Every record begins with `{opcode, length}` where `length` counts all dwords
 including the two-dword header. Parsing must end exactly at the supplied dword
 count. All dwords are host-endian.
 
+Draw headers grow in interface-gated steps; each step keeps the previous
+layout intact:
+
+```mermaid
+flowchart LR
+    H11["Basic draw<br/>11 dwords"] -->|"+ texture state,<br/>fragment state"| H15["Fragment<br/>15 dwords"]
+    H15 -->|"+ unit 1, vertexState, fog"| H21["Extended<br/>21 dwords"]
+    H21 -->|"+ MVP, viewport, TCL state"| H44["HW TCL<br/>44 dwords"]
+    H44 -->|"+ texgen states, 2 matrices"| H78["TexGen<br/>78 dwords"]
+    H44 -.->|"+ normals, MV, inv MV"| NM["+32 dwords"]
+    H44 -.->|"+ lighting state, lights"| LT["+26 + 31 per light"]
+```
+
 ### 10.1 Opcodes
 
 | Opcode | Value | Minimum interface | Header dwords |
@@ -376,6 +389,16 @@ A **reuse record** is `{opcode, 3, vertexCount}`. It consumes one vertex offset
 from the commit batch's offset table and re-draws with the previous record's
 complete emitted state. It is a commit-stream feature; do not send it to
 `Radeon3DExecute`.
+
+A call is a chain of records; the parser advances by each record's `dword[1]`
+length and must land exactly on the supplied dword count:
+
+```mermaid
+flowchart LR
+    R1["CLEAR<br/>dword1 = 11"] --> R2["DRAW_TRIANGLES<br/>dword1 = 11 + 6 x N"] --> R3["REUSE_QUADS<br/>dword1 = 3"]
+    R2 -.->|"parser advances by dword1"| P["next record"]
+    R3 -.-> P
+```
 
 ### 10.2 Clear record (11 dwords)
 
@@ -680,6 +703,27 @@ the target. Anything else is rejected before the ring write pointer changes.
   failure.
 - `Radeon3DTestFence` also invalidates the host read buffer so a following CPU
   read sees GPU writes.
+
+Fences are ring-ordered: a retiring later fence proves every earlier
+submission completed, so one wait can retire a whole frame's submissions.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Service
+    participant R as CP ring
+    participant G as GPU
+    C->>S: Submit A with FENCE
+    S->>R: stream A, flush, idle wait, scratch = 7
+    C->>S: Submit B with FENCE
+    S->>R: stream B, flush, idle wait, scratch = 8
+    G-->>R: executes A, writes 7
+    G-->>R: executes B, writes 8
+    C->>S: TestFence(7)
+    S->>R: read SCRATCH_REG0
+    R-->>S: 8, which is >= 7
+    S-->>C: TRUE, A and B retired
+```
 
 Commit failure stages:
 

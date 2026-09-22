@@ -58,6 +58,18 @@ unrecoverable boot hangs on the physical machine. Default is off. **Never
 install a probes-on debug chip as the active driver.** See
 [`08-troubleshooting.md`](08-troubleshooting.md#7-debug-chip-boot-hangs).
 
+```mermaid
+flowchart TD
+    B["Which build?"] --> Q1{"Performance comparison?"}
+    Q1 -->|yes| REL["make<br/>release, no DEBUG, no FASTWAIT"]
+    Q1 -->|no| Q2{"Need telemetry?"}
+    Q2 -->|yes| DBG["make DEBUG=1"]
+    Q2 -->|no| REL
+    DBG --> Q3{"Need boot-time engine probes?"}
+    Q3 -->|"no, default and boot-safe"| SAFE["probes off"]
+    Q3 -->|"yes, diagnosis only"| PROBE["make DEBUG=1 PROBES=1<br/>never install as active"]
+```
+
 ### 3.1 DEBUG builds
 
 - The resident name must stay `Radeon9200.chip` in every build, including
@@ -170,6 +182,19 @@ Two layers exist in `S:startup-sequence`:
    and the block copies both `.previous` files only when both recovery files
    exist. Do not hold the right mouse button for a normal experimental-driver
    boot.
+
+```mermaid
+flowchart TD
+    BOOT["Cold boot"] --> MARK["startup-sequence writes<br/>S:driver-boot-failed"]
+    MARK --> LOAD["LoadMonDrvs loads the pair"]
+    LOAD --> OK{"RTG screen?<br/>C:RTGPresent"}
+    OK -->|OK| CLEAR["clear marker, normal boot"]
+    OK -->|WARN or boot stall| NEXT["next boot: marker survives"]
+    NEXT --> RESTORE["restore both .previous files,<br/>write RAM:driver-autorecovered"]
+    RESTORE --> BOOT
+    RMB["Hold right mouse button"] --> TESTRMB["C:TestRMB returns WARN"]
+    TESTRMB --> MANUAL["copy both .previous files<br/>if both exist"]
+```
 
 `C:RTGPresent` locks the default public screen and treats mode ids with the RTG
 flag (`0x80000000`) or a screen wider than 900 pixels as RTG; otherwise it

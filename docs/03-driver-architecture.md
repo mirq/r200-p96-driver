@@ -4,6 +4,30 @@ This is the 68k-side internals reference. It assumes you have read the client
 view ([`01-ppc-client-guide.md`](01-ppc-client-guide.md)) and the ABI
 ([`02-service-abi-reference.md`](02-service-abi-reference.md)).
 
+```mermaid
+flowchart TB
+    subgraph LIB["Radeon9200.chip library base"]
+        BASE["RadeonChipBase<br/>ServiceLock, generation, pools"]
+        DEV["Radeon3DDevice sessions<br/>trusted/generated buffers,<br/>emitter, segments, surfaces"]
+        CPST["RadeonCpState<br/>ring, WPTR, fences, timer"]
+    end
+    subgraph BOARD["BoardInfo + RadeonBoardData"]
+        BI["Picasso96 callbacks<br/>display, 2D, cursor"]
+        DATA["device, MMIO size, VRAM,<br/>DVI info, accel state"]
+    end
+    subgraph HW["RV280"]
+        MMIO["BAR2 MMIO registers"]
+        FB["BAR0 framebuffer aperture"]
+        RING["1 MiB CP ring in VRAM"]
+    end
+    DEV --> BASE
+    BASE --> CPST
+    BI --> MMIO
+    BI --> FB
+    CPST --> RING
+    CPST --> MMIO
+```
+
 ## 1. Source map
 
 | File | Role |
@@ -70,6 +94,25 @@ CloseLibrary()
 4. If the CP is ready: `Radeon3DAdvanceGeneration()` and
    `ATTACHED -> READY`. Radeon3D sessions can only open in `READY`.
 
+```mermaid
+sequenceDiagram
+    participant P96 as Picasso96 + Prometheus.card
+    participant CHIP as Radeon9200.chip
+    participant HW as RV280
+    P96->>CHIP: InitChip(BoardInfo)
+    CHIP->>CHIP: validate handoff magic and sizes
+    CHIP->>HW: BIOS parse, SDRAM reset, post, framebuffer location
+    CHIP->>HW: 640x480 startup mode
+    CHIP-->>P96: TRUE, state = ATTACHED
+    P96->>CHIP: InitRadeonFeatures(features)
+    CHIP->>HW: 2D engine setup
+    opt CP=YES
+        CHIP->>HW: reset CP, load microcode, ring test
+        CHIP->>CHIP: reserve segment and aux pools
+    end
+    CHIP->>P96: callbacks installed, state = READY
+```
+
 `BoardInfo.ChipData` holds `struct RadeonBoardData` (per-board state);
 `BoardInfo.ChipBase` points at the chip library base. Callbacks are entered
 **without the chip library base guaranteed in A6** - all callback code must be
@@ -91,6 +134,18 @@ States (`RADEON3D_SERVICE_*`):
 | `ATTACHED` | board initialized, features not yet installed |
 | `READY` | CP live; sessions may open |
 | `DETACHING` | board going away; no new work |
+
+```mermaid
+stateDiagram-v2
+    [*] --> EMPTY
+    EMPTY --> INITIALIZING : InitChip
+    INITIALIZING --> ATTACHED : hardware and startup screen OK
+    INITIALIZING --> EMPTY : failure, board released
+    ATTACHED --> READY : InitRadeonFeatures, CP ready
+    ATTACHED --> DETACHING : release
+    READY --> DETACHING : board release or CP abort
+    DETACHING --> EMPTY : cleanup complete
+```
 
 Each open session (`struct Radeon3DDevice`) records:
 
@@ -122,6 +177,17 @@ Lock rules (invariant, keep them):
 5. A session closed while a call is active is retired: it is moved to the
    retired list, `Closing` is set, and cleanup happens when the last active
    call finishes. `ReapRetiredDevicesLocked()` frees retired devices.
+
+```mermaid
+flowchart TD
+    A["Service call entry"] --> B["ServiceLock: find session,<br/>pin active call"]
+    B --> C["BoardLock"]
+    C --> D["ServiceLock: revalidate<br/>session, board, generation"]
+    D --> E["Release ServiceLock,<br/>hold BoardLock"]
+    E --> F["hardware and CP work"]
+    F --> G["Release BoardLock"]
+    G --> H["ServiceLock: drop active call,<br/>finish deferred close"]
+```
 
 The owner pin: every session opens `rtg.library` and reports
 `RADEON3D_CAP_OWNER_PINNED`. If the final owner pin closes while `rtg.library`
@@ -170,6 +236,20 @@ this memory. Order of creation:
 | 2 | CP ring | 1 MiB | `RadeonCpInitialize` |
 | 3 | streaming segment pool | 12 x 256 KiB = 3 MiB | `RadeonInitializeAcceleration` (CP only) |
 | 4 | aux surface pool | 4 MiB | `RadeonInitializeAcceleration` (CP only) |
+
+```mermaid
+flowchart TB
+    subgraph VRAM["VRAM, high to low"]
+        direction TB
+        DMA["DMASIZE arena<br/>Prometheus.card, peer bus masters"]
+        TPL["template staging 64 KiB<br/>TEXTSTAGE only, known broken"]
+        RING["CP ring 1 MiB"]
+        SEG["stream segment pool 3 MiB<br/>12 x 256 KiB"]
+        AUX["aux surface pool 4 MiB<br/>8 surfaces"]
+        P96["Picasso96 pool<br/>bi->MemorySize"]
+    end
+    DMA --> TPL --> RING --> SEG --> AUX --> P96
+```
 
 Shutdown frees in reverse (aux pool, segment pool, CP ring). A `DMASIZE` arena
 is separate: `Prometheus.card` reserves it at the high end of VRAM and
@@ -220,6 +300,21 @@ Submission paths:
   store), the fence/padding tail on the per-dword path. Ring wrap is handled
   by splitting into two spans.
 
+```mermaid
+sequenceDiagram
+    participant S as Service
+    participant R as CP ring in VRAM
+    participant CP as R200 CP
+    S->>R: CpReserve polls CP_RB_RPTR for space
+    S->>R: CpBurstCopySwapped, 8 dwords per movem burst
+    S->>R: fence tail, cache flush + idle wait + scratch = N
+    S->>R: read back the final dword
+    S->>CP: write CP_RB_WPTR, read back
+    CP->>CP: execute packets
+    CP->>CP: write SCRATCH_REG0 = N
+    Note over S,CP: RadeonCpWaitFence polls SCRATCH_REG0 until N,<br/>then invalidates the host read buffer
+```
+
 The fence tail is six dwords appended to every fenced submission:
 
 ```text
@@ -242,6 +337,17 @@ Recovery:
 - `RadeonCpShutdown()` waits for pending work, disables CSQ, restores the PCI
   bus state, frees the ring and closes the timer.
 
+```mermaid
+flowchart TD
+    F["Wait or submit failure"] --> R1["RadeonRecoverAcceleration"]
+    R1 --> R2["Radeon3DInvalidateService<br/>advance generation"]
+    R2 --> R3["ResetEngine: soft-reset 2D"]
+    R3 --> R4["RadeonCpRecover:<br/>reset, load microcode, ring test"]
+    R4 -->|success| R5["RestoreEngineState, invalidate caches,<br/>state = READY"]
+    R4 -->|failure| R6["Retain direct MMIO,<br/>2D software fallback, no 3D"]
+    R5 --> R7["sessions stale: reopen and reimport"]
+```
+
 Interface-19 fence coalescing added `PendingUnfenced`,
 `RadeonCpUnfencedPending()` and `RadeonCpWaitDrained()`. The drain uses
 `CpWaitGuiIdle()` (full idle), **not** `RB_RPTR`: for an indirect dispatch the
@@ -262,6 +368,20 @@ Entry points installed into `BoardInfo`: `FillRect`, `InvertRect`, `BlitRect`,
    operation registers,
 4. on any rejection, falls back to the saved Picasso96 software callback
    (`FillRectDefault` etc.) or drains and uses it.
+
+```mermaid
+flowchart TD
+    ENTRY["P96 2D callback"] --> VAL{"ValidateSurface:<br/>on-board, pitch, bounds?"}
+    VAL -->|reject| SW["Saved P96 software default"]
+    VAL -->|ok| SYNC{"Pending CP work<br/>or Need2DRestore?"}
+    SYNC -->|yes| DRAIN["SynchronizeEngine:<br/>wait CP, restore 2D baseline"]
+    SYNC -->|no| STATE["SetEngineState<br/>cached register writes"]
+    DRAIN --> STATE
+    STATE --> OP["operation registers, FIFO wait"]
+    OP -->|success| DONE["hardware complete"]
+    OP -->|failure| REC["RecoverEngine or fallback"]
+    REC --> SW
+```
 
 `struct EngineStateCache` shadows 11 engine registers
 (`DP_GUI_MASTER_CNTL`, `DP_WRITE_MASK`, `DP_CNTL`, destination/source

@@ -50,6 +50,16 @@ them; if a refactor moves code the tests cannot find, they fail loudly.
 
 ## 3. Required hardware sequence
 
+```mermaid
+flowchart LR
+    H["Host gates<br/>make, DEBUG, abi-check,<br/>python tests"] --> DEP["Deploy matched pair<br/>plus .previous copies"]
+    DEP --> G2["p96screen 8/16/32/8"]
+    G2 -->|pass| G3["radeon3dinfo, sessions,<br/>phase1, formats"]
+    G3 --> BENCH["p96speed, overlap, windowmove,<br/>r3dreplay, consumer suites"]
+    BENCH --> REC["record metadata:<br/>hashes, ToolTypes, boot state,<br/>raw samples, median"]
+    G2 -->|fail| REJECT["reject build, restore pair"]
+```
+
 ### 3.1 2D gate
 
 ```text
