@@ -17,19 +17,19 @@ What already runs on the PPC today (interface 18, physical):
   into streaming segments (600-frame gears run: 2,031 indirect submissions,
   511,620 CP dwords, 68.337 FPS windowed 800x600x32).
 - **Radeon VRAM access from PPC is proven**: the MiniGL WarpOS VRAM probe
-  (`minigl_ppc/examples/minigl_warpos_vram_probe.c`) leases a Radeon3D
+  (the MiniGL V19 tree's `backend_r200/examples/minigl_warpos_vram_probe.c`) leases a Radeon3D
   streaming segment - which is driver-private VRAM inside the BAR0 aperture -
   and the PPC stores to and loads from `segment.CpuAddress`, with the 68k
   verifying the result. PPC-side barriers (`eieio`/`sync` store barrier, `dcbf`
   data-cache flush) already exist in
-  `minigl_ppc/examples/minigl_warpos_pci_barrier.s` and
+  the MiniGL V19 tree's `backend_r200/examples/minigl_warpos_pci_barrier.s` and
   `minigl_warpos_cache_flush.s`.
 
 What still runs on the 68k per submission:
 
 | Cost | Where | Measured |
 |---|---|---|
-| Cross-CPU transport hop (Exec message round trip) | `minigl_ppc/client/minigl_ppc_transport.c` | ~0.1-0.5 ms per submission (est.; 0.38-0.45 ms measured for a native 68k single submit) |
+| Cross-CPU transport hop (Exec message round trip) | the MiniGL V19 tree's `backend_r200/client/minigl_ppc_transport.c` | ~0.1-0.5 ms per submission (est.; 0.38-0.45 ms measured for a native 68k single submit) |
 | `RadeonPrepare3D` drain/restore checks | `src/radeon_accel.c` | part of 4.9 ms/frame build+prepare (semantic path) |
 | Ring reservation: `CP_RB_RPTR` MMIO polls | `src/radeon_cp.c:168` | 1.45 us per MMIO read |
 | 3-dword IB kick + 6-dword fence tail + guards (`CP_CSQ_MODE`, `DP_DATATYPE`) | `src/radeon3d_service.c:2045-2085` | ~16 ring dwords + 5 MMIO ops ≈ 15 us |

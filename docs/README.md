@@ -69,7 +69,8 @@ re-check `include/radeon3d.h` and `src/library.c` before quoting numbers.
 | Tested with | MiniGL (`minigl.library` 7.x) on WarpOS, native 68k probes |
 
 The interface number in this tree (19) is newer than the vendored copy in the
-MiniGL tree (`/home/mirek/minigl_ppc/third_party/radeon3d/include/radeon3d.h`,
+MiniGL V19 consumer tree
+(`/home/mirek/MiniGL_WOS_V19_mglQ3/backend_r200/third_party/radeon3d/include/radeon3d.h`,
 interface 17). A consumer built against 17 keeps working: it simply never
 receives the 18/19 capabilities. Any ABI change must be reconciled with that
 vendored header before it is committed. See

@@ -12,6 +12,24 @@
 
 #include "radeon3d_emit.h"
 
+/* vbcc +warpos build accommodation: the PPC emitter build defines
+ * RADEON_EMIT_PPC_BUILD and maps _Static_assert to a typedef trick (the
+ * asserted relationships are verified by the 68k driver build and the
+ * abi-check fixture; the runtime layout is identical under
+ * -amiga-align). */
+#ifdef RADEON_EMIT_PPC_BUILD
+#define _Static_assert(expr, msg) \
+    typedef char radeon_emit_static_assert[(expr) ? 1 : 0]
+#endif
+
+/* DEBUG (render investigation): the last Vbuf draw's descriptor decision,
+ * published as plain memory for the frontend's record logger
+ * (DH2:recstate.log). Deliberately no I/O here. */
+ULONG R200EmitDbgOptions, R200EmitDbgVertexState, R200EmitDbgVertexCount;
+ULONG R200EmitDbgTextured, R200EmitDbgNormal, R200EmitDbgCompact;
+ULONG R200EmitDbgStride, R200EmitDbgColorOff, R200EmitDbgSTOff;
+ULONG R200EmitDbgTexGen;
+
 /* Dwords zeroed at the head of every capture. Rounded UP to a whole dword:
  * on the m68k ABI (2-byte BOOL, 2-byte member alignment) offsetof
  * (GlobalAmbient) is 230, and a truncating divide would leave the upper
@@ -1307,6 +1325,20 @@ static BOOL EmitExecuteVertices(struct Radeon3DEmitter *emitter,
         ULONG payload;
         ULONG colorOffset = normalVertex ? 7UL : 4UL;
 
+        /* DEBUG (render investigation): publish the VAP descriptor decision
+         * for this draw so the frontend's record logger can print it beside
+         * what it serialized. No I/O here: the values are plain globals. */
+        R200EmitDbgOptions = emitter->Live ? emitter->Live->Options : 0UL;
+        R200EmitDbgVertexState = vertexState;
+        R200EmitDbgVertexCount = vertexCount;
+        R200EmitDbgTextured = textured ? 1UL : 0UL;
+        R200EmitDbgNormal = normalVertex ? 1UL : 0UL;
+        R200EmitDbgCompact = compactVertex ? 1UL : 0UL;
+        R200EmitDbgStride = tclStride;
+        R200EmitDbgColorOff = colorOffset;
+        R200EmitDbgSTOff = normalVertex ? 8UL : 5UL;
+        R200EmitDbgTexGen = (R200EmitDbgOptions & RADEON3D_DRAW_TEXGEN) ? 1UL : 0UL;
+
         /* Vertex data is fetched from the segment by the hardware. The
          * VAP needs one array descriptor per active attribute. The arrays
          * are interleaved in one segment record, so they share a stride but
@@ -1626,11 +1658,30 @@ BOOL Radeon3DEmitClear(                             struct Radeon3DEmitter *emit
     }
     state->Options = (clearMask & RADEON3D_CLEAR_COLOR)
                         ? 0UL : RADEON3D_EXEC_SUPPRESS_COLOR_WRITE;
+    if (!(clearMask & RADEON3D_CLEAR_COLOR)) {
+        /* A depth-only clear must not touch colour. RB3D_PLANEMASK alone does
+         * not suppress the write on this hardware (the 6-vertex clear quad
+         * painted the clear colour over the rectangle, which is what put the
+         * black boxes behind the HUD face and the 3D ammo icon), so make the
+         * quad a no-op blend as well: src ZERO, dst ONE leaves the
+         * destination colour unchanged while the Z write still happens. */
+        state->FragmentStatePresent = TRUE;
+        state->FragmentState = RADEON3D_FRAGMENT_BLEND |
+                               (0UL << RADEON3D_FRAGMENT_SRC_SHIFT) |
+                               (1UL << RADEON3D_FRAGMENT_DST_SHIFT);
+    }
     state->Left = scissorLeft;
     state->Top = scissorTop;
     state->Right = scissorRight;
     state->Bottom = scissorBottom;
     state->ClearDepth = (clearMask & RADEON3D_CLEAR_DEPTH) != 0;
+    /* A clear must always re-emit its full state. A depth-only clear relies
+     * on RB3D_PLANEMASK == 0 being programmed for this draw; if the state
+     * cache considers the clear's state unchanged it leaves the previous
+     * draw's planemask (0xffffffff) armed and the 6-vertex clear quad paints
+     * the clear colour over the cleared rectangle (the black boxes behind
+     * the HUD face/3D icons). Force the emission. */
+    emitter->StateValid = FALSE;
     return EmitExecuteStateCached(emitter, state) &&
            EmitExecuteVertices(emitter, vertices, 6UL, depth != NULL,
                                 FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,

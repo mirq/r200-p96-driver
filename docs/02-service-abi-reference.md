@@ -9,7 +9,9 @@ structures and constants), [`include/radeon9200_chip.sfd`](../include/radeon9200
 and this document is then wrong and must be fixed.
 
 A consumer-side vendored copy exists at
-`/home/mirek/minigl_ppc/third_party/radeon3d/include/`. It must be reconciled
+the MiniGL V19 consumer tree's
+`/home/mirek/MiniGL_WOS_V19_mglQ3/backend_r200/third_party/radeon3d/include/`
+(interface 20 as of the 2026-09-23 lease work). It must be reconciled
 with this tree before an ABI change is committed.
 
 ## 1. Library identity and opening

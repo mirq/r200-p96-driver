@@ -30,7 +30,9 @@ PPC-consumer-first. It is not optional and it is not a follow-up task:
   matching diagram in the same commit. Validate diagram syntax before pushing
   (any Mermaid parser is enough; broken diagrams render as raw text on GitHub).
 - When the ABI changes, reconcile the vendored consumer header under
-  `/home/mirek/minigl_ppc/third_party/radeon3d/include/` before committing.
+  the MiniGL V19 consumer tree's
+  `/home/mirek/MiniGL_WOS_V19_mglQ3/backend_r200/third_party/radeon3d/include/`
+  before committing.
 
 ## Target and safety
 
@@ -39,7 +41,7 @@ emulator reset, pause, state, or lifecycle commands. The primary AmigaBridge
 endpoint is `192.168.1.21:2345`; the old `192.168.100.*` endpoints are no
 longer accessible. Always connect with that explicit host and port; localhost
 defaults fail. A cold reboot normally takes 80--100 seconds. Poll the bridge
-with `/home/mirek/minigl_ppc/tools/wait_bridge.sh` rather than sleeping for a
+with the MiniGL V19 repo's `tools/wait_bridge.sh` rather than sleeping for a
 fixed interval, then reconnect explicitly.
 
 Run AmigaBridge transfers and filesystem copies sequentially. Concurrent copy
@@ -131,7 +133,7 @@ The Radeon3D API is an active bounded service, not a future raw-register path.
 Do not expose unrestricted packets or client-controlled register writes. Follow
 [`docs/02-service-abi-reference.md`](docs/02-service-abi-reference.md) and
 reconcile changes with MiniGL's vendored consumer headers under
-`/home/mirek/minigl_ppc/third_party/radeon3d/include/` before changing the ABI.
+the MiniGL V19 tree's vendored consumer header before changing the ABI.
 The current driver is version 3.0 and exposes Radeon3D interface 19; do not copy
 older interface numbers from consumer-side notes. Chronology and decisions are
 tracked in [`docs/07-history.md`](docs/07-history.md).
