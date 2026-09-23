@@ -387,6 +387,21 @@ path (acquire per frame, emit with the local writer, release before
 present), and give the lease a proper heartbeat LVO for holders that run
 longer than the expiry bound.
 
+**Consumer integration status (2026-09-23, V19 tree `13e3dba`):** the
+MiniGL R200 frontend now negotiates the lease over its transport
+(`MGLPPC_CMD_LEASE_BEGIN/HEARTBEAT/END`, protocol v16) and, when
+`MGLPPC_LEASE=1 MGLPPC_CPEMIT=1`, submits real MiniGL batches through
+the phase-3 chain with the per-batch fence tail. Hardware-proven on the
+60-frame gears smoke: cap echoed (`caps=7ffff7ff`), 203 local batches
+retired (`lastFence=203`, exactly the bounded path's dispatch count for
+the same run), clean `LEASE_END`. A 600-frame stress run confirmed the
+speed (14.7 fps vs 7.7 fps bounded) but exposed the two remaining
+integration issues: the present/2D path under the lease renders black
+and its software fallback can block the 68k host long enough to expire
+the lease (heartbeat STALE mid-run), and heartbeat delivery should not
+depend on transport latency through a busy host. The lease stays opt-in
+until those land.
+
 ## 8. Open questions
 
 1. Does the Sonnet/WarpOS PPC alias the full Amiga address map (including
