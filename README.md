@@ -74,15 +74,22 @@ Start with the documentation:
 ## Status
 
 The current library is `Radeon9200.chip 3.0` and exposes **Radeon3D interface
-19**. It has been validated on a physical 50 MHz 68060 Amiga with a
+20**. It has been validated on a physical 50 MHz 68060 Amiga with a
 Prometheus/FireBird bridge, an RV280 `1002:5964` 128 MiB COMBIOS board, and a
 64 MiB linear aperture. Supported device IDs are `1002:5960`, `1002:5961`, and
 `1002:5964`.
 
-Interface 19 adds the parked fence-coalescing experiment (default-off and not
-deployable; see [`docs/07-history.md`](docs/07-history.md#31-interface-19-fence-coalescing-parked)).
-The vendored MiniGL consumer header is at interface 17 and remains compatible:
-it simply does not receive the 18/19 capabilities.
+Interface 20 adds the PPC engine lease (`RADEON3D_CAP_PPC_RING`): an
+exclusive ring lease under which the WarpOS PPC is the only ring writer,
+with `Radeon3DAcquireLease`/`Radeon3DReleaseLease`/`Radeon3DHeartbeatLease`
+carrying the descriptors. The direct-ring writer was hardware-validated
+(32 fenced batches retired locally in ~125-200 us); see
+[`docs/09-ppc-direct-ring-design.md`](docs/09-ppc-direct-ring-design.md).
+Interface 19 carries the parked fence-coalescing experiment (default-off and
+not deployable; see
+[`docs/07-history.md`](docs/07-history.md#31-interface-19-fence-coalescing-parked)).
+The vendored MiniGL consumer header is at interface 17 and remains
+compatible: it simply does not receive the 18/19/20 capabilities.
 
 Implemented display and 2D features:
 

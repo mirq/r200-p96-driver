@@ -98,6 +98,9 @@ BOOL __Radeon3DReleaseLease(
     __reg("a6") void *base,
     __reg("a0") struct Radeon3DDevice *device,
     __reg("d0") ULONG lastFence) = "\tjsr\t-162(a6)";
+BOOL __Radeon3DHeartbeatLease(
+    __reg("a6") void *base,
+    __reg("a0") struct Radeon3DDevice *device) = "\tjsr\t-168(a6)";
 #ifndef RADEON3D_BASE_NAME
 #define RADEON3D_BASE_NAME Radeon9200Base
 #endif
@@ -147,5 +150,7 @@ BOOL __Radeon3DReleaseLease(
     __Radeon3DAcquireLease(RADEON3D_BASE_NAME, (device), (lease))
 #define Radeon3DReleaseLease(device, lastFence) \
     __Radeon3DReleaseLease(RADEON3D_BASE_NAME, (device), (lastFence))
+#define Radeon3DHeartbeatLease(device) \
+    __Radeon3DHeartbeatLease(RADEON3D_BASE_NAME, (device))
 
 #endif

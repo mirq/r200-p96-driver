@@ -146,4 +146,10 @@
         ULONG, lastFence, d0, \
         , RADEON3D_BASE_NAME)
 
+/* Interface 20: renew the lease-expiry deadline (metadata-only, cheap). */
+#define Radeon3DHeartbeatLease(device) \
+    LP1(0xa8, BOOL, Radeon3DHeartbeatLease, \
+        struct Radeon3DDevice *, device, a0, \
+        , RADEON3D_BASE_NAME)
+
 #endif

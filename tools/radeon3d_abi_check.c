@@ -250,6 +250,7 @@ void Radeon3DAbiCalls(void)
 
             lease.Size = sizeof(lease);
             (void)Radeon3DAcquireLease(device, &lease);
+            (void)Radeon3DHeartbeatLease(device);
             (void)Radeon3DReleaseLease(device, 0UL);
         }
         (void)Radeon3DInvalidateForTest(device);

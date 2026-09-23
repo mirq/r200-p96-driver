@@ -2,13 +2,24 @@
 
 Release 3.0 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
 The chip reports `$VER: Radeon9200.chip 3.0 (2.9.2026)` and exposes Radeon3D
-interface 19. The reference documentation is in [`docs/`](docs/README.md).
+interface 20. The reference documentation is in [`docs/`](docs/README.md).
 
 ## Highlights
 
-- Radeon3D interface 19 adds the parked fence-coalescing experiment
-  (`RADEON3D_INDIRECT_NO_FENCE` + `Radeon3DSubmitFence`). It is default-off and
-  inert on the shipped stack; see
+- Radeon3D interface 20 adds the PPC engine lease
+  (`RADEON3D_CAP_PPC_RING`): an exclusive ring lease under which the WarpOS
+  PPC is the only ring writer, the 68k refuses submissions, and Picasso96
+  2D falls back to software. `Radeon3DAcquireLease`/`Radeon3DReleaseLease`
+  (LVOs -156/-162) plus `Radeon3DHeartbeatLease` (-168) carry the
+  descriptors. Fallback flag: `make PPCRING=0` builds a fallback-only
+  driver; see
+  [`docs/09-ppc-direct-ring-design.md`](docs/09-ppc-direct-ring-design.md).
+- The PPC direct-ring writer was hardware-validated on the physical
+  machine: 32 fenced PACKET2 batches submitted locally and retired in
+  ~125-200 us, with the 68k cross-checking the lease's last fence.
+- Radeon3D interface 19 carries the parked fence-coalescing experiment
+  (`RADEON3D_INDIRECT_NO_FENCE` + `Radeon3DSubmitFence`). It is default-off
+  and inert on the shipped stack; see
   [`docs/07-history.md`](docs/07-history.md#31-interface-19-fence-coalescing-parked).
 - Interface 18 trusted indirect dispatch with render transitions, descriptor
   snapshotting, post-prepare revalidation and ranged fence validation

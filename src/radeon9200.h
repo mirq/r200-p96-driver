@@ -419,6 +419,9 @@ BOOL Radeon3DAcquireLease(
     __REGA0(struct Radeon3DDevice *device),
     __REGA1(struct Radeon3DLease *lease),
     __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DHeartbeatLease(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DReleaseLease(
     __REGA0(struct Radeon3DDevice *device),
     __REGD0(ULONG lastFence),

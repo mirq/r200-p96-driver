@@ -2426,6 +2426,44 @@ BOOL Radeon3DReleaseLease(
     return result;
 }
 
+/* Interface 20: renew the calling session's lease-expiry deadline.
+ * Metadata-only (ServiceLock, no BoardLock, no MMIO) so a per-frame
+ * heartbeat is cheap; a holder that misses the service bound is reclaimed
+ * by the 2D path with full recovery. Fail-closed (121/123/124). */
+BOOL Radeon3DHeartbeatLease(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct Radeon3DDevice *active;
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    ULONG stage = 123UL;
+    BOOL ok = FALSE;
+
+    if (!SysBase || !device)
+        return FALSE;
+    ObtainSemaphore(&base->ServiceLock);
+    active = FindDevice(base, device);
+    if (active && active->Magic == RADEON3D_SESSION_MAGIC &&
+        active->Base == base &&
+        active->Generation == base->ServiceGeneration &&
+        base->ServiceState == RADEON3D_SERVICE_READY &&
+        base->BoardInfo && RadeonCpIsReady(base->BoardInfo) &&
+        base->LeaseActive && base->LeaseDevice == active) {
+        base->LeaseGrantTicks = ServiceExecTicks(base);
+        ok = TRUE;
+        stage = 0UL;
+    } else if (active && active->Base == base &&
+               base->LeaseActive && base->LeaseDevice != active) {
+        stage = 124UL;
+    } else if (!active || active->Base != base) {
+        stage = 121UL;
+    }
+    if (stage)
+        COMMIT_FAIL(base, stage);
+    ReleaseSemaphore(&base->ServiceLock);
+    return ok;
+}
+
 static BOOL IsSessionFence(struct RadeonChipBase *base,
                            struct Radeon3DDevice *device, ULONG fence)
 {

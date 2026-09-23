@@ -67,6 +67,7 @@ static APTR FunctionTable[] USED = {
     (APTR)Radeon3DSubmitFence,
     (APTR)Radeon3DAcquireLease,
     (APTR)Radeon3DReleaseLease,
+    (APTR)Radeon3DHeartbeatLease,
     (APTR)-1
 };
 
