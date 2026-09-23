@@ -132,4 +132,18 @@
         ULONG *, fenceOut, a1, \
         , RADEON3D_BASE_NAME)
 
+/* Interface 20 PPC engine lease. Fail-closed: without the capability or
+ * when refused, use the existing bounded paths. */
+#define Radeon3DAcquireLease(device, lease) \
+    LP2(0x9c, BOOL, Radeon3DAcquireLease, \
+        struct Radeon3DDevice *, device, a0, \
+        struct Radeon3DLease *, lease, a1, \
+        , RADEON3D_BASE_NAME)
+
+#define Radeon3DReleaseLease(device, lastFence) \
+    LP2(0xa2, BOOL, Radeon3DReleaseLease, \
+        struct Radeon3DDevice *, device, a0, \
+        ULONG, lastFence, d0, \
+        , RADEON3D_BASE_NAME)
+
 #endif

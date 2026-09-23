@@ -1032,6 +1032,17 @@ BOOL RadeonCpWaitDrained(struct BoardInfo *bi)
     return TRUE;
 }
 
+/* Lease support: bounded full-idle wait exported for lease teardown on a
+ * session close while a lease is still live. */
+BOOL RadeonCpWaitIdle(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!data || !data->CpState || !data->CpState->Ready)
+        return FALSE;
+    return CpWaitGuiIdle(bi);
+}
+
 /* TRUE while fence-less submissions are in flight. MMIO writes to the
  * engine baseline (CSQ_MODE/DP_DATATYPE guard, 2D RestoreEngineState) must
  * not happen then; the fetch the CP may be performing depends on them. */
@@ -1042,4 +1053,61 @@ BOOL RadeonCpUnfencedPending(struct BoardInfo *bi)
     if (!data || !data->CpState || !data->CpState->Ready)
         return FALSE;
     return data->CpState->PendingUnfenced != 0;
+}
+
+/* Interface-20 lease support. The lease holder reads the ring through the
+ * 1:1 alias and kicks WPTR over MMIO, so the service needs the ring
+ * parameters and the fence sequence to hand out, plus a way to re-arm the
+ * 68k state afterwards. */
+BOOL RadeonCpGetRingInfo(struct BoardInfo *bi, APTR *cpuAddressOut,
+                         ULONG *gpuAddressOut, ULONG *dwordsOut,
+                         ULONG *maskOut)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+
+    if (!data || !data->CpState || !data->CpState->Ready)
+        return FALSE;
+    state = data->CpState;
+    if (cpuAddressOut)
+        *cpuAddressOut = state->RingMemory;
+    if (gpuAddressOut)
+        *gpuAddressOut = state->RingGpuAddress;
+    if (dwordsOut)
+        *dwordsOut = CP_RING_DWORDS;
+    if (maskOut)
+        *maskOut = CP_RING_MASK;
+    return TRUE;
+}
+
+ULONG RadeonCpCurrentFence(struct BoardInfo *bi)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+    if (!data || !data->CpState || !data->CpState->Ready)
+        return 0;
+    return data->CpState->NextFence;
+}
+
+/* Re-arm after a lease: the PPC advanced WPTR itself. Called with
+ * BoardLock held. lastFence == 0 means the lease holder submitted
+ * nothing; the sequence and write pointer stay untouched apart from
+ * clearing pending state. */
+void RadeonCpAdoptFence(struct BoardInfo *bi, ULONG lastFence)
+{
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct RadeonCpState *state;
+
+    if (!data || !data->CpState)
+        return;
+    state = data->CpState;
+    state->PendingFence = 0;
+    state->PendingUnfenced = 0;
+    if (lastFence) {
+        state->NextFence = lastFence + 1UL;
+        if (!state->NextFence)
+            ++state->NextFence;
+        state->WritePointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) &
+                              CP_RING_MASK;
+    }
 }

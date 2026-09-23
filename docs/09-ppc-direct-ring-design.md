@@ -307,6 +307,86 @@ If the probe shows PPC cannot reach BAR2, option C is dead and option A
 faster than 6.1 MB/s, the bandwidth-bound scenarios in section 5 improve
 proportionally.
 
+## 7.2 Phase 1 + Phase 2 status (2026-09-23, implemented and hardware-validated)
+
+**Phase 1 - control block + lease ABI (implemented):**
+
+- `RADEON3D_IFACE_VERSION` = 20; `RADEON3D_CAP_PPC_RING` = bit 30.
+- New vectors: `Radeon3DAcquireLease` (LVO -156) and
+  `Radeon3DReleaseLease` (LVO -162), with the fixed 52-byte V1
+  `struct Radeon3DLease` carrying the ring, MMIO and fence descriptors.
+- Lease grant drains pending 68k work (`RadeonPrepare3D`), programs the CP
+  fetch guards (CSQ partition restore + `DP_DATATYPE` host-endian-bit
+  clear, the same shape the indirect dispatch uses), parks Picasso96 2D in
+  `RADEON_ACCEL_FALLBACK`, and hands the descriptors to the lease holder.
+- While the lease is live every 68k service submission is refused (stage
+  122). `Radeon3DReleaseLease(lastFence)` drains via the lease's fence
+  (bounded 2 s), re-arms the write pointer from `RB_RPTR`, restores 2D
+  acceleration and marks the 3D state dirty for the next P96 operation.
+- Expiry bound 5 s from grant; the 2D path reclaims a stale lease with full
+  recovery (which also invalidates the session). The lease also dies with
+  its session.
+- **Fallback flag**: `make PPCRING=0` builds `Radeon9200-noppcring.chip`
+  (fallback-only: no capability, every lease refused). Default
+  `PPCRING=1`. All existing entry points are untouched and remain the
+  automatic fallback.
+
+**Phase 2 - PPC ring writer (implemented as `tools/phase2/`, hardware
+validated):**
+
+- `phase2host` (68k) proves the CP with a fenced PACKET2 batch, leases the
+  control segment, waits for the PPC's presence marker, grants the lease,
+  publishes the ring/MMIO/fence descriptors, waits for the PPC's
+  acknowledgement, releases with the PPC's last fence and cross-checks
+  `SCRATCH_REG0` through its own aperture.
+- `ppcphase2` (WarpOS) validates the block, announces itself, waits for the
+  lease with `dcbf`-invalidated polls, then submits 32 fenced PACKET2
+  batches entirely locally: reserve by polling `RB_RPTR`, `stwbrx` bursts
+  with wrap split, final-dword readback (posted-write ordering), committed
+  WPTR kick, and a local fence poll.
+
+Hardware run (matched pair `D29A8AA7` chip / `D299187B` card, bridge
+`192.168.1.21:2345`):
+
+```text
+P2HOST caps=7ffff7ff iface=20
+P2HOST lease ring_cpu=43e00000 ring_gpu=03e00000 dwords=262144 mask=0003ffff bar2=48010000 next_fence=2
+P2PPC submits=32 last_fence=33 retired=1 stage=0
+P2HOST prerelease iface=20 gen=2 commit_fail_stage=0
+P2HOST release=ok scratch68k=00000021 expected=00000021 scratch_match=1
+P2HOST status=ok submits=32 last_fence=33
+```
+
+The PPC's 32 fenced batches drained in ~125-200 us total (~4-6 us per
+16-dword batch including the reserve poll, ring burst and committed WPTR
+kick), retired locally with zero 68k involvement, and the 68k read the
+lease's last fence back through its own aperture.
+
+Two defects found and fixed during bring-up:
+
+1. **2D callbacks recover-killed the lease.** The Picasso96 callbacks
+   treat a `Submit*` failure as a CP death and call `RecoverEngine`
+   directly, which runs `RadeonCpAbort` -> the service generation advances
+   and the session is invalidated. The first desktop 2D operation during a
+   lease therefore destroyed it (observed: the lease expired/reclaimed
+   within ~0.2 s of the grant, the CP was reset, scratch showed
+   `0xdeadbeef`, and `GetInfo` failed). Fix: the grant parks 2D in
+   `RADEON_ACCEL_FALLBACK` so the callbacks take the software path without
+   touching the engine; release restores `READY`. The probe pair is also
+   self-ordering now: the PPC starts first and waits for the lease block
+   with `dcbf`-invalidated polls, so there is no operator gap.
+2. **PPC loads of the aliased VRAM window are cache-served.** Phase-0 run
+   1 measured 29 ns "reads" that were PPC cache hits; a tight spin on a
+   68k-written location never sees the update. Stores commit (verified by
+   the `arena_match` and scratch cross-checks), loads need `dcbf`
+   invalidation first. Recorded in `docs/01`; the read-latency figure
+   (202 ns, cache-cold) is the real one.
+
+**Open for the next phase:** wire the MiniGL R200 frontend to the lease
+path (acquire per frame, emit with the local writer, release before
+present), and give the lease a proper heartbeat LVO for holders that run
+longer than the expiry bound.
+
 ## 8. Open questions
 
 1. Does the Sonnet/WarpOS PPC alias the full Amiga address map (including

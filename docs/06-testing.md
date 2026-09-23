@@ -47,6 +47,7 @@ them; if a refactor moves code the tests cannot find, they fail loudly.
 | `p96windowmove` | 2D | Intuition window move empty vs over a populated target, whole-process and stage timing | `TOTAL`, `STAGES`, `TRIALS`, `RESULT` |
 | `rtgpresent` | - | Startup-sequence helper: RTG screen detection (returns 5/WARN otherwise) | exit code |
 | `phase0host` + `ppcphase0` (WarpOS) | 0 | PPC reachability probe for the direct-ring design (`docs/09-ppc-direct-ring-design.md`): BAR2 MMIO read/write cost from the PPC, aperture store bandwidth (native and `stwbrx`), cross-CPU control-block ordering, 68k baseline measured in the same boot | `P0HOST`/`P0PPC`/`PPCPHASE0` lines; 0 ok |
+| `phase2host` + `ppcphase2` (WarpOS) | 20 | Engine-lease ring-writer gate: the 68k grants an interface-20 lease, the PPC submits 32 fenced PACKET2 batches directly to the ring (reserve, `stwbrx` bursts, readback, committed WPTR kick), retires them locally, and the 68k cross-checks `SCRATCH_REG0` = the lease's last fence | `P2HOST`/`P2PPC`/`PPCPHASE2` lines; 0 ok |
 | `chiptest`, `mglprobe`, `mglprobe2`, `dbgdump` | - | Small ad-hoc diagnostics | - |
 
 ## 3. Required hardware sequence

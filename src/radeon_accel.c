@@ -420,11 +420,63 @@ BOOL RadeonRecoverAcceleration(struct BoardInfo *bi)
     return RecoverEngine(bi);
 }
 
+/*
+ * Interface-20 PPC engine lease. While a lease is live the PPC is the only
+ * ring writer: every 2D path that would touch the engine must fall back to
+ * software instead. A lease older than the service's expiry bound is
+ * presumed dead; reclaiming runs the full recovery sequence and clears the
+ * lease so 2D can proceed. Called on hot paths without BoardLock, so the
+ * reclaim takes BoardLock itself.
+ */
+#define RADEON_LEASE_EXPIRY_SECS 5UL
+
+static void LeaseReclaim(struct BoardInfo *bi,
+                         struct RadeonChipBase *base)
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+
+    if (!SysBase || !base)
+        return;
+    ObtainSemaphore(&bi->BoardLock);
+    if (base->LeaseActive) {
+        base->LeaseActive = FALSE;
+        base->LeaseDevice = NULL;
+        base->LeaseGrantTicks = 0;
+        RadeonCpAdoptFence(bi, 0UL);
+        (void)RecoverEngine(bi);
+    }
+    ReleaseSemaphore(&bi->BoardLock);
+}
+
+/* TRUE while an unexpired lease blocks engine access. Called from
+ * PrepareMmioEngine, PrepareSoftwareFallback and WaitBlitter. The EClock
+ * comes from the service timer; a lease without a working clock is never
+ * granted (FillInfo gates on ExecClockHz), so the nil-rate case here is
+ * belt and braces and blocks until release. */
+static BOOL LeaseBlocks(struct BoardInfo *bi)
+{
+    struct RadeonChipBase *base =
+        bi ? (struct RadeonChipBase *)bi->ChipBase : NULL;
+
+    if (!base || !base->LeaseActive)
+        return FALSE;
+    if (base->ExecClockHz && base->LeaseGrantTicks &&
+        (ULONG)(Radeon3DNow(base) - base->LeaseGrantTicks) >
+            base->ExecClockHz * RADEON_LEASE_EXPIRY_SECS) {
+        LeaseReclaim(bi, base);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static __inline__ BOOL PrepareMmioEngine(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
 
     if (!data || data->AccelState != RADEON_ACCEL_READY)
+        return FALSE;
+    /* A live PPC lease owns the ring: 2D falls back to software. */
+    if (LeaseBlocks(bi))
         return FALSE;
     return !data->Need2DRestore || SynchronizeEngine(bi);
 }
@@ -497,8 +549,13 @@ static BOOL PrepareSoftwareFallback(struct BoardInfo *bi,
     if (allOffboard)
         return data->AccelState != RADEON_ACCEL_UNSAFE;
     ObtainSemaphore(&bi->BoardLock);
-    software = SynchronizeEngine(bi) &&
-               data->AccelState != RADEON_ACCEL_UNSAFE;
+    /* Software never touches the engine, so a live PPC lease only means
+     * the drain below is neither needed nor safe. */
+    if (LeaseBlocks(bi))
+        software = data->AccelState != RADEON_ACCEL_UNSAFE;
+    else
+        software = SynchronizeEngine(bi) &&
+                   data->AccelState != RADEON_ACCEL_UNSAFE;
     ReleaseSemaphore(&bi->BoardLock);
     return software;
 }
@@ -1525,7 +1582,11 @@ void RadeonWaitBlitter(__REGA0(struct BoardInfo *bi))
     if (!bi)
         return;
     RDEBUG_BEGIN();
-    (void)SynchronizeEngine(bi);
+    /* The lease holder owns engine sync while the lease is live; its own
+     * fences are the only thing that matters to it, and a 68k drain here
+     * could not name its work anyway. */
+    if (!LeaseBlocks(bi))
+        (void)SynchronizeEngine(bi);
     RDEBUG_END_DRAIN();
 }
 
@@ -2220,4 +2281,28 @@ complete:
         bi->DrawLineDefault != RadeonDrawLine)
         bi->DrawLineDefault(bi, render, line, mask, format);
     RDEBUG_OP_END(RADEON_DEBUG_OP_LINE);
+}
+
+/*
+ * Lease grant guards: the CP indirect fetch follows DP_DATATYPE's
+ * host-endian bit and the CSQ cache partition exactly like the indirect
+ * dispatch, so a grant restores both before the PPC writes its first ring
+ * dword. Called with BoardLock held; no-op while a fence-less submission
+ * may still be fetching.
+ */
+void RadeonLeaseGrantGuards(struct BoardInfo *bi)
+{
+    ULONG csqMode;
+    ULONG dpDatatype;
+
+    if (!bi || !RadeonCpIsReady(bi))
+        return;
+    csqMode = RadeonRead32(bi, RADEON_CP_CSQ_MODE);
+    if (csqMode != CP_CSQ_CACHE_PARTITION)
+        (void)RadeonWrite32(bi, RADEON_CP_CSQ_MODE,
+                            CP_CSQ_CACHE_PARTITION);
+    dpDatatype = RadeonRead32(bi, RADEON_DP_DATATYPE);
+    if (dpDatatype & RADEON_HOST_BIG_ENDIAN_EN)
+        (void)RadeonWrite32(bi, RADEON_DP_DATATYPE,
+                            dpDatatype & ~RADEON_HOST_BIG_ENDIAN_EN);
 }

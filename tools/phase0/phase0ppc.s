@@ -87,9 +87,24 @@ _P0FillBurstBr:
         eieio
         blr
 
+# ULONG P0CopyBr(volatile ULONG *destination, const ULONG *source,
+#                ULONG dwords)
+# Load source dwords and store them byte-reversed: the generic little-
+# endian burst a ring writer uses (a ring dword must arrive on the bus in
+# the little-endian shape the CP expects).
+        .global _P0CopyBr
+_P0CopyBr:
+        mtctr   5
+.copy_br:
+        lwz     6, 0(4)
+        stwbrx  6, 0, 3
+        addi    4, 4, 4
+        addi    3, 3, 4
+        bdnz    .copy_br
+        eieio
+        blr
+
 # ULONG P0SumBurst(volatile ULONG *source, ULONG dwords)
-# Sequential aperture read loop with a data dependency, measuring read
-# cost without letting the compiler collapse it.
         .global _P0SumBurst
 _P0SumBurst:
         mtctr   4

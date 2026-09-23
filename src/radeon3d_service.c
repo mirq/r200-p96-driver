@@ -51,6 +51,12 @@ static LONG FirstCommitDumpPending = 1;
 
 #define RADEON3D_SESSION_MAGIC 0x52334453UL
 
+/* Diagnostic: which check rejected the most recent submission. Reported
+ * through the info block so a client can print it after a failure. Defined
+ * before every submission path that uses it. */
+#define COMMIT_FAIL(base, stage) \
+    do { (base)->CommitFailStage = (stage); } while (0)
+
 
 struct Radeon3DSegmentSlot {
     APTR CpuAddress;
@@ -216,6 +222,12 @@ static ULONG ServiceExecTicks(struct RadeonChipBase *base)
     TimerBase = io->tr_node.io_Device;
     ReadEClock(&value);
     return value.ev_lo;
+}
+
+/* Lease-expiry clock for the 2D paths (radeon_accel.c has no timer). */
+ULONG Radeon3DNow(struct RadeonChipBase *base)
+{
+    return ServiceExecTicks(base);
 }
 
 static ULONG ExecTicksToMicros(const struct RadeonChipBase *base,
@@ -564,6 +576,11 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
     /* Interface 19: fence-less indirect dispatch + Radeon3DSubmitFence. */
     if (interfaceVersion >= 19UL)
         info->Caps |= RADEON3D_CAP_FENCE_COALESCE;
+    /* Interface 20: PPC engine lease. Gated by the fallback flag, the
+     * streaming pool and a working EClock (the lease expiry needs it). */
+    if (interfaceVersion >= 20UL && base->PpcRingAllowed &&
+        base->StreamSegmentPool && base->ExecClockHz)
+        info->Caps |= RADEON3D_CAP_PPC_RING;
     if (RadeonCpIsReady(bi))
         info->Caps |= RADEON3D_CAP_CP_READY;
     info->InstalledVram = data ? data->InstalledVram : 0;
@@ -992,6 +1009,18 @@ void Radeon3DClose(
             !RadeonCpWaitFence(bi, device->LastFence, 1000UL))
             (void)RadeonRecoverAcceleration(bi);
         device->LastFence = 0;
+        /* A session closing while it still holds the lease ends the lease:
+         * its owner is going away, so a bounded full idle drain covers the
+         * PPC's untracked work and the next 2D operation restores the
+         * baseline. */
+        if (base->LeaseActive && base->LeaseDevice == device) {
+            base->LeaseActive = FALSE;
+            base->LeaseDevice = NULL;
+            base->LeaseGrantTicks = 0;
+            (void)RadeonCpWaitIdle(bi);
+            RadeonCpAdoptFence(bi, 0UL);
+            RadeonMark3DSubmitted(bi);
+        }
         UnlockServiceBoard(base, bi, device);
     }
 
@@ -1076,6 +1105,14 @@ BOOL Radeon3DSubmit(
         trusted[index] = commands[index];
     bi = LockServiceBoard(base, &device);
     if (!bi) {
+        FreeMem(trusted, commandCount * sizeof(*trusted));
+        return FALSE;
+    }
+    /* A live PPC lease owns the ring: every 68k submission is refused
+     * (stage 122), and callers fall back to their non-submitting paths. */
+    if (base->LeaseActive) {
+        COMMIT_FAIL(base, 122UL);
+        UnlockServiceBoard(base, bi, device);
         FreeMem(trusted, commandCount * sizeof(*trusted));
         return FALSE;
     }
@@ -1221,6 +1258,11 @@ BOOL Radeon3DExecute(
     if (!bi)
         return FALSE;
     if (device->InterfaceVersion < 2UL) {
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    if (base->LeaseActive) {
+        COMMIT_FAIL(base, 122UL);
         UnlockServiceBoard(base, bi, device);
         return FALSE;
     }
@@ -1491,11 +1533,6 @@ out:
     return added;
 }
 
-/* Diagnostic: which check rejected the last streaming commit. Reported
- * through the info block so a client can print it after a failure. */
-#define COMMIT_FAIL(base, stage) \
-    do { (base)->CommitFailStage = (stage); } while (0)
-
 static BOOL CommitRecords(
     struct Radeon3DDevice *device, struct BoardInfo *bi,
     const ULONG *records, ULONG recordDwords,
@@ -1689,6 +1726,11 @@ BOOL Radeon3DCommitDraw(
         UnlockServiceBoard(base, bi, device);
         return FALSE;
     }
+    if (base->LeaseActive) {
+        COMMIT_FAIL(base, 122UL);
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
     result = CommitRecords(device, bi, commit->Header, commit->HeaderDwords,
                            &commit->OffsetBytes, 1UL, slot, commit->Flags,
                            fenceOut, RADEON3D_SAMPLE_COMMIT_DRAW);
@@ -1748,6 +1790,13 @@ BOOL Radeon3DCommitBatch(
                 *fenceOut = 0x80000000UL | 44UL;
             return FALSE;
         }
+    }
+    if (base->LeaseActive) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 122UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 122UL;
+        return FALSE;
     }
     result = CommitRecords(device, bi, commit->Records, commit->RecordDwords,
                            commit->VertexOffsets, commit->RecordCount, slot,
@@ -1822,6 +1871,11 @@ BOOL Radeon3DCommitStateBatch(
         !EnsureExecuteBuffers(base, device) ||
         !EnsureStateBatchBuffer(base, device)) {
         COMMIT_FAIL(base, 81UL);
+        UnlockServiceBoard(base, bi, device);
+        return FALSE;
+    }
+    if (base->LeaseActive) {
+        COMMIT_FAIL(base, 122UL);
         UnlockServiceBoard(base, bi, device);
         return FALSE;
     }
@@ -1997,6 +2051,14 @@ BOOL Radeon3DDispatchIndirect(
             *fenceOut = 0x80000000UL | 103UL;
         return FALSE;
     }
+    /* A live PPC lease owns the ring: the indirect kick would race it. */
+    if (base->LeaseActive) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 122UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 122UL;
+        return FALSE;
+    }
     slot = &device->Segments[request.SegmentId];
     if (request.ByteOffset >= slot->Bytes ||
         request.DwordCount >
@@ -2159,6 +2221,13 @@ BOOL Radeon3DSubmitFence(
             *fenceOut = 0x80000000UL | 113UL;
         return FALSE;
     }
+    if (base->LeaseActive) {
+        UnlockServiceBoard(base, bi, device);
+        COMMIT_FAIL(base, 122UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 122UL;
+        return FALSE;
+    }
     generation = base->ServiceGeneration;
     if (!RadeonPrepare3D(bi)) {
         COMMIT_FAIL(base, 114UL);
@@ -2221,6 +2290,139 @@ BOOL Radeon3DSubmitFence(
     UnlockServiceBoard(base, bi, device);
     if (fenceOut)
         *fenceOut = result ? fence : (0x80000000UL | 116UL);
+    return result;
+}
+
+/*
+ * Interface-20 PPC engine lease. While a lease is live the PPC is the only
+ * ring writer: every service submission path rejects with stage 122, 2D
+ * falls back to software (LeaseBlocks in radeon_accel.c), and the lease
+ * dies with its session, an explicit release, or the expiry bound. All
+ * descriptors are 68k-mapped addresses the PPC aliases 1:1 (Phase-0
+ * verified). Fail-closed: any refusal leaves the existing bounded paths
+ * untouched.
+ */
+BOOL Radeon3DAcquireLease(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(struct Radeon3DLease *lease),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct BoardInfo *bi;
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    APTR ringCpu = NULL;
+    ULONG ringGpu = 0;
+    ULONG ringDwords = 0;
+    ULONG ringMask = 0;
+    ULONG stage = 120UL;
+    BOOL granted = FALSE;
+
+    if (!SysBase || !device || !lease ||
+        lease->Size < RADEON3D_LEASE_V1_SIZE)
+        return FALSE;
+    lease->Version = 0UL;
+    bi = LockServiceBoard(base, &device);
+    if (!bi)
+        return FALSE;
+    if (device->InterfaceVersion < 20UL)
+        stage = 121UL;
+    else if (!base->PpcRingAllowed || !base->StreamSegmentPool ||
+             !base->ExecClockHz || !RadeonCpIsReady(bi))
+        stage = 120UL;
+    else if (base->LeaseActive)
+        stage = 122UL;
+    else if (!RadeonPrepare3D(bi))
+        stage = 125UL;
+    else if (!RadeonCpGetRingInfo(bi, &ringCpu, &ringGpu, &ringDwords,
+                                  &ringMask))
+        stage = 125UL;
+    else {
+        struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+        /* The CP fetch guards go in before the first lease dword, exactly
+         * as the indirect dispatch does. */
+        RadeonLeaseGrantGuards(bi);
+        base->LeaseActive = TRUE;
+        base->LeaseDevice = device;
+        base->LeaseGrantTicks = ServiceExecTicks(base);
+        /* Park 2D in FALLBACK for the lease: the callbacks then take the
+         * software path without entering their failure/recovery paths
+         * (which would abort the CP the lease holder is using). */
+        if (data)
+            data->AccelState = RADEON_ACCEL_FALLBACK;
+        lease->Version = RADEON3D_LEASE_VERSION;
+        lease->Generation = base->ServiceGeneration;
+        lease->Flags = RADEON3D_LEASE_FLAGS;
+        lease->RingCpuAddress = ringCpu;
+        lease->RingGpuAddress = ringGpu;
+        lease->RingDwords = ringDwords;
+        lease->RingMask = ringMask;
+        lease->Bar2Base = (ULONG)bi->MemoryIOBase;
+        lease->Bar0Base = (ULONG)bi->MemoryBase;
+        lease->NextFence = RadeonCpCurrentFence(bi);
+        lease->HeartbeatMs = 1000UL;
+        lease->MaxBatchDwords = RADEON3D_MAX_BATCH_DWORDS;
+        lease->Size = RADEON3D_LEASE_V1_SIZE;
+        granted = TRUE;
+        stage = 0UL;
+    }
+    if (!granted) {
+        COMMIT_FAIL(base, stage);
+        lease->Generation = 0UL;
+        lease->RingCpuAddress = NULL;
+        lease->RingGpuAddress = 0UL;
+        lease->NextFence = 0UL;
+    }
+    UnlockServiceBoard(base, bi, device);
+    return granted;
+}
+
+BOOL Radeon3DReleaseLease(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGD0(ULONG lastFence),
+    __REGA6(struct RadeonChipBase *base))
+{
+    struct BoardInfo *bi;
+    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
+    ULONG stage = 123UL;
+    BOOL result = TRUE;
+
+    if (!SysBase || !device)
+        return FALSE;
+    bi = LockServiceBoard(base, &device);
+    if (!bi)
+        return FALSE;
+    if (device->InterfaceVersion < 20UL)
+        stage = 121UL;
+    else if (!base->LeaseActive)
+        stage = 123UL;
+    else if (base->LeaseDevice != device)
+        stage = 124UL;
+    else {
+        struct RadeonBoardData *data = RadeonGetBoardData(bi);
+
+        if (lastFence &&
+            !RadeonCpWaitFence(bi, lastFence, 2000UL)) {
+            /* The lease's last fence never retired: treat it like any CP
+             * fault, then re-arm anyway so the desktop keeps working. */
+            (void)RadeonRecoverAcceleration(bi);
+            result = FALSE;
+        }
+        RadeonCpAdoptFence(bi, lastFence);
+        base->LeaseActive = FALSE;
+        base->LeaseDevice = NULL;
+        base->LeaseGrantTicks = 0;
+        /* The PPC's ring work is not tracked by the 68k bookkeeping, so
+         * the next Picasso96 operation must restore the 2D baseline. */
+        RadeonMark3DSubmitted(bi);
+        /* Restore 2D acceleration only when the engine is healthy; a
+         * failed fence wait already recovered (or fell back) itself. */
+        if (data && result && data->AccelState == RADEON_ACCEL_FALLBACK)
+            data->AccelState = RADEON_ACCEL_READY;
+        stage = 0UL;
+    }
+    if (stage)
+        COMMIT_FAIL(base, stage);
+    UnlockServiceBoard(base, bi, device);
     return result;
 }
 

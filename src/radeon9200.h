@@ -132,6 +132,16 @@ struct RadeonChipBase {
     APTR ExecSampleRing;
     ULONG ExecSampleSeq;
     ULONG ExecClockHz;
+    /* Interface-20 PPC engine lease. LeaseActive makes the PPC the only
+     * ring writer: every service submission is rejected, 2D falls back to
+     * software (PrepareMmioEngine / PrepareSoftwareFallback / WaitBlitter
+     * check here), and the lease dies with its session or after the
+     * expiry bound. PpcRingAllowed is the fallback flag: default on, off
+     * in make PPCRING=0 builds. */
+    UBYTE PpcRingAllowed;
+    UBYTE LeaseActive;
+    APTR LeaseDevice;
+    ULONG LeaseGrantTicks;
 };
 
 typedef char RadeonChipBaseExecBaseOffsetCheck[
@@ -164,6 +174,8 @@ BOOL Radeon3DRearmService(struct BoardInfo *bi);
 void Radeon3DFreeRetiredDevices(struct RadeonChipBase *base);
 /* Closes the phase-attribution timer and frees the timing sample ring. */
 void Radeon3DFreeExecTimer(struct RadeonChipBase *base);
+/* Lease-expiry clock for the 2D paths (EClock low word). */
+ULONG Radeon3DNow(struct RadeonChipBase *base);
 
 ULONG RadeonRead32(struct BoardInfo *bi, ULONG reg);
 BOOL RadeonWrite32(struct BoardInfo *bi, ULONG reg, ULONG value);
@@ -278,6 +290,20 @@ BOOL RadeonCpWaitDrained(struct BoardInfo *bi);
 /* TRUE while interface-19 fence-less submissions are in flight; MMIO writes
  * to the shared engine baseline must be withheld then. */
 BOOL RadeonCpUnfencedPending(struct BoardInfo *bi);
+/* Lease support (interface 20). The service reads the ring parameters and
+ * fence sequence to hand to a PPC lease holder, and re-arms the 68k ring
+ * state after the lease ends. */
+BOOL RadeonCpGetRingInfo(struct BoardInfo *bi, APTR *cpuAddressOut,
+                         ULONG *gpuAddressOut, ULONG *dwordsOut,
+                         ULONG *maskOut);
+ULONG RadeonCpCurrentFence(struct BoardInfo *bi);
+void RadeonCpAdoptFence(struct BoardInfo *bi, ULONG lastFence);
+/* Bounded full-idle wait for lease teardown on a session close. */
+BOOL RadeonCpWaitIdle(struct BoardInfo *bi);
+/* Programs the CP fetch guards (CSQ cache partition restore and the
+ * DP_DATATYPE host-endian-bit clear) the same way the indirect dispatch
+ * does; called with BoardLock held. */
+void RadeonLeaseGrantGuards(struct BoardInfo *bi);
 #ifdef DEBUG
 struct RadeonCpDebugResult {
     ULONG WrapBefore;
@@ -389,6 +415,14 @@ BOOL Radeon3DDispatchIndirect(
 BOOL Radeon3DSubmitFence(__REGA0(struct Radeon3DDevice *device),
                          __REGA1(ULONG *fenceOut),
                          __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DAcquireLease(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGA1(struct Radeon3DLease *lease),
+    __REGA6(struct RadeonChipBase *base));
+BOOL Radeon3DReleaseLease(
+    __REGA0(struct Radeon3DDevice *device),
+    __REGD0(ULONG lastFence),
+    __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DDetachOwner(__REGA0(struct BoardInfo *bi),
                          __REGA6(struct RadeonChipBase *base));
 

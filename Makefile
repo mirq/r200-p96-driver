@@ -6,6 +6,11 @@ FASTWAIT ?= 0
 # probe) into DEBUG chip builds. Default 0: the debug chip then boots with
 # only the passive debug port and counters active.
 PROBES ?= 0
+# PPCRING=0 builds a fallback-only driver: no interface-20 PPC engine
+# lease, the RADEON3D_CAP_PPC_RING bit is never advertised and every lease
+# is refused. Default 1 (PPC-direct 3D preferred, 68k paths stay available
+# as the automatic fallback).
+PPCRING ?= 1
 CC := $(CROSS)gcc
 STRIP := $(CROSS)strip
 
@@ -27,6 +32,11 @@ else
 TARGET ?= Radeon9200.chip
 CARD_TARGET ?= Prometheus.card
 BUILD_DIR ?= build
+endif
+ifeq ($(PPCRING),0)
+TARGET := Radeon9200-noppcring.chip
+CARD_TARGET := Prometheus.card
+BUILD_DIR := build-noppcring
 endif
 CARD_BUILD_DIR := $(BUILD_DIR)/prometheus-card
 P96_SCREEN_TEST := $(BUILD_DIR)/p96screen
@@ -79,6 +89,9 @@ CPPFLAGS += -DRADEON_BOOT_PROBES=1
 endif
 ifeq ($(FASTWAIT),1)
 CPPFLAGS += -DRADEON_FAST_WAIT
+endif
+ifeq ($(PPCRING),0)
+CPPFLAGS += -DRADEON_DISABLE_PPC_RING=1
 endif
 
 CFLAGS := \
@@ -161,11 +174,14 @@ PHASE0_HOST := $(BUILD_DIR)/phase0host
 PHASE0_PPC_DIR := build/phase0
 PHASE0_PPC := $(PHASE0_PPC_DIR)/ppcphase0
 PHASE0_PPC_ASM := $(PHASE0_PPC_DIR)/phase0ppc_asm.o
+PHASE2_DIR := tools/phase2
+PHASE2_HOST := $(BUILD_DIR)/phase2host
+PHASE2_PPC := $(PHASE0_PPC_DIR)/ppcphase2
 VBCC_ROOT ?= /home/mirek/vbcc
 VBCC_NDK ?= /opt/amiga/m68k-amigaos/ndk-include
 PPC_INCLUDE := $(VBCC_ROOT)/build/targets/ppc-warpos/include
 
-.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay r3dtexupdate r3dib phase0
+.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay r3dtexupdate r3dib phase0 phase2
 
 all: $(TARGET) $(CARD_TARGET)
 
@@ -183,6 +199,24 @@ r3dtexupdate: $(R3D_TEXUPDATE_TEST)
 r3dib: $(R3D_IB_TEST)
 
 phase0: $(PHASE0_HOST) $(PHASE0_PPC)
+
+phase2: $(PHASE2_HOST) $(PHASE2_PPC)
+
+$(PHASE2_HOST): $(PHASE2_DIR)/phase2host.c $(PHASE2_DIR)/phase2_regs.h \
+		$(PHASE0_DIR)/phase0_regs.h include/radeon3d.h \
+		include/clib/radeon3d_protos.h include/inline/radeon3d.h
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -Wmissing-prototypes \
+		-Wstrict-prototypes -m68020-60 -noixemul -Iinclude \
+		-I$(PHASE2_DIR) $< -lamiga -o $@
+
+$(PHASE2_PPC): $(PHASE2_DIR)/ppcphase2.c $(PHASE2_DIR)/phase2_regs.h \
+		$(PHASE0_DIR)/phase0_regs.h $(PHASE0_PPC_ASM) \
+		| $(PHASE0_PPC_DIR)
+	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
+		$(VBCC_ROOT)/build/bin/vc +warpos -c99 -O2 -amiga-align \
+		-I$(PHASE2_DIR) -I$(PHASE0_DIR) -I$(PPC_INCLUDE) \
+		-I$(VBCC_NDK) $< $(PHASE0_PPC_ASM) -lamiga -o $@
 
 $(PHASE0_HOST): $(PHASE0_DIR)/phase0_control.c $(PHASE0_DIR)/phase0_regs.h \
 		include/radeon3d.h include/clib/radeon3d_protos.h \
@@ -336,7 +370,9 @@ $(CARD_BUILD_DIR)/%.o: $(CARD_DIR)/%.c
 
 clean:
 	rm -rf build build-debug build-fastwait build-debug-fastwait \
+		build-noppcring \
 		Radeon9200.chip Radeon9200-debug.chip \
 		Radeon9200-fastwait.chip Radeon9200-debug-fastwait.chip \
+		Radeon9200-noppcring.chip \
 		Radeon9200.card Radeon9200-debug.card \
 		Prometheus.card Prometheus-debug.card

@@ -83,7 +83,7 @@ ABI_CHECK(Radeon3DTexGenCapability,
 ABI_CHECK(Radeon3DSphereMapCapability,
           RADEON3D_CAP_HW_SPHERE_MAP == (1UL << 19));
 ABI_CHECK(Radeon3DInterfaceVersion,
-            RADEON3D_IFACE_VERSION == 19UL);
+            RADEON3D_IFACE_VERSION == 20UL);
 ABI_CHECK(Radeon3DStreamSegmentCapability,
            RADEON3D_CAP_STREAM_SEGMENTS == (1UL << 21));
 ABI_CHECK(Radeon3DCommitStateReuseCapability,
@@ -193,6 +193,12 @@ ABI_CHECK(Radeon3DMultiFenceCapability,
            RADEON3D_CAP_MULTI_FENCE == (1UL << 28));
 ABI_CHECK(Radeon3DFenceCoalesceCapability,
            RADEON3D_CAP_FENCE_COALESCE == (1UL << 29));
+ABI_CHECK(Radeon3DPpcRingCapability,
+           RADEON3D_CAP_PPC_RING == (1UL << 30));
+ABI_CHECK(Radeon3DLeaseStructSize,
+          sizeof(struct Radeon3DLease) == RADEON3D_LEASE_V1_SIZE);
+ABI_CHECK(Radeon3DLeaseVersion,
+          RADEON3D_LEASE_VERSION == 1UL);
 ABI_CHECK(Radeon3DIndirectNoFenceFlag,
            RADEON3D_INDIRECT_NO_FENCE == (1UL << 1));
 ABI_CHECK(Radeon3DIndirectFlagsMask,
@@ -239,6 +245,13 @@ void Radeon3DAbiCalls(void)
             (void)Radeon3DDispatchIndirect(device, &indirect, &fence);
         }
         (void)Radeon3DSubmitFence(device, &fence);
+        {
+            struct Radeon3DLease lease;
+
+            lease.Size = sizeof(lease);
+            (void)Radeon3DAcquireLease(device, &lease);
+            (void)Radeon3DReleaseLease(device, 0UL);
+        }
         (void)Radeon3DInvalidateForTest(device);
         Radeon3DClose(device);
     }

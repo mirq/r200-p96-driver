@@ -574,3 +574,48 @@ shutdown:
   `Radeon3DAllocSurface()`.
 - **Treating `Radeon3DDispatchIndirect` as sandboxed.** It is not; it is a
   trusted raw-packet path.
+
+## 10. Interface-20 engine lease (PPC-direct 3D)
+
+The recommended production pattern on a driver that advertises
+`RADEON3D_CAP_PPC_RING` (bit 30, interface 20), validated on the physical
+machine 2026-09-23 (see `docs/09-ppc-direct-ring-design.md`):
+
+```text
+per frame:
+    acquire lease  (one cross-CPU library call)
+    while lease live:
+        reserve ring space by polling RB_RPTR (MMIO, local)
+        write CP-native dwords with stwbrx bursts (VRAM aperture, local)
+        read back the final dword before publishing (posted-write order)
+        kick CP_RB_WPTR with a committed (write + readback) MMIO write
+        poll SCRATCH_REG0 locally for fences
+    release lease with the last fence (one cross-call)
+```
+
+During the lease the 68k refuses every other submission (failure stage 122)
+and Picasso96 2D renders in software, so the desktop stays alive and
+correct. On release the service drains via the lease's last fence, re-arms
+the 68k ring state and restores 2D. The lease expires after a
+service-defined bound if the holder dies; the 2D path then reclaims it with
+full recovery (this ran in the wild during bring-up and behaved as
+designed).
+
+**Automatic fallback**: without `RADEON3D_CAP_PPC_RING`, or whenever
+`Radeon3DAcquireLease` returns FALSE (busy lease, refused grant, or a
+`make PPCRING=0` fallback-only driver), the consumer uses the existing
+bounded paths (`Radeon3DExecute` / commits / indirect dispatch) unchanged -
+the old behavior is the built-in fallback, no configuration needed. The
+lease is optional and additive; never require it in production code without
+a working fallback path.
+
+PPC-side notes for the direct-ring writer:
+
+- Ring dwords are little-endian on the wire; `stwbrx` publishes them with
+  the swap included.
+- The PPC's **loads** of the aliased VRAM window are cache-served (Phase-0
+  measured 29 ns cache hits): invalidate lines (`dcbf`) before polling any
+  68k-written location. Stores commit with `eieio`/`sync`.
+- MMIO loads (`RB_RPTR`, `SCRATCH_REG0`) are uncached and real; the
+  committed WPTR kick shape (store + readback of the same register) is the
+  driver's publication discipline.

@@ -65,6 +65,8 @@ static APTR FunctionTable[] USED = {
     (APTR)Radeon3DAllocSurface,
     (APTR)Radeon3DDispatchIndirect,
     (APTR)Radeon3DSubmitFence,
+    (APTR)Radeon3DAcquireLease,
+    (APTR)Radeon3DReleaseLease,
     (APTR)-1
 };
 
@@ -137,6 +139,17 @@ static struct RadeonChipBase *LibInit(
     base->ServiceSessions = 0;
     base->ServiceNextHandle = 0x80000000UL;
     base->ServiceState = RADEON3D_SERVICE_EMPTY;
+    /* Fallback flag: PPC ring support is the default; make PPCRING=0
+     * compiles a fallback-only driver that never advertises the lease
+     * capability and refuses every lease. */
+#ifdef RADEON_DISABLE_PPC_RING
+    base->PpcRingAllowed = FALSE;
+#else
+    base->PpcRingAllowed = TRUE;
+#endif
+    base->LeaseActive = FALSE;
+    base->LeaseDevice = NULL;
+    base->LeaseGrantTicks = 0;
     PrometheusBase = NULL;
 
     return base;

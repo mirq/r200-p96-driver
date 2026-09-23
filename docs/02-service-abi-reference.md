@@ -23,7 +23,7 @@ with this tree before an ABI change is committed.
 | Node type / priority | `NT_LIBRARY` / -50 |
 | Minimum CPU | `AFF_68020` (the library refuses to initialize on 68000) |
 | Radeon3D library version | `RADEON3D_LIBRARY_VERSION` = 3 |
-| Radeon3D interface version | `RADEON3D_IFACE_VERSION` = 19 |
+| Radeon3D interface version | `RADEON3D_IFACE_VERSION` = 20 |
 
 Open by **resident name**, not by path. `OpenLibrary("Radeon9200.chip", 3)`
 is what clients and `minigl.library` use; only Picasso96 loads the file from
@@ -63,6 +63,8 @@ caller before every structure-taking call.
 | -138 | `Radeon3DAllocSurface(struct Radeon3DDevice *, ULONG width, ULONG height, ULONG format, struct Radeon3DSurface *)` | interface 17+ |
 | -144 | `Radeon3DDispatchIndirect(struct Radeon3DDevice *, const struct Radeon3DIndirect *, ULONG *fenceOut)` | interface 18+ |
 | -150 | `Radeon3DSubmitFence(struct Radeon3DDevice *, ULONG *fenceOut)` | interface 19+, parked |
+| -156 | `Radeon3DAcquireLease(struct Radeon3DDevice *, struct Radeon3DLease *lease)` | interface 20+, PPC engine lease |
+| -162 | `Radeon3DReleaseLease(struct Radeon3DDevice *, ULONG lastFence)` | interface 20+, drains via the lease's last fence |
 
 `RADEON3D_SUBMIT_FENCE` (`1UL << 0`) is the only public submission flag for
 `Execute`/`Submit`/commit calls. `RADEON3D_INDIRECT_NO_FENCE` (`1UL << 1`) is
@@ -96,9 +98,10 @@ runtime gates:
 | 17 | AUX_SURFACES (if the aux pool exists) |
 | 18 | INDIRECT_DISPATCH, INDIRECT_RENDER (if the segment pool exists), MULTI_FENCE |
 | 19 | FENCE_COALESCE |
+| 20 | PPC_RING (engine lease; requires the flag, a live CP, the segment pool and a working EClock) |
 
-An interface-17 consumer keeps working against a 19 driver and simply never
-sees bits 26-29. Conversely, a 19 consumer on an older driver receives a lower
+An interface-17 consumer keeps working against a 20 driver and simply never
+sees bits 26-30. Conversely, a 20 consumer on an older driver receives a lower
 `info.Version` and must not use newer vectors: the LVO physically exists only
 if the driver exports it, so gate by capability, not by "the library version
 looks new".
@@ -137,6 +140,7 @@ looks new".
 | 27 | `INDIRECT_RENDER` | Indirect path has render transitions/recovery |
 | 28 | `MULTI_FENCE` | Any session fence in `(0, LastFence]` is testable/waitable |
 | 29 | `FENCE_COALESCE` | Interface-19 no-fence dispatch + `SubmitFence` (parked) |
+| 30 | `PPC_RING` | Interface-20 engine lease: during the lease the PPC is the only ring writer; the 68k refuses submissions and 2D falls back to software |
 
 ## 5. Info block
 
@@ -774,3 +778,46 @@ Commit failure stages:
 - The emitter (`src/radeon3d_emit.c`) is deliberately dual-target: it has no
   ExecBase, locking or I/O, so the same source can run on the 68k service and
   in a PPC frontend. Do not add platform dependencies to it.
+
+## 15. Interface-20 PPC engine lease
+
+`Radeon3DAcquireLease(device, &lease)` grants an exclusive ring lease to the
+calling session (physical Phase-2 run 2026-09-23):
+
+- While the lease is live, **the PPC is the only ring writer**. Every 68k
+  service submission (`Submit`, `Execute`, commits, indirect, `SubmitFence`)
+  is refused with `CommitFailStage` 122, and Picasso96 2D is parked in
+  `RADEON_ACCEL_FALLBACK` (software rendering) until the lease ends.
+- The lease dies with an explicit `Radeon3DReleaseLease(device, lastFence)`,
+  with the session, or after the expiry bound (5 s from grant; a stale lease
+  is reclaimed by the 2D path with full recovery, which also invalidates the
+  session - the dead-client protection ran in the wild during the first
+  hardware bring-up and behaved as designed).
+- The lease descriptors are 68k-mapped addresses the PPC aliases 1:1
+  (Phase-0 verified): `RingCpuAddress` (ring base for the `stwbrx` writer),
+  `RingGpuAddress`, `RingDwords`/`RingMask`, `Bar2Base` (MMIO:
+  `CP_RB_RPTR` 0x0710, `CP_RB_WPTR` 0x0714, `SCRATCH_REG0` 0x15e0),
+  `Bar0Base`, and `NextFence` (the first scratch sequence the lease may
+  use; the host's own proof batch has already consumed the earlier ones).
+- The PPC's fence tails use the standard six-dword shape (cache flush +
+  full idle wait + scratch sequence), so `Radeon3DReleaseLease(lastFence)`
+  retires every lease submission in ring order, re-arms the 68k write
+  pointer from `RB_RPTR` and restores 2D acceleration.
+
+Failure stages (also in `CommitFailStage`): 120 not allowed (fallback build
+or missing prerequisites), 121 interface < 20, 122 lease busy (already
+active), 123 lease not held / never arrived, 124 holder mismatch,
+125 grant failure (prepare or ring info).
+
+**Fallback flag**: `make PPCRING=0` builds `Radeon9200-noppcring.chip` - a
+fallback-only driver that never advertises `RADEON3D_CAP_PPC_RING` and
+refuses every lease. Default is `PPCRING=1` (PPC-direct 3D preferred). In
+every case the bounded entry points remain fully functional, so a consumer
+without the capability - or with a refused lease - automatically uses the
+existing paths unchanged. The lease is purely additive; nothing existing
+changes behavior.
+
+Phase-0/2 hardware results (2026-09-23): the PPC writer submitted 32 fenced
+PACKET2 batches directly to the ring and retired them locally in ~125-200 us
+total; the 68k cross-checked SCRATCH_REG0 = the lease's last fence through
+its own aperture; the ring state survived the release (drained, re-armed).

@@ -4,7 +4,7 @@
 #include <exec/types.h>
 
 #define RADEON3D_LIBRARY_VERSION 3UL
-#define RADEON3D_IFACE_VERSION   19UL
+#define RADEON3D_IFACE_VERSION   20UL
 
 #define RADEON3D_CAP_CP_READY     (1UL << 0)
 #define RADEON3D_CAP_SINGLE_BOARD (1UL << 1)
@@ -56,6 +56,16 @@
  * to the fence serial is complete" meaning. A service without this bit
  * rejects RADEON3D_INDIRECT_NO_FENCE and has no Radeon3DSubmitFence. */
 #define RADEON3D_CAP_FENCE_COALESCE         (1UL << 29)
+/* Interface 20 PPC engine lease (docs/09-ppc-direct-ring-design.md). The
+ * service may grant an exclusive ring lease: during the lease the PPC is
+ * the only ring writer and the 68k refuses every other submission and
+ * falls back to software 2D. Advertised only for interface-20 sessions
+ * with a live CP and streaming pool, and only when the driver was built
+ * with PPC ring support (make PPCRING=0 compiles it out - the fallback
+ * flag). A consumer without the capability, or with a refused
+ * Radeon3DAcquireLease, uses the existing Radeon3DDispatchIndirect path
+ * unchanged. */
+#define RADEON3D_CAP_PPC_RING               (1UL << 30)
 
 #define RADEON3D_MAX_BATCH_DWORDS 8192UL
 #define RADEON3D_IMMD_MAX_VERTICES 255UL
@@ -553,5 +563,50 @@ typedef char Radeon3DSurfaceV1SizeCheck[
 #define RADEON3D_AUX_POOL_BYTES     (4UL * 1024UL * 1024UL)
 #define RADEON3D_MAX_AUX_SURFACES   8UL
 #define RADEON3D_AUX_MAX_DIMENSION  4096UL
+
+/*
+ * Interface-20 PPC engine lease (docs/09-ppc-direct-ring-design.md).
+ *
+ * Radeon3DAcquireLease() grants an exclusive ring lease to the calling
+ * session: while the lease is live the PPC is the only ring writer, the
+ * service rejects every other submission (failure stages 120-125 are
+ * written to CommitFailStage), Picasso96 2D falls back to software, and
+ * the lease dies with the session or after an expiry bound. The
+ * descriptors are the 68k-mapped addresses the PPC aliases 1:1
+ * (Phase-0-verified). RingCpuAddress is the CP ring base, Bar2Base the
+ * RV280 MMIO base (CP_RB_RPTR 0x0710, CP_RB_WPTR 0x0714, SCRATCH_REG0
+ * 0x15e0). NextFence is the first scratch sequence the PPC may use; the
+ * CP consumes scratch writes in ring order, so releasing with the last
+ * submitted fence retires every lease submission.
+ *
+ * Radeon3DReleaseLease(device, lastFence) drains via that fence (bounded
+ * wait), re-arms the 68k ring state and restores 2D on the next P96
+ * operation. Every path is fail-closed: without the capability, or when
+ * the lease is refused or already held, the caller uses the existing
+ * bounded entry points unchanged.
+ */
+#define RADEON3D_LEASE_VERSION   1UL
+
+struct Radeon3DLease {
+    ULONG Size;             /* in: caller's buffer size; out: tier filled */
+    ULONG Version;          /* out: RADEON3D_LEASE_VERSION */
+    ULONG Generation;       /* out: service generation at grant */
+    ULONG Flags;            /* out: RADEON3D_LEASE_* */
+    APTR  RingCpuAddress;   /* out: ring base, 68k-mapped, PPC-aliased */
+    ULONG RingGpuAddress;   /* out: ring base as the CP fetches it */
+    ULONG RingDwords;       /* out: ring size in dwords */
+    ULONG RingMask;         /* out: RingDwords - 1 */
+    ULONG Bar2Base;         /* out: RV280 MMIO base (BAR2) */
+    ULONG Bar0Base;         /* out: framebuffer aperture base (BAR0) */
+    ULONG NextFence;        /* out: first scratch sequence for the lease */
+    ULONG HeartbeatMs;      /* out: service lease-expiry bound */
+    ULONG MaxBatchDwords;   /* out: same as info.MaxBatchDwords */
+};
+
+#define RADEON3D_LEASE_V1_SIZE  52UL
+#define RADEON3D_LEASE_FLAGS    0UL
+
+typedef char Radeon3DLeaseV1SizeCheck[
+    sizeof(struct Radeon3DLease) == RADEON3D_LEASE_V1_SIZE ? 1 : -1];
 
 #endif
