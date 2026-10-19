@@ -259,21 +259,25 @@ machine. Off by default, documented as broken.
 - `-m68060` emitter CPU flags: matching CRCs and a smaller CPU loop, but a
   separate optimisation candidate that was never mixed into a driver change.
 - `FASTWAIT=1` cache-flush omission: controlled experiment only.
-- A ring-full timeout is currently treated as CP death and runs full recovery,
-  invalidating the session. This is too aggressive for back-pressure and
-  remains an open robustness item.
+- Ring-full waits are progress-based as of 2026-10-19 (candidate 6 below):
+  read-pointer advances extend the wait inside an EClock cap, so a long
+  GPU-bound frame is no longer treated as CP death. The "retry later"
+  return-to-client ABI remains an open item.
 
 ## 4. Open optimisation candidates
 
 From the measured attribution (see
 [`04-performance.md`](04-performance.md)):
 
-1. **Merge the commit-chain structural walk into the emitter.**
-   `CommitRecords()` walks every record to count draws and verify the offset
-   table, then `Radeon3DEmitStream()` parses the same chain again. Have the
-   emitter count draws as it consumes, guard `CommitDrawIndex < recordCount`,
-   and compare the final count before submission. Removes one complete
-   cached-memory pass.
+1. ~~**Merge the commit-chain structural walk into the emitter.**~~
+   **Implemented 2026-10-19.** The emitter already validates every record as
+   it consumes (header fit, length bounds, opcode dispatch, exact chain
+   termination), so the pre-walk was removed. The count check it uniquely
+   owned moved into the consumption path: `CommitRecordCount` bounds every
+   `CommitDrawIndex` consume (emitter fail stage 21) and the service compares
+   the final count against `recordCount` before submission (the walk's
+   stage 5), so invalid chains still fail before anything reaches the CP.
+   Removes one complete cached-memory pass per commit.
 2. ~~**Atom-level output reservation in the emitter.**~~ **Implemented
    2026-10-19.** `ExecuteEmitRegister()`, the matrix/vector/scalar block
    emitters and both per-vertex loops in `EmitExecuteVertices()` now reserve
@@ -300,8 +304,14 @@ From the measured attribution (see
    dwords into `d0-d7`, swap in registers and issue one `movem.l` store. The
    prior movem work bought 13.9% of submit; expect a few percent, not 2x. The
    final-dword readback before `WPTR` must stay.
-6. **Ring back-pressure vs recovery.** Distinguish "ring full, retry later"
-   from "CP dead" so a paced client cannot lose its session to a hitch.
+6. **Ring back-pressure vs recovery.** *Core robustness addressed
+   2026-10-19:* `CpReserve()`/`RadeonCpWait()` now reset a stall budget
+   (`CP_STALL_POLLS`) whenever `RB_RPTR` advances and cap the total wait
+   with an EClock deadline (`CP_RING_WAIT_MS`, the `RadeonCpWaitFence`
+   pattern), so a legitimately long GPU-bound frame or full ring delays
+   submission instead of being treated as CP death; a truly stopped read
+   pointer fails at a fifth of the old budget. The explicit "ring full,
+   retry later" return-to-client ABI remains open.
 7. **PPC-resident private metadata.** The session/device structures and some
    surface tables still live in PPC RAM on a WarpOS host; only the three
    execute buffers were moved. The same placement policy could extend further.

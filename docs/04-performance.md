@@ -151,12 +151,14 @@ for correctness.
 
 ### 4.1 Ring back-pressure
 
-An unpaced client can outrun the GPU until the ring-space wait
-(`CP_TIMEOUT_POLLS`) expires. The service treats a failed submit as CP death
-and runs full recovery, invalidating the session; three of nine unpaced
-2000-frame replay runs hit this (`fail=1188..5712`). A real client paces per
-frame. This remains a robustness follow-up: a ring-full timeout is not a CP
-hang, and recovery there is aggressive.
+An unpaced client can outrun the GPU until the ring-space wait expired: the
+old fixed `CP_TIMEOUT_POLLS` budget was a fixed wall time whatever the GPU
+was doing, and a failed submit ran full recovery, invalidating the session;
+three of nine unpaced 2000-frame replay runs hit this (`fail=1188..5712`).
+Since 2026-10-19 the ring waits are progress-based: every `RB_RPTR` advance
+resets the stall budget and an EClock deadline caps the total wait, so a
+consuming GPU is back-pressure, not death (docs/07 section 4, candidate 6).
+Hardware re-validation of the unpaced replay runs pending.
 
 ## 5. 3D ceilings - the replay benchmark
 
