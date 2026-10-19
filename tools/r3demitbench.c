@@ -61,6 +61,7 @@ static void Reset(struct Fixture *fixture)
     emitter->CommitSegmentBytes = 65536UL;
     emitter->CommitVertexOffsets = &fixture->Offset;
     emitter->CommitDrawIndex = 0;
+    emitter->CommitRecordCount = 1;
 }
 
 static void BuildHeader(struct Fixture *fixture, BOOL textured, ULONG opcode)

@@ -1545,8 +1545,6 @@ static BOOL CommitRecords(
     struct Radeon3DEmitter *emitter;
     ULONG *generated;
     ULONG internalFence = 0;
-    ULONG index;
-    ULONG walk;
     ULONG phase;
     ULONG buildTicks = 0;
     ULONG submitTicks = 0;
@@ -1572,50 +1570,11 @@ static BOOL CommitRecords(
         return FALSE;
     }
     /* Draw records carry no inline vertices here, so each one consumes a
-     * fetch offset; clears may ride along and consume none. Walk the chain
-     * once up front to check the record count matches the offsets the
-     * caller supplied, keeping the emitter's per-draw counter in sync. */
-    walk = 0;
-    index = 0;
-    while (walk < recordDwords) {
-        ULONG opcode;
-        ULONG length;
-
-        if (walk + 2UL > recordDwords) {
-            COMMIT_FAIL(base, 3UL);
-            if (fenceOut)
-                *fenceOut = 0x80000000UL | 3UL;
-            return FALSE;
-        }
-        opcode = records[walk];
-        length = records[walk + 1UL];
-        if (length < 2UL || length > recordDwords - walk) {
-            COMMIT_FAIL(base, 3UL);
-            if (fenceOut)
-                *fenceOut = 0x80000000UL | 3UL;
-            return FALSE;
-        }
-        if ((opcode >= RADEON3D_EXEC_DRAW_TRIANGLES &&
-             opcode <= RADEON3D_EXEC_DRAW_LINE_LOOP) ||
-            (device->InterfaceVersion >= 14UL &&
-             opcode >= RADEON3D_EXEC_REUSE_TRIANGLES &&
-             opcode <= RADEON3D_EXEC_REUSE_LINE_LOOP))
-            ++index;
-        else if (opcode != RADEON3D_EXEC_CLEAR ||
-                 length != RADEON3D_EXEC_CLEAR_DWORDS) {
-            COMMIT_FAIL(base, 4UL);
-            if (fenceOut)
-                *fenceOut = 0x80000000UL | 4UL;
-            return FALSE;
-        }
-        walk += length;
-    }
-    if (walk != recordDwords || index != recordCount) {
-        COMMIT_FAIL(base, 5UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 5UL;
-        return FALSE;
-    }
+     * fetch offset; clears may ride along and consume none. There is no
+     * separate structural pre-walk: the emitter validates every record as
+     * it consumes the chain and guards each fetch-offset consume against
+     * CommitRecordCount, so an offsets/draw-count mismatch fails the
+     * stream (stage 5 below) before anything reaches the CP. */
     generated = device->ExecuteGenerated;
     emitter = device->ExecuteEmitter;
     base->CommitFailStage = 0;
@@ -1636,9 +1595,26 @@ static BOOL CommitRecords(
     emitter->CommitSegmentGpuBase = slot->GpuAddress;
     emitter->CommitSegmentBytes = slot->Bytes;
     emitter->CommitVertexOffsets = vertexOffsets;
+    emitter->CommitRecordCount = recordCount;
     emitter->CommitDrawIndex = 0;
     phase = ServiceExecTicks(base);
     streamBuilt = Radeon3DEmitStream(emitter, records, recordDwords);
+    if (streamBuilt &&
+        emitter->CommitDrawIndex != recordCount) {
+        /* The chain emitted cleanly but consumed a
+         * different number of fetch offsets than the
+         * caller supplied: reject before submission
+         * (the structural pre-walk stage 5). */
+        COMMIT_FAIL(base, 5UL);
+        if (fenceOut)
+            *fenceOut = 0x80000000UL | 5UL;
+        buildTicks = ServiceExecTicks(base) - phase;
+        (void)RadeonRecoverAcceleration(bi);
+        RecordExecSample(base, sampleType,
+                         recordDwords, emitter->Count,
+                         0UL, buildTicks, 0UL, FALSE);
+        return FALSE;
+    }
     result = streamBuilt;
     if (result)
         result = RadeonPrepare3D(bi);
@@ -1649,6 +1625,7 @@ static BOOL CommitRecords(
     emitter->CommitSegmentBytes = 0;
     emitter->CommitVertexOffsets = NULL;
     emitter->CommitDrawIndex = 0;
+    emitter->CommitRecordCount = 0;
     emitter->CommitVbufAddress = 0;
     emitter->StateValid = FALSE;
     if (!result) {
@@ -1927,6 +1904,7 @@ BOOL Radeon3DCommitStateBatch(
     emitter->CommitSegmentBytes = slot->Bytes;
     emitter->CommitVertexOffsets = &draws[0].OffsetBytes;
     emitter->CommitDrawIndex = 0;
+    emitter->CommitRecordCount = 1;
 
     /* The first descriptor drives the normal parser and emits the complete
      * state. Remaining descriptors draw directly from that validated state. */

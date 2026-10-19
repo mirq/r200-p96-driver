@@ -1826,6 +1826,13 @@ BOOL Radeon3DEmitDraw(                             struct Radeon3DEmitter *emitt
                         RADEON3D_EXEC_HW_TCL_VERTEX_DWORDS) :
         extendedVertex ? RADEON3D_EXEC_EXTENDED_VERTEX_DWORDS
                        : RADEON3D_EXEC_VERTEX_DWORDS;
+        if (emitter->CommitDrawIndex >= emitter->CommitRecordCount) {
+            /* More draw/reuse records than fetch offsets: the old
+             * structural pre-walk rejected this chain up front. */
+            emitter->FailStage = 21UL;
+            return FALSE;
+        }
+
     if (emitter->CommitVbuf) {
         commitOffset =
             emitter->CommitVertexOffsets[emitter->CommitDrawIndex++];
@@ -2299,6 +2306,13 @@ BOOL Radeon3DEmitReuseDraw(                                 struct Radeon3DEmitt
     ULONG commitOffset;
 
     if (length != RADEON3D_EXEC_REUSE_DWORDS)
+    if (emitter->CommitDrawIndex >= emitter->CommitRecordCount) {
+        /* More draw/reuse records than fetch offsets: the old
+         * structural pre-walk rejected this chain up front. */
+        emitter->FailStage = 21UL;
+        return FALSE;
+    }
+
         return FALSE;
     commitOffset =
         emitter->CommitVertexOffsets[emitter->CommitDrawIndex++];

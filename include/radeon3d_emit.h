@@ -184,6 +184,12 @@ struct Radeon3DEmitter {
     ULONG CommitSegmentBytes;
     const ULONG *CommitVertexOffsets;
     ULONG CommitDrawIndex;
+    /* Draw and reuse records consume one fetch offset
+     * each; CommitRecordCount is the number of entries
+     * the caller supplied. The emitter guards every
+     * consume against it and the service compares
+     * CommitDrawIndex against it after the stream. */
+    ULONG CommitRecordCount;
     ULONG CommitVbufAddress;
 };
 

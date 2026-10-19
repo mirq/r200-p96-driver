@@ -19,6 +19,14 @@
 #define CP_FENCE_DWORDS       6UL
 #define CP_TIMEOUT_POLLS      100000UL
 #define CP_MAX_FENCE_WAIT_MS  60000UL
+/* Ring-space and fence waits distinguish "the CP is consuming the ring"
+ * from "the ring is stuck": every read-pointer advance resets the stall
+ * budget (CP_STALL_POLLS reads with a static pointer), and the whole
+ * wait is capped by an EClock deadline (CP_RING_WAIT_MS) so a dead
+ * command processor still recovers in bounded time regardless of how
+ * expensive a single register read is on this bus. */
+#define CP_STALL_POLLS        20000UL
+#define CP_RING_WAIT_MS       1000UL
 
 #define CP_RB_CNTL_VALUE \
     (17UL | (9UL << 8) | (1UL << 18) | RADEON_RB_NO_UPDATE)
@@ -94,6 +102,13 @@ static ULONG CpClock(struct RadeonCpState *state)
     return value.ev_lo;
 }
 
+/* EClock ticks for `ms`, the conversion RadeonCpWaitFence uses. */
+static ULONG CpWaitTicks(struct RadeonCpState *state, ULONG ms)
+{
+    return (state->EClockRate / 1000UL) * ms +
+           ((state->EClockRate % 1000UL) * ms) / 1000UL;
+}
+
 static BOOL CpWaitGuiIdle(struct BoardInfo *bi)
 {
     ULONG count;
@@ -165,22 +180,38 @@ static BOOL CpLoadMicrocode(struct BoardInfo *bi)
     return TRUE;
 }
 
+/* Reserve ring space. RB_RPTR advancing proves the CP is consuming the
+ * ring: that is back-pressure, not death. Each advance resets the stall
+ * budget and the whole wait is capped by an EClock deadline (as in
+ * RadeonCpWaitFence), so a legitimately long GPU-bound frame delays
+ * submission instead of triggering full recovery and losing the session.
+ * A read pointer that stops moving for CP_STALL_POLLS reads is treated as
+ * a hung command processor. Without an open timer only the stall budget
+ * applies. */
 static BOOL CpReserve(struct BoardInfo *bi,
                       struct RadeonCpState *state, ULONG dwords)
 {
-    ULONG count;
+    ULONG lastReadPointer;
+    ULONG deadline = 0;
+    ULONG stall = 0;
+    ULONG readPointer;
 
-    for (count = 0; count < CP_TIMEOUT_POLLS; ++count) {
-        ULONG readPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) &
-                            CP_RING_MASK;
-        ULONG available = (readPointer - state->WritePointer - 1UL) &
-                          CP_RING_MASK;
-
-        if (available >= dwords)
+    if (state->TimerOpen && state->EClockRate)
+        deadline = CpClock(state) + CpWaitTicks(state, CP_RING_WAIT_MS);
+    lastReadPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
+    for (;;) {
+        readPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
+        if (((readPointer - state->WritePointer - 1UL) & CP_RING_MASK) >= dwords)
             return TRUE;
+        if (readPointer != lastReadPointer) {
+            lastReadPointer = readPointer;
+            stall = 0;
+        } else if (++stall >= CP_STALL_POLLS)
+            return FALSE;
+        if (deadline && (LONG)(CpClock(state) - deadline) >= 0)
+            return FALSE;
         RadeonDelayUs(1);
     }
-    return FALSE;
 }
 
 static BOOL CpCommit(struct BoardInfo *bi, struct RadeonCpState *state,
@@ -963,8 +994,7 @@ BOOL RadeonCpWaitFence(struct BoardInfo *bi, ULONG fence,
         return FALSE;
     if (timeoutMs > CP_MAX_FENCE_WAIT_MS)
         timeoutMs = CP_MAX_FENCE_WAIT_MS;
-    timeoutTicks = (state->EClockRate / 1000UL) * timeoutMs +
-                   ((state->EClockRate % 1000UL) * timeoutMs) / 1000UL;
+    timeoutTicks = CpWaitTicks(state, timeoutMs);
     deadline = CpClock(state) + timeoutTicks;
     for (;;) {
         if (RadeonCpTestFence(bi, fence))
@@ -979,7 +1009,11 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     struct RadeonCpState *state;
-    ULONG count;
+    ULONG lastReadPointer;
+    ULONG deadline = 0;
+    ULONG stall = 0;
+    ULONG readPointer;
+    ULONG scratch;
 
     if (!data || !data->CpState || !data->CpState->Ready)
         return FALSE;
@@ -987,9 +1021,17 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
     if (!state->PendingFence)
         return TRUE;
 
-    for (count = 0; count < CP_TIMEOUT_POLLS; ++count) {
-        if (RadeonRead32(bi, RADEON_SCRATCH_REG0) ==
-            state->PendingFence) {
+    /* The pending fence retires after every earlier submission was
+     * consumed, so RB_RPTR advancing proves progress even while the
+     * scratch write itself is still far ahead. Every advance resets the
+     * stall budget; the fence is tested every read, exactly as before,
+     * and an EClock deadline caps the wait for a truly hung CP. */
+    if (state->TimerOpen && state->EClockRate)
+        deadline = CpClock(state) + CpWaitTicks(state, CP_RING_WAIT_MS);
+    lastReadPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
+    for (;;) {
+        scratch = RadeonRead32(bi, RADEON_SCRATCH_REG0);
+        if (scratch == state->PendingFence) {
             if (!CpInvalidateHostReadBuffer(bi))
                 return FALSE;
             state->PendingFence = 0;
@@ -998,9 +1040,16 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
             state->PendingUnfenced = 0;
             return TRUE;
         }
+        readPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
+        if (readPointer != lastReadPointer) {
+            lastReadPointer = readPointer;
+            stall = 0;
+        } else if (++stall >= CP_STALL_POLLS)
+            return FALSE;
+        if (deadline && (LONG)(CpClock(state) - deadline) >= 0)
+            return FALSE;
         RadeonDelayUs(1);
     }
-    return FALSE;
 }
 
 /* Wait until the CP has consumed the whole ring (RB_RPTR catches WPTR),

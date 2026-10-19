@@ -49,6 +49,7 @@ static ULONG Setup(BOOL commit, BOOL texgen, BOOL normals, int lights)
     Emitter.CommitSegmentGpuBase = 0x01000000UL;
     Emitter.CommitSegmentBytes = 65536;
     Emitter.CommitVertexOffsets = Offsets;
+    Emitter.CommitRecordCount = 8;
     Radeon3DEmitResetCaptures(&Emitter);
     Record[0] = RADEON3D_EXEC_DRAW_TRIANGLES;
     Record[2] = 1;
