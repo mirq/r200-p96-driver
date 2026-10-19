@@ -112,10 +112,11 @@ struct RadeonChipBase {
     ULONG AuxSurfaceGpuBase;
     ULONG AuxSurfaceBytes;
     struct Radeon3DAuxBlock AuxSurfaceBlocks[RADEON3D_MAX_AUX_SURFACES];
-    /* Cumulative Radeon3DExecute phase attribution. The timer pair opens
+    /* Cumulative submission phase attribution. The timer pair opens
      * lazily on the first session; totals are microseconds across every
-     * Execute since the driver loaded and survive session closes, so a
-     * later Radeon3DGetInfo can attribute a finished workload. */
+     * submission since the driver loaded and survive session closes, so a
+     * later Radeon3DGetInfo can attribute a finished workload. The
+     * historical "Exec" names are kept for the frozen info ABI. */
     APTR ExecTimerPort;
     APTR ExecTimerIO;
     UBYTE ExecTimerFailed;
@@ -373,12 +374,6 @@ BOOL Radeon3DImportBitMap(__REGA0(struct Radeon3DDevice *device),
 void Radeon3DReleaseSurface(__REGA0(struct Radeon3DDevice *device),
                             __REGA1(struct Radeon3DSurface *surface),
                              __REGA6(struct RadeonChipBase *base));
-BOOL Radeon3DExecute(__REGA0(struct Radeon3DDevice *device),
-                     __REGA1(const ULONG *records),
-                     __REGD0(ULONG recordDwords),
-                     __REGD1(ULONG flags),
-                     __REGA2(ULONG *fenceOut),
-                      __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DInvalidateForTest(__REGA0(struct Radeon3DDevice *device),
                                __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DAllocSegment(__REGA0(struct Radeon3DDevice *device),
@@ -388,19 +383,6 @@ BOOL Radeon3DAllocSegment(__REGA0(struct Radeon3DDevice *device),
 BOOL Radeon3DFreeSegment(__REGA0(struct Radeon3DDevice *device),
                          __REGD0(ULONG segmentId),
                          __REGA6(struct RadeonChipBase *base));
-BOOL Radeon3DCommitDraw(__REGA0(struct Radeon3DDevice *device),
-                        __REGA1(const struct Radeon3DCommit *commit),
-                        __REGA2(ULONG *fenceOut),
-                        __REGA6(struct RadeonChipBase *base));
-BOOL Radeon3DCommitBatch(__REGA0(struct Radeon3DDevice *device),
-                         __REGA1(const struct Radeon3DCommitBatch *commit),
-                         __REGA2(ULONG *fenceOut),
-                         __REGA6(struct RadeonChipBase *base));
-BOOL Radeon3DCommitStateBatch(
-    __REGA0(struct Radeon3DDevice *device),
-    __REGA1(const struct Radeon3DStateBatch *batch),
-    __REGA2(ULONG *fenceOut),
-    __REGA6(struct RadeonChipBase *base));
 BOOL Radeon3DAllocSurface(__REGA0(struct Radeon3DDevice *device),
                           __REGD0(ULONG width),
                           __REGD1(ULONG height),

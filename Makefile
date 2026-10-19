@@ -54,7 +54,6 @@ SOURCES := \
 	src/dma.c \
 	src/r200_microcode.c \
 	src/radeon_cp.c \
-	src/radeon3d_emit.c \
 	src/radeon3d_service.c \
 	src/radeon_debug.c \
 	src/radeon_cursor.c \
@@ -159,10 +158,7 @@ ABI_CHECK_VBCC := $(BUILD_DIR)/abi/radeon3d-vbcc.o
 R3D_INFO_TEST := $(BUILD_DIR)/radeon3dinfo
 R3D_SESSIONS_TEST := $(BUILD_DIR)/radeon3dsessions
 R3D_PHASE1_TEST := $(BUILD_DIR)/radeon3dphase1
-R3D_FORMATS_TEST := $(BUILD_DIR)/radeon3dformats
-R3D_STREAM_TEST := $(BUILD_DIR)/radeon3dstream
 R3D_REPLAY_TEST := $(BUILD_DIR)/r3dreplay
-R3D_TEXUPDATE_TEST := $(BUILD_DIR)/r3dtexupdate
 R3D_IB_TEST := $(BUILD_DIR)/r3dib
 VRAM_STREAM_TEST := $(BUILD_DIR)/vramstream
 
@@ -181,7 +177,7 @@ VBCC_ROOT ?= /home/mirek/vbcc
 VBCC_NDK ?= /opt/amiga/m68k-amigaos/ndk-include
 PPC_INCLUDE := $(VBCC_ROOT)/build/targets/ppc-warpos/include
 
-.PHONY: all abi-check clean r3d-tools tools vramstream r3dstream r3dreplay r3dtexupdate r3dib phase0 phase2
+.PHONY: all abi-check clean r3d-tools tools vramstream r3dreplay r3dib phase0 phase2
 
 all: $(TARGET) $(CARD_TARGET)
 
@@ -190,11 +186,7 @@ tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST) \
 
 vramstream: $(VRAM_STREAM_TEST)
 
-r3dstream: $(R3D_STREAM_TEST)
-
 r3dreplay: $(R3D_REPLAY_TEST)
-
-r3dtexupdate: $(R3D_TEXUPDATE_TEST)
 
 r3dib: $(R3D_IB_TEST)
 
@@ -249,13 +241,6 @@ $(R3D_IB_TEST): tools/r3dib.c include/radeon3d.h \
 	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -Wmissing-prototypes \
 		-Wstrict-prototypes -m68020-60 -noixemul -Iinclude $< -lamiga -o $@
 
-$(R3D_TEXUPDATE_TEST): tools/r3dtexupdate.c include/radeon3d.h \
-		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
-		include/inline/radeon3d.h
-	mkdir -p $(dir $@)
-	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -Wmissing-prototypes \
-		-Wstrict-prototypes -m68020-60 -noixemul -Iinclude $< -lamiga -o $@
-
 $(R3D_REPLAY_TEST): tools/r3dreplay.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
 		include/inline/radeon3d_protos.h
@@ -271,17 +256,9 @@ $(VRAM_STREAM_TEST): tools/vramstream.c
 	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
 		-Iinclude $< -lamiga -o $@
 
-$(R3D_STREAM_TEST): tools/radeon3dstream.c include/radeon3d.h \
-		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
-		include/inline/radeon3d_protos.h
-	mkdir -p $(dir $@)
-	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
-		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
-		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
-
 abi-check: $(ABI_CHECK_GCC) $(ABI_CHECK_VBCC)
 
-r3d-tools: $(R3D_INFO_TEST) $(R3D_SESSIONS_TEST) $(R3D_PHASE1_TEST) $(R3D_FORMATS_TEST)
+r3d-tools: $(R3D_INFO_TEST) $(R3D_SESSIONS_TEST) $(R3D_PHASE1_TEST)
 
 $(ABI_CHECK_GCC): tools/radeon3d_abi_check.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
@@ -315,14 +292,6 @@ $(R3D_SESSIONS_TEST): tools/radeon3dsessions.c include/radeon3d.h \
 		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
 
 $(R3D_PHASE1_TEST): tools/radeon3dphase1.c include/radeon3d.h \
-		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
-		include/inline/radeon3d_protos.h
-	mkdir -p $(dir $@)
-	VBCC=$(VBCC_ROOT)/build PATH="$(VBCC_ROOT)/build/bin:$$PATH" \
-		vc +aos68k -c99 -O=1 -Iinclude -I$(P96_DIR)/PrivateInclude \
-		-I$(VBCC_INCLUDE) -I$(VBCC_NDK) $< -o $@
-
-$(R3D_FORMATS_TEST): tools/radeon3dformats.c include/radeon3d.h \
 		include/proto/radeon3d.h include/clib/radeon3d_protos.h \
 		include/inline/radeon3d_protos.h
 	mkdir -p $(dir $@)

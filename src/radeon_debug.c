@@ -595,54 +595,6 @@ void RadeonDebugBoardLock(struct BoardInfo *bi)
         ++DebugNode->Stats.BoardLockOwnedByOther;
 }
 
-void RadeonDebugExecutePhase(ULONG phase, ULONG start)
-{
-    struct RadeonDebugStats *stats;
-    ULONG elapsed;
-
-    if (!DebugNode)
-        return;
-    elapsed = Clock() - start;
-    stats = &DebugNode->Stats;
-    if (phase == RADEON_DEBUG_EXEC_COPY)
-        stats->ExecuteCopyTicks += elapsed;
-    else if (phase == RADEON_DEBUG_EXEC_BUILD)
-        stats->ExecuteBuildTicks += elapsed;
-    else if (phase == RADEON_DEBUG_EXEC_SUBMIT)
-        stats->ExecuteSubmitTicks += elapsed;
-}
-
-void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords)
-{
-    struct RadeonDebugStats *stats;
-
-    if (!DebugNode)
-        return;
-    stats = &DebugNode->Stats;
-    ++stats->ExecuteCalls;
-    stats->ExecuteRecordDwords += recordDwords;
-    stats->ExecuteGeneratedDwords += generatedDwords;
-}
-
-void RadeonDebugStateBatchFail(ULONG detail, ULONG draws, ULONG header,
-                               ULONG primitive)
-{
-    struct RadeonDebugStats *stats;
-
-    if (!DebugNode)
-        return;
-    stats = &DebugNode->Stats;
-    /* Record the first rejection only: the caller latches on it and later
-     * failures are consequences of the same wedge. */
-    if (!stats->StateBatchFailCount) {
-        stats->StateBatchFailStage = detail;
-        stats->StateBatchFailDraws = draws;
-        stats->StateBatchFailHeader = header;
-        stats->StateBatchFailPrim = primitive;
-    }
-    ++stats->StateBatchFailCount;
-}
-
 void RadeonDebugFallbackDrain(ULONG skipped)
 {
     if (!DebugNode)

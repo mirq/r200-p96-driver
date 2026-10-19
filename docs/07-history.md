@@ -58,6 +58,12 @@ timeline
 | 19 | fence coalescing | `NO_FENCE` + `SubmitFence` - **parked, not deployable** |
 | 20 | PPC engine lease | `AcquireLease`/`ReleaseLease`, `CAP_PPC_RING`, lease heartbeat, paced ring-wrap gate |
 
+The remove-semantic change (2026-10-19) withdrew the interface 2-16
+semantic record surface without issuing an interface 21: the record entry
+points became reserved LVO slots returning FALSE, the record capability
+bits (7-20, 22-24) are no longer advertised, and the client is a trusted
+cpemit producer on the indirect path.
+
 ## 2. Milestones
 
 ### 2.1 Bring-up (interfaces 1-2)
@@ -223,6 +229,43 @@ fixture moved to assert 20. Deployed 2026-10-19 together with the
 atom-reservation emitter (section 5); `radeon3dinfo` reports interface 20 on
 the reference machine.
 
+### 2.12 Semantic record path removed (2026-10-19, branch `remove-semantic`)
+
+Owner decision, backed by the multi-run comparisons in
+[`04-performance.md`](04-performance.md): the cpemit producer is the
+client, so the host-endian semantic record path goes. Removed:
+`Radeon3DExecute` (-96), `Radeon3DCommitDraw` (-120),
+`Radeon3DCommitBatch` (-126), `Radeon3DCommitStateBatch` (-132),
+`CommitRecords` and every validation/setup helper, the emit record
+consumers, the entire `src/radeon3d_emit.c` emitter (2431 lines), the
+`RADEON3D_EXEC_*` record ABI in `include/radeon3d.h`, the record
+capability bits (7-20, 22-24), and the DEBUG stats Execute/StateBatch
+attribution (stats block bumped to version 24). Kept: `Radeon3DSubmit`,
+`Radeon3DDispatchIndirect` + `Radeon3DSubmitFence` (interfaces 18/19,
+parked but present), fences, session/lease, and the aux/segment pools.
+The four removed LVO slots stay **reserved** so every later vector keeps
+its offset - the PPC cpemit client's inline stubs do not move. Accepted
+consequence (owner): classic 68k minigl.library clients lose the 3D path.
+
+Tools: `r3dreplay` reworked onto the cpemit submit path (three
+`Radeon3DSubmit` calls per frame: clear quad + two 252-vertex immediate
+triangle lists, prebuilt, paced drains) so per-call fail counts stay
+comparable with the historical `fail=N/6000` signature; `r3dformats`,
+`r3dstream`, `r3dtexupdate`, `r3dtexmatrix` and the CPU-only emitter
+benches/unit tests retired with the path. The vendored MiniGL consumer
+header was synced in the same change. Tool identities (host builds):
+`r3dreplay` `8013D744` (17,768 B), `r3dib` `2739CE58`, `radeon3dinfo`
+`8E8B8D5A`, debug chip `7E0E1CA4` (62,392 B).
+
+Hardware validation ran the same day on the reference 68060 (section 5
+row `D6C49D32`/`31D230C4`): the full docs/06 gate set passed, and the
+reworked replay ran four 6000-call floods (paced/unpaced, 16/32-bit
+screens) with zero failed submits. Still owed: the MiniGL-tree cpemit
+gears matrix + `InitPPC` (owner's separate consumer tree; its non-cpemit
+host paths still reference the removed entry points). Open follow-ups:
+the CP_STALL_POLLS budget experiment and the NO_FENCE re-test
+(section 3.1, section 4 item 6) now run through the reworked replay.
+
 ## 3. Parked and rejected work
 
 ### 3.1 Interface-19 fence coalescing (parked)
@@ -270,36 +313,24 @@ From the measured attribution (see
 [`04-performance.md`](04-performance.md)):
 
 1. ~~**Merge the commit-chain structural walk into the emitter.**~~
-   **Implemented 2026-10-19.** The emitter already validates every record as
-   it consumes (header fit, length bounds, opcode dispatch, exact chain
-   termination), so the pre-walk was removed. The count check it uniquely
-   owned moved into the consumption path: `CommitRecordCount` bounds every
-   `CommitDrawIndex` consume (emitter fail stage 21) and the service compares
-   the final count against `recordCount` before submission (the walk's
-   stage 5), so invalid chains still fail before anything reaches the CP.
-   Removes one complete cached-memory pass per commit.
+   **Implemented 2026-10-19** (0.40); **mooted by remove-semantic.** The
+   emitter already validated every record as it consumed it, so the pre-walk
+   was removed on `opts2`. The whole consumption path went with the record
+   path later the same day.
 2. ~~**Atom-level output reservation in the emitter.**~~ **Implemented
-   2026-10-19.** `ExecuteEmitRegister()`, the matrix/vector/scalar block
-   emitters and both per-vertex loops in `EmitExecuteVertices()` now reserve
-   capacity once per atom (`ExecuteEmitReserve()`/`ExecuteEmitCommit()`) and
-   write through a local cursor; `ExecuteEmitWord()` remains only for
-   odd-length single dwords. Byte-identical output confirmed by the fixture
-   CRC (`A8A11546`, 419 dwords) and the tex-matrix/tex-serial host gates;
-   vbcc `+warpos` PPC build compiles unchanged. Emitter bench on the physical
-   68060, three bridge runs, medians: 20-draw 102,339 -> 90,930 ticks
-   (-11.2%), 5-draw 60,499 -> 51,107 (-15.5%), 1-draw 43,886 -> 37,565
-   (-14.4%) (docs/04 section 7).
+   2026-10-19** (0.40); **mooted by remove-semantic** - the emitter was
+   deleted with the record path. Historical result: byte-identical output
+   (fixture CRC `A8A11546`), emitter bench medians -11.2%/-15.5%/-14.4% on
+   the physical 68060 (docs/04 section 7).
 3. **2D per-`RenderInfo` surface-layout cache.** `ValidateSurface()` recomputes
    format datatype, limits, pitch/address alignment and biases on every 2D
    callback. Layout is invariant per (board, memory, pitch, format, sizes,
    `FramebufferGpuBase`); key a cache on that, as `ValidateLineSurface()`
    already does. Highest-value item for small fills, glyphs and fragmented
    `ClipRect` workloads (the measured `p96overlap` text gap).
-4. **Single classified state comparison.** `EmitExecuteStateCached()` calls
-   `SameExecuteState()` and, on mismatch, `TextureOnlyDelta()`, re-comparing
-   most fields including all enabled light blocks. One comparison returning
-   `equal | texture-only | changed` cuts per-record build cost for multi-draw
-   streams with lighting.
+4. ~~**Single classified state comparison.**~~ **Mooted by remove-semantic:**
+   `EmitExecuteStateCached()`/`SameExecuteState()`/`TextureOnlyDelta()` were
+   emitter internals and are gone.
 5. **Fused 68060 CP ring kernel.** A hand-written kernel could load source
    dwords into `d0-d7`, swap in registers and issue one `movem.l` store. The
    prior movem work bought 13.9% of submit; expect a few percent, not 2x. The
@@ -311,10 +342,19 @@ From the measured attribution (see
    pattern), so a legitimately long GPU-bound frame or full ring delays
    submission instead of being treated as CP death; a truly stopped read
    pointer fails at a fifth of the old budget. The explicit "ring full,
-   retry later" return-to-client ABI remains open.
+   retry later" return-to-client ABI remains open. **Carried test debt:**
+   the first NO_FENCE cut failed the unpaced replay with the historical
+   signature (fail=5714/6000) and the suspected interaction is the 20k
+   no-progress budget vs long IMMD streaming stalls (old budget 100k).
+   Next step: restore the generous budget, then re-run the unpaced replay
+   and the NO_FENCE experiment on top - both through the reworked
+   submit-path `r3dreplay` (section 2.12), whose per-call fail counts stay
+   comparable with the historical signature.
 7. **PPC-resident private metadata.** The session/device structures and some
-   surface tables still live in PPC RAM on a WarpOS host; only the three
-   execute buffers were moved. The same placement policy could extend further.
+   surface tables still live in PPC RAM on a WarpOS host. The semantic-era
+   execute-buffer moves are gone with their buffers; the placement policy
+   (section 2.6, `AllocExecuteMemory`) remains the template for any future
+   driver-side allocation.
 8. **Texture-update allocation/coalescing.** Needs its dedicated workload and
    ownership proof.
 
@@ -332,6 +372,7 @@ From the measured attribution (see
 | 2026-10-19 | chip + card (opts2) | 80,756 / 7,796 | `7A542247` / `62926EE4` | CommitRecords pre-walk removal + progress-based ring waits (branch `opts2`, commits `05057ea`+`5f0d1b9`); deployed, cold boot clean, R3DINFO interface 20 probe ok. Prior pair kept as `.previous`. `Work:r3dopt/r3dreplay` staged (`3157D3AA`) for unpaced back-pressure validation. |
 | 2026-10-19 | chip (opts2 fix) | 80,800 | `CB892CFF` | amortized ring-wait sampling (commit `a49cd72`): the first cut's per-poll EClock reads regressed the semantic gears path 18-46% vs `main` (measured, docs/04 section 4.1); after the fix, single-sample parity (semantic 126.0/186.3/191.1, cpemit 194.8 vs main 125.0/189.9/194.8/188.7), cpemit +3.2%. `.previous` holds main `AD91B2F0`. |
 | 2026-10-19 | chip + card (release 0.40) | 80,800 / 7,796 | `CB892CFF` / `F3D56BF6` | opts2 released: CommitRecords pre-walk removal + progress-based ring waits (amortized sampling). The RADEON3D_SUBMIT_NO_FENCE experiment (commit `310cf48`) was reverted same-day (`fa459fb`): its first replay test failed with the historical unpaced signature (fail=5714/6000 fenced baseline) before the mode could be compared; the suspected interaction is the 20k-poll no-progress budget vs long IMMD streaming stalls (old budget 100k) - open item, next candidate fix is restoring the larger budget now that progress resets make it cheap. |
+| 2026-10-19 | chip + card (release 0.41, deployed) | 54,080 / 7,796 | `D6C49D32` / `31D230C4` | remove-semantic: record path, emitter and EXEC ABI removed; reserved LVO slots; lib revision 3.1. Deployed as the active pair over the bridge (CRC-verified pushes; prior unrecorded build `020266F6`/81,044 preserved as `.presession`, the 0.40 pair stays `.previous`). Cold boot clean - no recovery notes, RTG present. Validation on the reference machine: p96screen 8/16/32/8 readback-exact; r3dinfo iface 20 caps `7e20007f` (bits 0-6, 21, 25-30; every retired record bit clear); r3dphase1 ok (70 fenced 8192-dword ring-wrap submits, triangle readback, 3D->2D transition); r3dsessions ok (20k cycles, no leak, stale rejected); r3dib pass; reworked r3dreplay paced+unpaced 800x600 at 32-bit (offscreen RGB565 target) and 16-bit (screen target): 4 x 6000 calls, **fail=0** (223-227 FPS; the historical unpaced fail signature did not reproduce); p96overlap and p96windowmove normal; post-run R3DEXEC counters accumulate from Submit/Dispatch. Not yet run: the MiniGL-tree cpemit gears matrix + InitPPC (owner's separate consumer tree; its non-cpemit host paths still reference the removed entry points). |
 
 Matched cards used across these runs: `18A453D6` (known-good), `1DC1ABC0`
 (debug card). The card build embeds a date/time, so card CRCs change per

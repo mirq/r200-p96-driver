@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 23UL
+#define RADEON_DEBUG_VERSION 24UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -206,24 +206,11 @@ struct RadeonDebugStats {
     ULONG BlitRectProbeCalls;
     ULONG BlitRectProbeTicks;
     /*
-     * Version 18: Radeon3DExecute stage attribution. Build deliberately
-     * fuses validation and CP generation into one pass over the vertex
-     * data; separating them would add a second traversal of every record,
-     * which is exactly the cost the fused pass exists to avoid. Submit
-     * covers the ring write only; fence waits are not included.
-     */
-    ULONG ExecuteCalls;
-    ULONG ExecuteRecordDwords;
-    ULONG ExecuteGeneratedDwords;
-    ULONG ExecuteCopyTicks;
-    ULONG ExecuteBuildTicks;
-    ULONG ExecuteSubmitTicks;
-    /*
-     * Version 19: indirect-buffer bring-up probe, kernel r100_ib_test
-     * shape. The CP consumes an 8-dword IB whose second dword is a
-     * scratch-register write; the fence state, the CSQ indirect-queue
-     * pointers and the scratch readback separate "dispatch not accepted"
-     * from "accepted but never fetched" from "executed".
+     * Version 18 held Radeon3DExecute stage attribution (ExecuteCalls,
+     * ExecuteRecordDwords, ExecuteGeneratedDwords, ExecuteCopyTicks,
+     * ExecuteBuildTicks, ExecuteSubmitTicks); version 24 removed the
+     * fields together with the semantic record path. Versions 19-23
+     * follow, shifted up by the six removed longwords.
      */
     ULONG IbProbeRun;
     ULONG IbAllocSuccess;
@@ -264,23 +251,14 @@ struct RadeonDebugStats {
     ULONG Ib3FenceTicks;
     ULONG Ib3NextReady;
     ULONG Ib3CsqMode;
-    /*
-     * Version 23: StateBatch emitter rejection attribution. Commit stage 84
-     * collapses every content rejection of Radeon3DEmitDraw/VbufDraw into
-     * one value; these record the emitter's own FailStage (60-72 = target and
-     * geometry checks, 20+reason = texture rejects) plus the batch shape at
-     * the moment of the first failure.
-     */
-    ULONG StateBatchFailStage;  /* emitter->FailStage of the rejected draw */
-    ULONG StateBatchFailDraws;  /* request.DrawCount */
-    ULONG StateBatchFailHeader; /* request.HeaderDwords */
-    ULONG StateBatchFailPrim;   /* primitiveType */
-    ULONG StateBatchFailCount;  /* number of failures recorded */
+    /* Version 23 held StateBatch emitter rejection attribution
+     * (StateBatchFailStage/Draws/Header/Prim/Count); version 24 removed
+     * the fields together with the state-batch path. */
 };
 
-#define RADEON_DEBUG_STATS_V23_SIZE 808UL
-typedef char RadeonDebugStatsV23SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V23_SIZE ? 1 : -1];
+#define RADEON_DEBUG_STATS_V24_SIZE 764UL
+typedef char RadeonDebugStatsV24SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V24_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL
@@ -291,11 +269,6 @@ typedef char RadeonDebugStatsV23SizeCheck[
 #define RDEBUG_COMPLETE_SURFACE_SOFTWARE (1UL << 3)
 #define RDEBUG_COMPLETE_SURFACE_REJECT  (1UL << 4)
 #define RDEBUG_COMPLETE_ACCEL_UNAVAILABLE (1UL << 5)
-
-/* Shared by both build flavours: Radeon3DExecute stage selectors. */
-#define RADEON_DEBUG_EXEC_COPY    0UL
-#define RADEON_DEBUG_EXEC_BUILD   1UL
-#define RADEON_DEBUG_EXEC_SUBMIT  2UL
 
 struct RadeonDebugSample {
     ULONG Ticks;
@@ -339,10 +312,6 @@ void RadeonDebugCompletePhase(ULONG phase, ULONG start);
 void RadeonDebugBoardLock(struct BoardInfo *bi);
 void RadeonDebugFallbackDrain(ULONG skipped);
 void RadeonDebugFallbackProbe(struct BoardInfo *bi);
-void RadeonDebugExecutePhase(ULONG phase, ULONG start);
-void RadeonDebugExecuteSample(ULONG recordDwords, ULONG generatedDwords);
-void RadeonDebugStateBatchFail(ULONG detail, ULONG draws, ULONG header,
-                               ULONG primitive);
 
 #define RADEON_DEBUG_COMPLETE_VALIDATE 0UL
 #define RADEON_DEBUG_COMPLETE_SUBMIT   1UL
@@ -389,12 +358,6 @@ void RadeonDebugStateBatchFail(ULONG detail, ULONG draws, ULONG header,
 #define RDEBUG_BOARD_LOCK(bi) RadeonDebugBoardLock(bi)
 #define RDEBUG_FALLBACK_DRAIN(skipped) RadeonDebugFallbackDrain(skipped)
 #define RDEBUG_FALLBACK_PROBE(bi) RadeonDebugFallbackProbe(bi)
-#define RDEBUG_EXECUTE_PHASE(phase, start) \
-    RadeonDebugExecutePhase((phase), (start))
-#define RDEBUG_EXECUTE_SAMPLE(records, generated) \
-    RadeonDebugExecuteSample((records), (generated))
-#define RDEBUG_STATEBATCH_FAIL(detail, draws, header, prim) \
-    RadeonDebugStateBatchFail((detail), (draws), (header), (prim))
 
 #else
 
@@ -430,12 +393,6 @@ void RadeonDebugStateBatchFail(ULONG detail, ULONG draws, ULONG header,
 #define RDEBUG_BOARD_LOCK(bi) ((void)0)
 #define RDEBUG_FALLBACK_DRAIN(skipped) ((void)0)
 #define RDEBUG_FALLBACK_PROBE(bi) ((void)0)
-#define RDEBUG_EXECUTE_PHASE(phase, start) \
-    do { (void)(phase); (void)(start); } while (0)
-#define RDEBUG_EXECUTE_SAMPLE(records, generated) \
-    do { (void)(records); (void)(generated); } while (0)
-#define RDEBUG_STATEBATCH_FAIL(detail, draws, header, prim) \
-    do { (void)(detail); (void)(draws); (void)(header); (void)(prim); } while (0)
 
 #endif
 

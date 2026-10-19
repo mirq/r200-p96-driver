@@ -83,9 +83,11 @@ methodology and artifact identities are in
 | Framebuffer aperture dword write | 0.61 us | ~30 |
 | `HOST_DATA0` register dword write | 1.33 us | ~66 |
 | Byte-swapped VRAM dword store | 0.752 us | ~38 |
-| CPU-only emitter loop, 20-draw stream, local Fast RAM | 36 us/draw | ~1,800/draw |
-| Same loop with the buffers in PPC RAM | 125 us/draw | ~6,240/draw (3.46x) |
 | Fenced submission (full GPU idle drain + cache flush) | milliseconds | - |
+
+(The semantic-era emitter cost rows were retired with the record path;
+the historical numbers remain in
+[`04-performance.md`](04-performance.md).)
 
 Implications: a call's fixed cost is dominated by the fence drain, not by
 dword count, so one frame should use a few large submissions; crossing the PCI
@@ -97,10 +99,15 @@ cost by roughly 3.5-4.8x.
 
 | Entry point | What the service validates | Trust required |
 |---|---|---|
-| `Radeon3DExecute` | Every semantic record, surface, format, extent, float, alias, option bit, exact length | Untrusted |
-| `Radeon3DCommitDraw` / `Radeon3DCommitBatch` / `Radeon3DCommitStateBatch` | Record structure, offsets, segment leases, state | Untrusted records, trusted segment bytes (they become GPU vertices) |
 | `Radeon3DSubmit` | Only the fixed immediate triangle-list stream (interface 1 contract) | Bounded, effectively trusted |
 | `Radeon3DDispatchIndirect` | Only the *extent* of a segment range; **packet contents are not inspected** | Fully trusted producer; see the warning below |
+
+The historical semantic record entry points (`Radeon3DExecute`,
+`Radeon3DCommitDraw`, `Radeon3DCommitBatch`, `Radeon3DCommitStateBatch`)
+were removed with the record path: their LVO slots are reserved and call
+into a stub that returns FALSE. A client that emits its own CP packets is
+the trusted producer and uses the indirect path (or, under lease, writes
+the ring directly).
 
 `Radeon3DDispatchIndirect()` is the only raw-packet path. It does not sandbox
 packets: a malformed stream can corrupt the desktop, wedge the CP, or hang the
@@ -221,17 +228,21 @@ width/height and a format. Two ways to obtain one:
 
 ### 3.3 Role rules
 
-Color, depth and texture roles are checked by complete VRAM address range, not
-by handle identity:
+With the semantic record path gone, the service no longer inspects how a
+surface is used - role rules (color/depth/texture overlap, dimensions,
+pitch classes) were emitter policy and are now the trusted producer's
+responsibility. The physical constraints that made the rules still hold
+and a producer must respect them:
 
-- depth must be a distinct, non-overlapping surface with the same dimensions
-  as color;
-- depth writes require `RADEON3D_DRAW_DEPTH_LESS` and a representable D16
-  pitch;
-- textures are non-overlapping RGB565 or B8G8R8A8, at most 2048x2048, with a
-  32-byte-aligned address and representable NPOT pitch;
-- the same surface may be sampled by both texture units;
-- distinct textures must not partially overlap.
+- depth must be a distinct, non-overlapping surface with the same
+  dimensions as color (allocate it from the aux pool, never a screen
+  buffer);
+- depth is D16 in an R5G6B5PC-format surface with a pitch that is a whole
+  number of 64-pixel tile pairs (128 bytes);
+- textures are non-overlapping RGB565 or B8G8R8A8, at most 2048x2048,
+  with a 32-byte-aligned address;
+- the same surface may be sampled by both texture units; distinct
+  textures must not partially overlap.
 
 ## 4. Streaming segments
 
@@ -253,150 +264,64 @@ Up to 12 segments of at most 256 KiB each (`RADEON3D_MAX_SEGMENTS`,
 
 Segment rules for PPC producers:
 
-1. **Alignment.** Vertex offsets used in commits must be 4-byte aligned.
-   `ByteOffset` in indirect dispatch must be 16-byte aligned.
+1. **Alignment.** `ByteOffset` in an indirect dispatch must be 16-byte
+   aligned.
 2. **Endianness.** Segment data is *GPU data*, not host-endian records. The
-   hardware fetches little-endian dwords. A PPC (big-endian) producer must
-   byte-swap every dword before storing it. The 68k inline path hides this
-   inside the ring writer; streaming does not. For a TCL vertex dword that
-   holds IEEE-754 floats, the correct operation is a full 32-bit byte swap of
-   the float bit pattern (equivalent to `SWAPLONG`).
+   CP and the VAP fetch little-endian dwords. A PPC (big-endian) producer
+   must byte-swap every dword before storing it (equivalent to `SWAPLONG`);
+   the driver's own ring writer pre-swaps in software, and the PPC ring
+   writer uses `stwbrx`. For a TCL vertex dword that holds IEEE-754 floats,
+   the correct operation is a full 32-bit byte swap of the float bit
+   pattern.
 3. **Cache.** Flush the PPC data cache over the written range before the
-   submission call that consumes it. The GPU reads VRAM through PCI, not the
+   dispatch call that consumes it. The GPU reads VRAM through PCI, not the
    PPC cache. On WarpOS this is `CacheClearE(address, length,
    CACRF_ClearD)` or equivalent; the exact API depends on your runtime.
    Missing this produces stale vertices that "work" until the cache line is
    evicted, which is the worst kind of intermittent bug.
 4. **Lifetime.** Do not free or rewrite a segment range until the fence of the
-   submission that references it has retired. Segments are freed
+   dispatch that references it has retired. Segments are freed
    automatically when the device closes.
 5. **Ordering with CPU texture writes.** CPU-written texture data must be
-   completed before the draw that samples it; the service drains the final
-   texture byte before submitting texture fetches, but the producer is
-   responsible for its own cache flush.
+   completed before the draw that samples it; the producer is responsible
+   for its own cache flush.
 
 ```mermaid
 flowchart LR
-    A["PPC producer"] -->|"1. byte-swap"| B["segment CpuAddress<br/>little-endian GPU data"]
-    B -->|"2. cache flush"| C["Radeon3DCommitBatch<br/>headers + offsets"]
-    C -->|"3. emitter"| D["CP ring<br/>vertex-fetch draw"]
-    D -->|"4. VAP fetch"| E["vertices at<br/>GpuAddress + OffsetBytes"]
+    A["PPC producer"] -->|"1. build + byte-swap"| B["segment CpuAddress<br/>CP-native IB"]
+    B -->|"2. cache flush"| C["Radeon3DDispatchIndirect<br/>extent check"]
+    C -->|"3. CP_IB_BASE kick"| D["CP fetches the IB<br/>from GpuAddress + ByteOffset"]
+    D -->|"4. packets execute"| E["registers / draws /<br/>VAP vertex fetch"]
     B -.-> E
 ```
 
 ## 5. The submission paths
 
-Use the cheapest path that can express your work:
+The semantic record path (Execute / CommitDraw / CommitBatch /
+CommitStateBatch) was removed: a cpemit producer - the PPC host emitting
+CP-native dwords - is the client. Two bounded entry points and the fence
+machinery remain:
 
 | Path | Interface | Input | Best for |
 |---|---|---|---|
-| `Radeon3DExecute` | 2+ | Host-endian semantic records | Clears, state changes, moderate geometry, easy correctness |
-| `Radeon3DCommitDraw` | 13+ | One header-only draw + segment vertex offset | One large draw |
-| `Radeon3DCommitBatch` | 13+ | Chain of header-only draws + offsets | Many draws of one geometry stream (the normal streaming path) |
-| `Radeon3DCommitStateBatch` | 15+ | One TCL header + N `{offset,count}` descriptors | Many draws sharing one state block |
-| `Radeon3DSubmit` | 1 | Fixed immediate triangle list / PACKET2 | Legacy smoke tests only |
-| `Radeon3DDispatchIndirect` | 18+ | Pre-swapped CP packets in a segment | Trusted producer that emits its own R200 packets |
+| `Radeon3DSubmit` | 1 | Fixed immediate triangle list / PACKET2 | Bounded inline probes and the back-pressure replay tool |
+| `Radeon3DDispatchIndirect` | 18+ | Pre-swapped CP packets in a segment | Trusted producer that emits its own R200 packets (the cpemit client path) |
 | `Radeon3DSubmitFence` | 19+ | nothing | Closing a run of fence-less indirect dispatches (parked; see below) |
 
 ```mermaid
 flowchart TD
     W["What are you submitting?"] --> Q1{"Trusted producer with<br/>its own CP packets?"}
     Q1 -->|yes| IB["Radeon3DDispatchIndirect<br/>interface 18+"]
-    Q1 -->|no| Q2{"Vertices already in a<br/>streaming segment?"}
-    Q2 -->|yes| Q3{"One state block,<br/>many draws?"}
-    Q3 -->|yes| SB["Radeon3DCommitStateBatch<br/>interface 15+"]
-    Q3 -->|no| CB["Radeon3DCommitBatch<br/>interface 13+"]
-    Q2 -->|no| Q4{"Legacy fixed immediate<br/>triangle list?"}
+    Q1 -->|no| Q4{"Bounded inline triangle<br/>list or PACKET2 no-op?"}
     Q4 -->|yes| SUB["Radeon3DSubmit<br/>interface 1"]
-    Q4 -->|no| EX["Radeon3DExecute<br/>semantic records"]
+    Q4 -->|no| NONE["no service path fits:<br/>the producer must emit CP dwords"]
 ```
 
-### 5.1 Semantic records - `Radeon3DExecute()`
+The four retired record entry points return FALSE from reserved LVO slots;
+an unported consumer fails closed instead of rendering through a removed
+path.
 
-The record stream is host-endian and self-contained: each record starts with
-`{opcode, length}` and carries opaque surface handles. The emitter validates
-and consumes it in one pass; the calling task is blocked for the duration, so
-the service reads your buffer directly. Keep the record buffer alive for the
-call only.
-
-Typical frame:
-
-```c
-ULONG records[...];
-ULONG *p = records;
-/* clear color+depth */
-*p++ = RADEON3D_EXEC_CLEAR; *p++ = RADEON3D_EXEC_CLEAR_DWORDS;
-*p++ = (ULONG)colorSurface.Handle;
-*p++ = (ULONG)depthSurface.Handle;
-*p++ = RADEON3D_CLEAR_COLOR | RADEON3D_CLEAR_DEPTH;
-*p++ = 0xff203040UL;                 /* packed RGBA */
-*p++ = 0x3f800000UL;                 /* depth 1.0f */
-*p++ = 0; *p++ = 0; *p++ = width; *p++ = height;
-/* draw ... */
-ULONG fence;
-if (!Radeon3DExecute(dev, records, (ULONG)(p - records),
-                     RADEON3D_SUBMIT_FENCE, &fence))
-    /* failure: check info.CommitFailStage and the fence error encoding */;
-```
-
-The record layouts for every opcode are specified in
-[`02-service-abi-reference.md`](02-service-abi-reference.md#10-semantic-record-formats).
-
-### 5.2 Streaming commits - `Radeon3DCommitBatch()`
-
-The client writes vertices into a segment and submits a chain of *header-only*
-draw records. Each record's header is the ordinary HW-TCL draw header
-(`RADEON3D_EXEC_DRAW_HW_TCL_HEADER_DWORDS` = 44 dwords), and its `dword[10]`
-holds the real vertex count; the vertices are fetched from the segment by the
-hardware, not carried in the record.
-
-```c
-ULONG offsets[N];                 /* per-record byte offset into the segment */
-struct Radeon3DCommitBatch batch;
-batch.Size = sizeof(batch);
-batch.Version = RADEON3D_COMMIT_BATCH_VERSION;
-batch.SegmentId = seg.Id;
-batch.Records = headers;          /* linked by dword[1] length fields */
-batch.RecordDwords = headerDwords;
-batch.VertexOffsets = offsets;
-batch.RecordCount = n;
-batch.Flags = RADEON3D_SUBMIT_FENCE;
-ULONG fence;
-BOOL ok = Radeon3DCommitBatch(dev, &batch, &fence);
-```
-
-The service walks the chain once to verify structure and count, then re-emits
-state only where it changed between records (`COMMIT_STATE_REUSE`, interface
-14+). The header you submit is *not* copied for commits - it is read directly,
-like `Execute` records.
-
-### 5.3 State batches - `Radeon3DCommitStateBatch()`
-
-When many draws share one state block (same texture, matrices, scissor,
-options) and differ only in vertex offset and count, this is the least
-expensive semantic path: the service copies the header and descriptor array
-once, emits the full state from the first descriptor, and then only emits
-vertex-fetch draws for the rest.
-
-```c
-struct Radeon3DStateBatchDraw draws[192];
-struct Radeon3DStateBatch batch;
-batch.Size = sizeof(batch);
-batch.Version = RADEON3D_STATE_BATCH_VERSION;
-batch.Generation = info.Generation;      /* must match the live service */
-batch.SegmentId = seg.Id;
-batch.Primitive = RADEON3D_EXEC_DRAW_QUADS;   /* or TRIANGLES/STRIP/FAN/... */
-batch.Header = tclHeader;                     /* 44+ dwords, complete state */
-batch.HeaderDwords = headerDwords;
-batch.Draws = draws;
-batch.DrawCount = n;                          /* <= 192 */
-batch.Flags = RADEON3D_SUBMIT_FENCE;
-```
-
-The `Generation` field is the only place a client is asked to echo service
-generation explicitly; it catches a stale session before any state is emitted.
-
-### 5.4 Trusted indirect dispatch - `Radeon3DDispatchIndirect()`
+### 5.1 Trusted indirect dispatch - `Radeon3DDispatchIndirect()`
 
 The client builds a complete **CP-native** packet stream (pre-byte-swapped for
 the little-endian register bus) into a segment and dispatches a range:
@@ -434,11 +359,15 @@ the older fetch/fence smoke path.
 > a silent submission stall. See
 > [`07-history.md`](07-history.md#31-interface-19-fence-coalescing-parked).
 
-### 5.5 Legacy - `Radeon3DSubmit()`
+### 5.2 Bounded inline submits - `Radeon3DSubmit()`
 
 Interface-1 clients may submit either an all-PACKET2 no-op batch or the fixed
-22-register immediate triangle-list stream. It exists for bring-up probes and
-must not be used for new work. Require `RADEON3D_CAP_IMMD_TRI_LIST`.
+22-register immediate triangle-list stream (RGB565 target, screen-space
+vertices, at most 255 vertices per call; exact layout in
+[`02-service-abi-reference.md`](02-service-abi-reference.md#9-bounded-inline-immediate-triangle-list)).
+It cannot express texture, TCL or depth - those belong in a producer's
+indirect buffers. `r3dreplay` drives it as the standing back-pressure
+regression workload. Require `RADEON3D_CAP_IMMD_TRI_LIST`.
 
 ## 6. Fences
 
@@ -468,9 +397,9 @@ Recommended client pattern (double-buffered geometry):
 ```text
 for each frame:
     if (segment slot in use && !TestFence(dev, slot.fence))
-        skip/steal slot (never overwrite in-flight vertices)
-    build records / vertices into the free slot
-    submit with FENCE, store the returned token in the slot
+        skip/steal slot (never overwrite in-flight indirect buffers)
+    build the CP-native IB into the free slot, flush cache
+    dispatch with FENCE, store the returned token in the slot
 ```
 
 Do not hold a wait in the middle of the frame unless the buffer is genuinely
@@ -480,12 +409,12 @@ needed; use the test-first pattern above to keep the GPU fed.
 
 | Concern | Rule |
 |---|---|
-| Record/commit structures | Host-endian (big-endian on both CPUs). No conversion. |
+| Submit/indirect descriptors | Host-endian (big-endian on both CPUs). No conversion. |
 | CP-native indirect buffers | Little-endian dwords; producer byte-swaps once. |
 | Segment vertex data | Little-endian GPU data; PPC producer byte-swaps floats/dwords. |
-| PPC cache | Flush written segment ranges before dispatch/commit. |
+| PPC cache | Flush written segment ranges before dispatch. |
 | 68k working buffers | The driver prefers local Fast RAM for its own working buffers (`MEMF_LOCAL` + `TypeOfMem` FAST check). Keep client-side staging out of PPC RAM if a 68k host will read it. |
-| Alignment | Commits: 4-byte vertex offsets. Indirect: 16-byte offsets. Textures: 32-byte aligned. |
+| Alignment | Indirect: 16-byte offsets. Textures: 32-byte aligned. |
 | Size | One call <= 8192 dwords total input. `MaxBatchDwords` is authoritative. |
 | Lifetime | Bitmaps until `ReleaseSurface`; segments until fence retirement; session until `Radeon3DClose`. |
 
@@ -496,7 +425,7 @@ working buffers out of PPC RAM raised a 600-frame gears median from 44.3 to
 
 ## 8. Worked integration sequence
 
-A frame in the streaming shape, from the client's point of view:
+A frame in the cpemit shape, from the client's point of view:
 
 ```mermaid
 sequenceDiagram
@@ -505,12 +434,14 @@ sequenceDiagram
     participant SVC as Radeon3D service
     participant CP as R200 CP + GPU
 
-    PPC->>SVC: Radeon3DExecute(clear records, FENCE)
+    PPC->>SVC: Radeon3DSubmit(no-op PACKET2, FENCE) - CP health probe
     SVC->>CP: ring submit + fence tail
-    PPC->>PPC: write TCL vertices into free segment
+    PPC->>PPC: build CP-native clear IB + draw IBs in free segments
     Note over PPC: byte-swap dwords, flush data cache
-    PPC->>SVC: Radeon3DCommitBatch(headers + offsets, FENCE)
-    SVC->>CP: vertex-fetch draw stream + fence tail
+    PPC->>SVC: Radeon3DDispatchIndirect(clear IB, FENCE)
+    SVC->>CP: CP_IB_BASE kick + fence tail
+    PPC->>SVC: Radeon3DDispatchIndirect(draw IBs)
+    SVC->>CP: CP_IB_BASE kicks
     PPC->>PPC: present frame
     PPC->>SVC: Radeon3DTestFence(slot fence)
     SVC->>CP: read SCRATCH_REG0
@@ -523,27 +454,25 @@ MGLInit / driver start:
     base = OpenLibrary("Radeon9200.chip", 3)
     info.Size = sizeof(info)
     dev  = Radeon3DOpen(RADEON3D_IFACE_VERSION, &info)
-    require CAP_CP_READY, CAP_BITMAP_IMPORT, CAP_PHASE2_EXECUTE
-    for streaming: require CAP_STREAM_SEGMENTS
+    require CAP_CP_READY, CAP_BITMAP_IMPORT
     for indirect:  require CAP_INDIRECT_DISPATCH + CAP_INDIRECT_RENDER
+                   + CAP_STREAM_SEGMENTS
 
 context creation:
     color = ImportBitMap(window/screen buffer)   or AllocSurface(...)
     depth = AllocSurface(w, h, R5G6B5PC)         (aux pool)
-    if streaming: AllocSegment(256 KiB) x N
+    AllocSegment(256 KiB) x N                    (IB + vertex storage)
 
 texture upload:
     import a P96 texture bitmap (or aux surface)
     write texels (CPU), flush cache
-    Execute a record that binds it with RADEON3D_TEX_CONTENT_* serial
+    the producer's next IB programs the texture unit state itself
 
 frame:
-    Execute  clear record (color [+depth])
-    if streaming:
-        write TCL vertices into free segment slot, flush cache
-        CommitBatch(header-only draw chain + offsets, FENCE)
-    else:
-        Execute  semantic draw records (FENCE)
+    build CP-native clear IB + draw IBs in free segment slots
+    (byte-swap every dword, flush the data cache)
+    DispatchIndirect(clear IB, FENCE)
+    DispatchIndirect(draw IBs)
     present via the normal window/screen-buffer mechanism
     optionally TestFence before reusing a slot
 
@@ -564,10 +493,14 @@ shutdown:
   GPU time; batch first, wait once per frame or per buffer rotation.
 - **Not flushing the PPC cache over segment writes.** Intermittent stale
   geometry; the classic symptom is "works until memory pressure".
-- **Writing host-endian floats into a segment.** The vertex fetcher is
-  little-endian; swapped floats produce garbage triangles or CP stalls.
+- **Writing host-endian dwords into a segment.** The CP and the vertex
+  fetcher are little-endian; unswapped dwords produce garbage packets,
+  triangles or CP stalls.
 - **Reusing a segment range before its fence retires.** Corruption that looks
   like a driver bug.
+- **Calling a removed record entry point.** `Radeon3DExecute` and the three
+  commit calls sit on reserved LVO slots and return FALSE; port the producer
+  to indirect dispatch instead of retrying.
 - **Requiring interface 19 features.** The shipped/deployed driver may be
   older, and the fence-coalescing path is parked. Negotiate and degrade.
 - **Mixing depth into a P96 screen buffer.** Always allocate depth through
@@ -604,7 +537,7 @@ designed).
 **Automatic fallback**: without `RADEON3D_CAP_PPC_RING`, or whenever
 `Radeon3DAcquireLease` returns FALSE (busy lease, refused grant, or a
 `make PPCRING=0` fallback-only driver), the consumer uses the existing
-bounded paths (`Radeon3DExecute` / commits / indirect dispatch) unchanged -
+bounded paths (`Radeon3DSubmit` / indirect dispatch) unchanged -
 the old behavior is the built-in fallback, no configuration needed. The
 lease is optional and additive; never require it in production code without
 a working fallback path.

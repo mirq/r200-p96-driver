@@ -8,7 +8,7 @@
 #include "radeon9200.h"
 
 #define LIB_VERSION 3
-#define LIB_REVISION 0
+#define LIB_REVISION 1
 
 #define USED __attribute__((used))
 
@@ -23,9 +23,9 @@
  */
 static const char LibName[] = "Radeon9200.chip";
 static const char LibIdString[] =
-    "Radeon9200.chip 3.0 (2.9.2026)\r\n";
+    "Radeon9200.chip 3.1 (19.10.2026)\r\n";
 static const char VerTag[] USED =
-    "\0$VER: Radeon9200.chip 3.0 (2.9.2026)";
+    "\0$VER: Radeon9200.chip 3.1 (19.10.2026)";
 
 struct Library *PrometheusBase;
 
@@ -55,13 +55,18 @@ static APTR FunctionTable[] USED = {
     (APTR)Radeon3DWaitFence,
     (APTR)Radeon3DImportBitMap,
     (APTR)Radeon3DReleaseSurface,
-    (APTR)Radeon3DExecute,
+    /* The semantic record entry points (Radeon3DExecute at -96,
+     * Radeon3DCommitDraw at -120, Radeon3DCommitBatch at -126,
+     * Radeon3DCommitStateBatch at -132) were removed with the record
+     * path. Their LVO slots stay reserved -- the vectors below must not
+     * shift, they are the live cpemit/indirect/lease client interface. */
+    (APTR)LibReserved,
     (APTR)Radeon3DInvalidateForTest,
     (APTR)Radeon3DAllocSegment,
     (APTR)Radeon3DFreeSegment,
-    (APTR)Radeon3DCommitDraw,
-    (APTR)Radeon3DCommitBatch,
-    (APTR)Radeon3DCommitStateBatch,
+    (APTR)LibReserved,
+    (APTR)LibReserved,
+    (APTR)LibReserved,
     (APTR)Radeon3DAllocSurface,
     (APTR)Radeon3DDispatchIndirect,
     (APTR)Radeon3DSubmitFence,

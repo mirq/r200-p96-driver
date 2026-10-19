@@ -25,11 +25,9 @@ and the resident data remain in the first code hunk.
 make clean && make          # release chip + card
 make tools                  # p96screen, p96overlap, p96windowmove, rtgpresent
 make abi-check              # GCC + vbcc ABI layout fixtures
-make r3d-tools              # radeon3dinfo, radeon3dsessions, radeon3dphase1, radeon3dformats
+make r3d-tools              # radeon3dinfo, radeon3dsessions, radeon3dphase1
 make vramstream             # segment write throughput probe
-make r3dstream              # streaming commit probe (vbcc)
-make r3dreplay              # pre-serialized ceiling benchmark (vbcc)
-make r3dtexupdate           # texture visibility gate
+make r3dreplay              # submit-path back-pressure benchmark (vbcc)
 make r3dib                  # trusted indirect dispatch gate
 ```
 
@@ -259,5 +257,5 @@ Switch both monitor ToolTypes before a cold reboot (`BOARDTYPE=Prometheus`,
 Record for every run: git commit, dirty state, artifact sizes and hashes,
 compile-time configuration, CPU/bridge/board/VRAM/ROM, ToolTypes, mode and
 cold/warm state. The chip's `lib_IdString` is
-`Radeon9200.chip 3.0 (2.9.2026)`; the Radeon3D interface number comes from
+`Radeon9200.chip 3.1 (19.10.2026)`; the Radeon3D interface number comes from
 `Radeon3DInfo.Version`, not from the library version.

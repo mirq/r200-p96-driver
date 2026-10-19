@@ -33,26 +33,24 @@ If the library itself does not open, remember it is opened by resident name
 load for Picasso96 (which loads by path) but will break every client that opens
 the name - including `minigl.library`.
 
-## 2. Commit and submission failure stages
+## 2. Submission failure stages
 
-Failed calls write `0x80000000 | stage` (or `0x80000000 | (group << 16) |
-stage`) to `fenceOut`; the most recent commit stage is also in
-`Radeon3DInfo.CommitFailStage`. The stage tables are in
-[`02-service-abi-reference.md`](02-service-abi-reference.md#12-fence-and-error-semantics).
+Failed indirect/lease calls write `0x80000000 | stage` to `fenceOut`; the
+most recent stage is also in `Radeon3DInfo.CommitFailStage`. The stage
+tables are in
+[`02-service-abi-reference.md`](02-service-abi-reference.md#10-fence-and-error-semantics).
 Quick interpretation:
 
 | Stage | Meaning | Usual fix |
 |---:|---|---|
-| 1-2 | malformed call / interface too old / working buffers unavailable | check `Size`, flags, interface negotiation; a commit before the first Execute allocates buffers automatically, so 2 means allocation failure |
-| 3-5 | record chain structure, unexpected record type, count mismatch | ensure every record's `dword[1]` is correct and `RecordCount` matches the number of draw records; clears consume no vertex offset |
-| 6-7 | emitter rejected a record or `RadeonPrepare3D` failed | inspect `StateBatchFail*` in a DEBUG build; check floats/state enums/aliases |
-| 8 | ring submit failed | CP problem or ring-full timeout; see section 4 |
-| 40-44 | batch wrapper/segment/offset validation | check `SegmentId`, live lease, `VertexOffsets` range |
-| 80-86 | state batch wrapper/copy/descriptor/emitter/submit | `Generation` must equal the live service generation |
 | 100-108 | indirect descriptor/session/segment/range/prepare/stale | check alignment 16, even count, lease extent; 107/108 mean prepare recovered and invalidated the session |
 | 110-116 | `Radeon3DSubmitFence` (parked feature) | do not use on a non-interface-19 driver |
+| 120-125 | engine lease | 121 means the session negotiated below interface 20; 122 means a lease is already held |
 
-`CommitFailStage` is overwritten by each commit attempt, and the indirect path
+(The semantic commit-path stages 1-8, 40-44 and 80-86 were removed with
+the record path.)
+
+`CommitFailStage` is overwritten by each submission attempt, and the indirect path
 uses it to carry a diagnostic trail (`0xc5000000 | mode<<16 | endian<<8 |
 wptr`), so read it immediately after the failure.
 
@@ -60,14 +58,14 @@ wptr`), so read it immediately after the failure.
 
 | Symptom | Likely cause |
 |---|---|
-| Geometry flickers or shows stale vertices, "works until memory pressure" | PPC producer did not flush its data cache over the segment range before commit/dispatch |
-| Garbage triangles, CP stall after a streaming commit | Vertex data written host-endian; the vertex fetcher is little-endian. Byte-swap floats/dwords in the producer |
-| Textured surface never updates after an in-place rewrite | This RV280's texture cache does not re-read rewritten lines at the same address. Bump `RADEON3D_TEX_CONTENT_*` in `textureState` or re-import residency at a fresh address (the MiniGL frontend does the latter) |
+| Geometry flickers or shows stale vertices, "works until memory pressure" | PPC producer did not flush its data cache over the segment range before dispatch |
+| Garbage triangles, CP stall after an indirect dispatch | IB dwords written host-endian; the CP fetches little-endian. Byte-swap every dword in the producer |
 | Whole-screen corruption or wedge after an indirect dispatch | The indirect stream is trusted raw packets; a malformed stream can corrupt VRAM/registers. Recover, then compare against a validated stream. Extent checks do not sandbox packet effects |
-| Black boxes / wrong clear rectangles behind HUD or icons | Depth-only clears relied on `RB3D_PLANEMASK` alone; the 6-vertex clear quad painted the clear colour over the rectangle. The working tree fixes this with a no-op blend (src ZERO, dst ONE) plus a forced clear-state re-emission - commit it before releasing |
-| Second object drawn with the previous object's transform | Historical texture-only state promotion bug (fixed by keeping matrix uploads on the common path). If it reappears, check `EmitExecuteStateCached`/`TextureOnlyDelta` ordering |
-| Lit pixels identical to unlit | TCL lighting enabled without `R200_OUTPUT_COLOR_0` (historical fix). Verify the emitted TCL output component select |
-| Quake-style per-face draws extremely slow | Draw-bound: per-draw state re-emission, not vertex transport. Batch state with `CommitStateBatch`/reuse records |
+
+(The semantic-era rows - texture-cache content serials, clear rectangles,
+state promotion, lighting and per-face batch advice - described the removed
+record path; historical fixes remain recorded in
+[`07-history.md`](07-history.md).)
 
 ## 4. Fences, timeouts and recovery
 

@@ -18,21 +18,24 @@ Picasso96 as `LIBS:Picasso96/Radeon9200.chip`. It owns the card:
 - For 3D it initializes the R200 command processor (CP), keeps a 1 MiB ring in
   private VRAM, and exposes the **Radeon3D service** through library vectors.
 
-The service is bounded and semantic. A client submits either host-endian
-*semantic records* (clear, draw, state) or *streaming commits* whose vertices
-live in a service-owned VRAM segment. The driver validates the input, the
-dual-target emitter (`src/radeon3d_emit.c`) turns it into an R200 command
-stream, and the CP executes it. Every submission is retired by a *fence*; a
-failed submit runs bounded recovery (invalidate sessions, reset the engine,
-reload and self-test the CP).
+The service is bounded. A trusted producer builds CP-native R200 packet
+streams in leased VRAM segments and dispatches them with
+`Radeon3DDispatchIndirect`; the bounded `Radeon3DSubmit` path carries the
+fixed immediate triangle list and PACKET2 no-ops. The service extent-checks
+each dispatch, the CP executes it, and every submission is retired by a
+*fence*; a failed submit runs bounded recovery (invalidate sessions, reset
+the engine, reload and self-test the CP). The historical host-endian
+semantic record path (Execute / CommitDraw / CommitBatch /
+CommitStateBatch) was removed in the 0.41 remove-semantic change; its LVO
+slots are reserved and return FALSE.
 
-**PPC/WarpOS clients never touch PCI, MMIO, the CP ring or VRAM allocation.**
-They open `Radeon9200.chip` by name, open a Radeon3D session, import or
-allocate surfaces, write vertices into leased segments (byte-swapped and
-cache-flushed), and submit through `Radeon3DExecute` /
-`Radeon3DCommitBatch` / `Radeon3DCommitStateBatch` (or the trusted
-`Radeon3DDispatchIndirect` packet path). The MiniGL WarpOS frontend reaches
-the 68k service through an Exec message-port host; native 68k clients call the
+**PPC/WarpOS clients never touch PCI, MMIO, the CP ring or VRAM allocation**
+unless they hold the interface-20 engine lease. They open `Radeon9200.chip`
+by name, open a Radeon3D session, import or allocate surfaces, write
+CP-native indirect buffers into leased segments (byte-swapped and
+cache-flushed), and submit through `Radeon3DDispatchIndirect` (or the
+bounded `Radeon3DSubmit` path). The MiniGL WarpOS frontend reaches the 68k
+service through an Exec message-port host; native 68k clients call the
 vectors directly.
 
 ```mermaid
@@ -42,7 +45,7 @@ flowchart LR
         MGL --> HOSTPROC["68k host process"]
     end
     subgraph HOSTCPU["68060 host"]
-        LIB["Radeon9200.chip<br/>Radeon3D service + emitter"]
+        LIB["Radeon9200.chip<br/>Radeon3D service"]
         CP["CP ring 1 MiB"]
         ACCEL["Picasso96 2D<br/>direct MMIO"]
         LIB --> CP
@@ -111,13 +114,15 @@ Implemented display and 2D features:
 Implemented Radeon3D features (interface-gated, see
 [`docs/02-service-abi-reference.md`](docs/02-service-abi-reference.md)):
 
-- Bounded semantic records: clears, triangles, strips, fans, quads, points,
-  lines; RGB565/BGRA/CLUT8 targets; textures with mipmaps, wrap, filters,
-  alpha test and blending; fog and two texture units.
-- Hardware transform/clip, texgen (object-linear and sphere-map), per-vertex
-  normals and fixed-function lighting.
-- Streaming segments and header-only vertex-fetch commits; homogeneous state
-  batches and reuse records.
+- Bounded immediate triangle-list submits (`Radeon3DSubmit`) and PACKET2
+  no-op batches.
+- Trusted CP-native indirect dispatch (`Radeon3DDispatchIndirect`) from
+  leased streaming segments - the cpemit client path.
+- Interface-20 PPC engine lease: direct PPC ring writes with 2D fallback
+  and dead-client reclaim.
+- Aux surfaces (private-pool color/depth), bitmap import, fences with
+  multi-fence range validation, and interface-19 fence coalescing
+  (parked).
 - Trusted indirect CP packet dispatch for validated producers.
 - Session generations, ordered commits, ranged fences, per-submission timing
   telemetry and recovery.
@@ -178,9 +183,9 @@ p96screen [8|16|32] [seconds] [test]
 ```
 
 Run the complete `8/16/32/8` sequence before accepting a build. 3D service
-probes (`radeon3dinfo`, `radeon3dsessions`, `radeon3dphase1`,
-`radeon3dformats`, `r3dreplay`, `r3dib`, `r3dtexupdate`) and the benchmark
-procedures are listed in [`docs/06-testing.md`](docs/06-testing.md).
+probes (`radeon3dinfo`, `radeon3dsessions`, `radeon3dphase1`, `r3dreplay`,
+`r3dib`) and the benchmark procedures are listed in
+[`docs/06-testing.md`](docs/06-testing.md).
 
 Measured performance - PCI aperture ~6.1-6.3 MB/s, ~30 cycles per aperture
 dword, full GPU idle drains per fenced submission, and the recorded FPS

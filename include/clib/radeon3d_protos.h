@@ -20,22 +20,10 @@ BOOL Radeon3DImportBitMap(struct Radeon3DDevice *device,
                           struct Radeon3DSurface *surface);
 void Radeon3DReleaseSurface(struct Radeon3DDevice *device,
                              struct Radeon3DSurface *surface);
-BOOL Radeon3DExecute(struct Radeon3DDevice *device,
-                     const ULONG *records, ULONG recordDwords,
-                      ULONG flags, ULONG *fenceOut);
 BOOL Radeon3DInvalidateForTest(struct Radeon3DDevice *device);
 BOOL Radeon3DAllocSegment(struct Radeon3DDevice *device, ULONG bytes,
                           struct Radeon3DSegment *segment);
 BOOL Radeon3DFreeSegment(struct Radeon3DDevice *device, ULONG segmentId);
-BOOL Radeon3DCommitDraw(struct Radeon3DDevice *device,
-                        const struct Radeon3DCommit *commit,
-                        ULONG *fenceOut);
-BOOL Radeon3DCommitBatch(struct Radeon3DDevice *device,
-                         const struct Radeon3DCommitBatch *commit,
-                         ULONG *fenceOut);
-BOOL Radeon3DCommitStateBatch(struct Radeon3DDevice *device,
-                              const struct Radeon3DStateBatch *batch,
-                              ULONG *fenceOut);
 BOOL Radeon3DAllocSurface(struct Radeon3DDevice *device, ULONG width,
                           ULONG height, ULONG format,
                           struct Radeon3DSurface *surface);

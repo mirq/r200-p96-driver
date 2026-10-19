@@ -110,12 +110,16 @@ struct RadeonChipBase {
     ULONG ExecCalls, ExecRecordDwords, ExecGeneratedDwords;
     ULONG ExecCopyMicros, ExecBuildMicros, ExecSubmitMicros;
     ULONG CommitFailStage, ExecSampleSeq, ExecClockHz;
+    UBYTE PpcRingAllowed;
+    BOOL LeaseActive;
+    struct Radeon3DDevice *LeaseDevice;
+    ULONG LeaseGrantTicks;
 };
 """ + constants + "\n" + structures + r"""
 _Static_assert(sizeof(ULONG) == 4, "Amiga ULONG width");
 _Static_assert(sizeof(struct Radeon3DIndirect) == RADEON3D_INDIRECT_V1_SIZE,
                "indirect request layout");
-_Static_assert(RADEON3D_IFACE_VERSION == 19, "interface advances to 19");
+_Static_assert(RADEON3D_IFACE_VERSION == 20, "interface advances to 20");
 _Static_assert(RADEON3D_CAP_INDIRECT_DISPATCH == (1UL << 26), "dispatch bit");
 _Static_assert(RADEON3D_CAP_INDIRECT_RENDER == (1UL << 27), "render bit");
 _Static_assert(RADEON3D_CAP_FENCE_COALESCE == (1UL << 29), "coalesce bit");
@@ -279,6 +283,17 @@ static ULONG ServiceExecTicks(struct RadeonChipBase *base)
     assert(base == &chip && board_locked && !service_locked && prepared);
     Event('t');
     return ++ticks;
+}
+/* Production semantics, mirrored: raw EClock ticks convert with the
+ * device's EClock rate; a driver that never opened its timer reports 0. */
+static ULONG ExecTicksToMicros(const struct RadeonChipBase *base,
+                               ULONG ticks)
+{
+    ULONG hz = base->ExecClockHz;
+
+    if (!hz)
+        return 0UL;
+    return (ULONG)((unsigned long long)ticks * 1000000ULL / hz);
 }
 static BOOL RadeonCpSubmitStream(struct BoardInfo *bi, const ULONG *commands,
                                  ULONG count, BOOL fence_needed, ULONG *fence)

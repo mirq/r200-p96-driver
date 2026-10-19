@@ -260,7 +260,9 @@ therefore landing in PPC RAM and the 68k paid PCI-memory latency for every
 access. `AllocExecuteMemory()` now requests only `MEMF_LOCAL`, verifies FAST
 with `TypeOfMem`, and falls back to public allocation.
 
-CPU-only emitter benchmark (`tools/r3demitbench.c`, EClock ticks, 200 repeats):
+CPU-only emitter benchmark (historical; `tools/r3demitbench.c` and the
+emitter were removed with the semantic record path, EClock ticks, 200
+repeats):
 
 | Case | PPC RAM ticks | Local Fast ticks | Ratio |
 |---|---:|---:|---:|
@@ -440,11 +442,13 @@ Tooling:
 | `tools/radeon3dinfo.c` | `R3DINFO`/`R3DEXEC`/`R3DCLOCK`/`R3DSAMPLE` capture |
 | `tools/perfplot.py` | frame grouping, per-phase medians/p95, ASCII waterfall, optional matplotlib charts, DEBUG 2D attribution |
 | `tools/decode_debug_stats.py` | decode the `Radeon9200.Debug` block |
-| `tools/r3dreplay.c` | pre-serialized ceiling probe |
-| `tools/r3demitbench.c` | CPU-only emitter cost, placement A/B |
+| `tools/r3dreplay.c` | submit-path back-pressure/ceiling probe |
 | `tools/p96screen.c` | focused 2D readback + timing gate |
 | `tools/p96overlap.c`, `tools/p96windowmove.c` | layers.library / Intuition workloads |
-| `tools/r3dtexupdate.c` | texture visibility gate with per-draw timing |
+
+(`tools/r3demitbench.c` and `tools/r3dtexupdate.c` were retired with the
+semantic record path; their historical figures above remain valid records
+of the removed code.)
 
 A successful build is not hardware validation, and a successful benchmark run
 on one artifact says nothing about a later working tree.

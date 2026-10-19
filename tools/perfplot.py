@@ -6,11 +6,13 @@ Inputs (one or more text files, e.g. saved `radeon3dinfo` output):
     R3DCLOCK hz=709379 entries=1024 seq=738
     R3DSAMPLE seq=1 wall=45234 type=1 ok=1 in=4096 out=5310 copy=0 build=9821 submit=412
 
-Each R3DSAMPLE is one submission (Execute / CommitDraw / CommitBatch /
-StateBatch / raw Submit) with raw EClock ticks for the copy, build and
-submit phases. The tool groups submissions into frames by wall-clock gaps
-and attributes driver CPU time per phase, so you can see which phase
-dominates a frame and whether the driver or the engine is the bottleneck.
+Each R3DSAMPLE is one submission (raw Submit / indirect Dispatch) with
+raw EClock ticks for the copy, build and submit phases. Types 1-4
+(Execute / CommitDraw / CommitBatch / StateBatch) belong to the retired
+semantic record path and only appear in captures from older drivers. The
+tool groups submissions into frames by wall-clock gaps and attributes
+driver CPU time per phase, so you can see which phase dominates a frame
+and whether the driver or the engine is the bottleneck.
 
 Also understands 2D DEBUG captures: `--debug dump.txt` takes the raw hex
 dump consumed by decode_debug_stats.py and shows per-callback time shares.
@@ -34,11 +36,12 @@ import sys
 DESCRIPTION = "Visualize Radeon9200 per-submission timing samples."
 
 TYPE_NAMES = {
-    1: "Execute",
-    2: "CommitDraw",
-    3: "CommitBatch",
-    4: "StateBatch",
+    1: "Execute(legacy)",
+    2: "CommitDraw(legacy)",
+    3: "CommitBatch(legacy)",
+    4: "StateBatch(legacy)",
     5: "Submit",
+    6: "Dispatch",
 }
 
 DEBUG_OPS = ["Fill", "Invert", "Copy", "Pattern", "Template", "Complete",
@@ -157,7 +160,7 @@ def segment_frames_by_marker(samples, marker_type):
     Robust when the client's inter-submission stalls are comparable to the
     inter-frame gap (e.g. gears waits for vblank between the clear and the
     first draw, so gaps alone cannot separate frames). Each frame starts
-    at a marker sample, which for gears is the Execute clear record.
+    at a marker sample, which for the replay tool is the clear submit.
     """
     frames = []
     current = []
@@ -382,13 +385,11 @@ def print_debug_summary(values):
         print("%-10s %9d %9d %11.2f %12.1f" % (
             op, calls, values.get("OpHardware_%s" % op, 0),
             net * us, net * calls * us / 1e3))
-    if values.get("ExecuteCalls"):
-        calls = values["ExecuteCalls"]
+    if values.get("CompleteSubmitCalls"):
+        calls = values["CompleteSubmitCalls"]
         print("")
-        print("3D execute: calls=%d per call us: build=%.2f submit=%.2f" % (
-            calls,
-            values.get("ExecuteBuildTicks", 0) * us / calls,
-            values.get("ExecuteSubmitTicks", 0) * us / calls))
+        print("3D submit: calls=%d (DEBUG-build complete-submit counter)" %
+              calls)
 
 
 def main():
