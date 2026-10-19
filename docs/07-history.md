@@ -266,6 +266,17 @@ host paths still reference the removed entry points). Open follow-ups:
 the CP_STALL_POLLS budget experiment and the NO_FENCE re-test
 (section 3.1, section 4 item 6) now run through the reworked replay.
 
+**Consumer side closed (2026-10-20).** The MiniGL tree now owns the record
+format and the emitter (MiniGL `4de79cd`, merged as `fe7b41c`): the record
+ABI and fail-stubs live in its `radeon3d_records.h`, and the emitter is
+vendored from this repo's `08bc2e5`. The atom-reservation emitter
+(`bbae1b2`, section 5) rejected the first PPC batch (`PUBFAIL emit
+count=0`) when built into the DLL. It was only ever validated inside the
+68k service, so the consumer keeps the earlier revision. CPEMIT precalc
+gears on 0.41 (one warm boot, `InitPPC` once): 189.873 / 191.082 / 193.548,
+median **191.082** FPS, error=0, 2031 dispatches / 511620 dwords / 600
+presents per run. That is the same band as the 0.40 series.
+
 ## 3. Parked and rejected work
 
 ### 3.1 Interface-19 fence coalescing (parked)
@@ -373,6 +384,7 @@ From the measured attribution (see
 | 2026-10-19 | chip (opts2 fix) | 80,800 | `CB892CFF` | amortized ring-wait sampling (commit `a49cd72`): the first cut's per-poll EClock reads regressed the semantic gears path 18-46% vs `main` (measured, docs/04 section 4.1); after the fix, single-sample parity (semantic 126.0/186.3/191.1, cpemit 194.8 vs main 125.0/189.9/194.8/188.7), cpemit +3.2%. `.previous` holds main `AD91B2F0`. |
 | 2026-10-19 | chip + card (release 0.40) | 80,800 / 7,796 | `CB892CFF` / `F3D56BF6` | opts2 released: CommitRecords pre-walk removal + progress-based ring waits (amortized sampling). The RADEON3D_SUBMIT_NO_FENCE experiment (commit `310cf48`) was reverted same-day (`fa459fb`): its first replay test failed with the historical unpaced signature (fail=5714/6000 fenced baseline) before the mode could be compared; the suspected interaction is the 20k-poll no-progress budget vs long IMMD streaming stalls (old budget 100k) - open item, next candidate fix is restoring the larger budget now that progress resets make it cheap. |
 | 2026-10-19 | chip + card (release 0.41, deployed) | 54,080 / 7,796 | `D6C49D32` / `31D230C4` | remove-semantic: record path, emitter and EXEC ABI removed; reserved LVO slots; lib revision 3.1. Deployed as the active pair over the bridge (CRC-verified pushes; prior unrecorded build `020266F6`/81,044 preserved as `.presession`, the 0.40 pair stays `.previous`). Cold boot clean - no recovery notes, RTG present. Validation on the reference machine: p96screen 8/16/32/8 readback-exact; r3dinfo iface 20 caps `7e20007f` (bits 0-6, 21, 25-30; every retired record bit clear); r3dphase1 ok (70 fenced 8192-dword ring-wrap submits, triangle readback, 3D->2D transition); r3dsessions ok (20k cycles, no leak, stale rejected); r3dib pass; reworked r3dreplay paced+unpaced 800x600 at 32-bit (offscreen RGB565 target) and 16-bit (screen target): 4 x 6000 calls, **fail=0** (223-227 FPS; the historical unpaced fail signature did not reproduce); p96overlap and p96windowmove normal; post-run R3DEXEC counters accumulate from Submit/Dispatch. Not yet run: the MiniGL-tree cpemit gears matrix + InitPPC (owner's separate consumer tree; its non-cpemit host paths still reference the removed entry points). |
+| 2026-10-20 | chip + card 0.41 (unchanged) + MiniGL consumer | 54,080 / 7,796 | `D6C49D32` / `31D230C4` | MiniGL consumer migrated (`4de79cd`/`fe7b41c`): warpelf `C07A8319`, DLL `16CB8018`, host `0010B189`, minigl.library `1680AD09`, precalc `1F3401F7`, under `DH2:p41`; `LIBS:minigl.library.pre41` kept. One warm (bridge) reboot, `InitPPC` once, `MGLPPC_NOALTIVEC=1`, `MGLPPC_HOSTPRI=-1`: gears FS 640x480x16 3 buffers nosync 600 frames 189.873 / 191.082 / 193.548 (median 191.082), error=0, 2031/511620/600 every run. Closes the "not yet run" item above (section 2.12). |
 
 Matched cards used across these runs: `18A453D6` (known-good), `1DC1ABC0`
 (debug card). The card build embeds a date/time, so card CRCs change per
