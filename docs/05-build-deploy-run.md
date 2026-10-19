@@ -130,6 +130,13 @@ LIBS:Picasso96/Prometheus.card.previous
 Never maintain or restore only one `.previous` component. Before installing an
 experimental pair, copy both active files to those exact names.
 
+As found on the reference machine (2026-10-19, see `docs/07-history.md`
+section 5): the active monitor icon is `DEVS:Monitors/Prometheus.info`, not
+`Radeon.info`, with `Output=DVI` and `DMASIZE=1024K` active and
+`(SETTINGSFILE=...)` inert; the only settings file present is
+`SYS:Devs/Picasso96Settings` (no `.9200` suffix). The configuration boots
+RTG cleanly and was left untouched.
+
 ### 4.1 ToolTypes
 
 Parsed by `Prometheus.card` before it loads `Radeon9200.chip`; matching is

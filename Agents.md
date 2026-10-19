@@ -134,7 +134,7 @@ Do not expose unrestricted packets or client-controlled register writes. Follow
 [`docs/02-service-abi-reference.md`](docs/02-service-abi-reference.md) and
 reconcile changes with MiniGL's vendored consumer headers under
 the MiniGL V19 tree's vendored consumer header before changing the ABI.
-The current driver is version 3.0 and exposes Radeon3D interface 19; do not copy
+The current driver is version 3.0 and exposes Radeon3D interface 20; do not copy
 older interface numbers from consumer-side notes. Chronology and decisions are
 tracked in [`docs/07-history.md`](docs/07-history.md).
 

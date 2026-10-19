@@ -32,6 +32,7 @@ timeline
     17 : Auxiliary render surfaces
     18 : Trusted indirect dispatch, multi-fence
     19 : Fence coalescing, parked
+    20 : PPC engine lease, direct ring
 ```
 
 | Interface | Added | Key capabilities |
@@ -55,6 +56,7 @@ timeline
 | 17 | aux surfaces | `AllocSurface` from a private 4 MiB pool |
 | 18 | indirect dispatch | Trusted `CP_IB_BASE` packets, multi-fence, render transitions |
 | 19 | fence coalescing | `NO_FENCE` + `SubmitFence` - **parked, not deployable** |
+| 20 | PPC engine lease | `AcquireLease`/`ReleaseLease`, `CAP_PPC_RING`, lease heartbeat, paced ring-wrap gate |
 
 ## 2. Milestones
 
@@ -210,6 +212,17 @@ hardware showed a failed RTG driver falls back to PAL without stalling, so the
 marker was cleared and the failed pair retried. `RTGPresent` now gates the
 clear.
 
+### 2.11 PPC engine lease (interface 20, 2026-09-23)
+
+Interface 20 adds the PPC engine lease (`Radeon3DAcquireLease()`,
+`Radeon3DReleaseLease()`, capability bit `RADEON3D_CAP_PPC_RING`) and the
+PPC-side direct-ring writer; the lease carries a heartbeat and the ring-wrap
+gate is paced (commits `172c93a`, `3ea40e8`; design in
+[`09-ppc-direct-ring-design.md`](09-ppc-direct-ring-design.md)). The abi
+fixture moved to assert 20. Deployed 2026-10-19 together with the
+atom-reservation emitter (section 5); `radeon3dinfo` reports interface 20 on
+the reference machine.
+
 ## 3. Parked and rejected work
 
 ### 3.1 Interface-19 fence coalescing (parked)
@@ -295,44 +308,18 @@ From the measured attribution (see
 8. **Texture-update allocation/coalescing.** Needs its dedicated workload and
    ownership proof.
 
-## 5. Artifact identity log (selected)
+## 5. Artifact identity log (key identities only; intermediates live in git)
 
 | Date | Artifact | Bytes | CRC32 | Note |
 |---|---|---|---:|---|
 | 2026-08-17 | chip | 52,836 | `1E15D4DC` | interface 7, 8192 cap, 4.930 FPS |
 | 2026-08-21 | chip | 55,016 | `B0FE2D03` | interface 8 quad lists |
-| 2026-08-24 | `r3dstream` era | - | - | T5 streaming acceptance |
 | 2026-09-07 | chip | 76,588 | `07A7193D` | pre-local-memory baseline |
 | 2026-09-07 | chip | 76,664 | `23ACBAEC` | local execute memory (+23.3%) |
-| 2026-09-07 | chip | 76,760 | `6B860EE0` | texture-matrix fix |
-| 2026-09-07 | chip | 76,708 | `9768419A` | + fused CP copy (+5.2%) |
-| 2026-09-10 | chip | 77,940 | `7f253b21...` (SHA-256) | interface-18 prerequisites, host-only |
 | 2026-09-12 | chip | 77,940 | `CEB838A6` | indirect render physical validation |
-| 2026-09-17 | release chip | 77,928 | `F46026B4` | boot-safe debug work baseline |
 | 2026-09-17 | debug chip, probes off | 86,504 | `1FE4C2D3` | boot-safe debug class |
-| 2026-09-17 | debug chip, probes on | 90,052 | `A7844F5F` | `T:` dumps; never install as active |
-| 2026-09-20 | chip | 77,940+ | - | interface-19 parked work (commit `d758199`) |
 | 2026-10-19 | chip + card | 80,544 / 7,796 | `AD91B2F0` / `62926EE4` | atom-reservation emitter (commit `bbae1b2`, branch `optimizations`); deployed to the reference machine, cold boot clean, R3DINFO interface 20 probe ok. Prior pair kept as `.previous`. Note: the machine's active monitor icon is `DEVS:Monitors/Prometheus.info` (not `Radeon.info` as in docs/05 section 4), ToolTypes `BOARDTYPE=Prometheus`/`DMASIZE=1024K`/`CP=YES`/`Output=DVI` active and `(SETTINGSFILE=...)` inert with only `SYS:Devs/Picasso96Settings` present - left untouched, documented here as-found.
 
 Matched cards used across these runs: `18A453D6` (known-good), `1DC1ABC0`
 (debug card). The card build embeds a date/time, so card CRCs change per
 rebuild.
-
-## 6. Working-tree note (documentation snapshot)
-
-At the time this documentation was written, the working tree contained an
-uncommitted debug instrumentation block in `src/radeon3d_emit.c`: ten global
-`R200EmitDbg*` variables recording the last `Vbuf` descriptor decision
-(options, vertex state/count, textured/normal/compact, stride, color/ST
-offsets, texgen) for the consumer-side record logger, plus a depth-only clear
-fix (`RADEON3D_FRAGMENT_BLEND` with src ZERO/dst ONE and a forced state
-re-emission) for the black-boxes-behind-HUD defect. Both must be committed or
-reverted before a release; if they change the ABI or performance, update the
-relevant documents.
-
-The same pass fixed a pre-existing gate failure: `tools/radeon3d_abi_check.c`
-still asserted `RADEON3D_IFACE_VERSION == 18` after commit `d758199` moved the
-header to 19, so `make abi-check` failed. The fixture now asserts 19 and also
-covers `INDIRECT_RENDER`, `MULTI_FENCE`, `FENCE_COALESCE`,
-`RADEON3D_INDIRECT_NO_FENCE`/`RADEON3D_INDIRECT_FLAGS`, and the
-`Radeon3DSubmitFence` inline call. `make abi-check` passes for GCC and vbcc.

@@ -185,7 +185,7 @@ procedures are listed in [`docs/06-testing.md`](docs/06-testing.md).
 Measured performance - PCI aperture ~6.1-6.3 MB/s, ~30 cycles per aperture
 dword, full GPU idle drains per fenced submission, and the recorded FPS
 checkpoints - is in [`docs/04-performance.md`](docs/04-performance.md). There
-is no current published 2D baseline for the interface-19 tree; older figures
+is no current published 2D baseline for the interface-20 tree; older figures
 are explicitly labelled historical.
 
 ## Limits

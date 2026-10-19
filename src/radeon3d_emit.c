@@ -2,8 +2,8 @@
  * Dual-target R200 command emitter, extracted from radeon3d_service.c.
  * Generates the CP dword stream for Execute/CommitDraw/CommitBatch and
  * CommitStateBatch. Byte-for-byte identical output to the pre-extraction
- * in-service emitter; see MINIGLPPC_130FPS_PLAN.md for the verification
- * protocol. No ExecBase, no locking, no I/O.
+ * in-service emitter; the host gates in docs/06-testing.md are the
+ * standing verification protocol. No ExecBase, no locking, no I/O.
  */
 
 #include <stddef.h>
