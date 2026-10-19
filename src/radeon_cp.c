@@ -27,6 +27,12 @@
  * expensive a single register read is on this bus. */
 #define CP_STALL_POLLS        20000UL
 #define CP_RING_WAIT_MS       1000UL
+/* Progress and deadline checks are sampled at this poll stride:
+ * the contended loop must cost the same single register read plus
+ * DelayUs(1) as the original code, or the polling itself becomes
+ * the stall (measured: per-poll EClock reads cost up to 46% of
+ * frame rate at 2031 submissions per 600-frame run). */
+#define CP_PROGRESS_EVERY     16UL
 
 #define CP_RB_CNTL_VALUE \
     (17UL | (9UL << 8) | (1UL << 18) | RADEON_RB_NO_UPDATE)
@@ -188,12 +194,22 @@ static BOOL CpLoadMicrocode(struct BoardInfo *bi)
  * A read pointer that stops moving for CP_STALL_POLLS reads is treated as
  * a hung command processor. Without an open timer only the stall budget
  * applies. */
+/* Reserve ring space. RB_RPTR advancing proves the CP is consuming the
+ * ring: that is back-pressure, not death. Progress resets the stall budget
+ * and the whole wait is capped by an EClock deadline (as in
+ * RadeonCpWaitFence), so a legitimately long GPU-bound frame delays
+ * submission instead of triggering full recovery and losing the session.
+ * A read pointer that stops moving for CP_STALL_POLLS polls is treated as
+ * a hung command processor. Both progress and deadline are sampled every
+ * CP_PROGRESS_EVERY-th poll: the contended loop itself must stay as cheap
+ * as the original single-read poll. */
 static BOOL CpReserve(struct BoardInfo *bi,
                       struct RadeonCpState *state, ULONG dwords)
 {
     ULONG lastReadPointer;
     ULONG deadline = 0;
     ULONG stall = 0;
+    ULONG polls = 0;
     ULONG readPointer;
 
     if (state->TimerOpen && state->EClockRate)
@@ -203,13 +219,15 @@ static BOOL CpReserve(struct BoardInfo *bi,
         readPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
         if (((readPointer - state->WritePointer - 1UL) & CP_RING_MASK) >= dwords)
             return TRUE;
-        if (readPointer != lastReadPointer) {
+        if (readPointer != lastReadPointer)
             lastReadPointer = readPointer;
-            stall = 0;
-        } else if (++stall >= CP_STALL_POLLS)
+        else if (++stall >= CP_STALL_POLLS)
             return FALSE;
-        if (deadline && (LONG)(CpClock(state) - deadline) >= 0)
-            return FALSE;
+        if (++polls >= CP_PROGRESS_EVERY) {
+            polls = 0;
+            if (deadline && (LONG)(CpClock(state) - deadline) >= 0)
+                return FALSE;
+        }
         RadeonDelayUs(1);
     }
 }
@@ -1012,7 +1030,7 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
     ULONG lastReadPointer;
     ULONG deadline = 0;
     ULONG stall = 0;
-    ULONG readPointer;
+    ULONG polls = 0;
     ULONG scratch;
 
     if (!data || !data->CpState || !data->CpState->Ready)
@@ -1023,9 +1041,10 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
 
     /* The pending fence retires after every earlier submission was
      * consumed, so RB_RPTR advancing proves progress even while the
-     * scratch write itself is still far ahead. Every advance resets the
-     * stall budget; the fence is tested every read, exactly as before,
-     * and an EClock deadline caps the wait for a truly hung CP. */
+     * scratch write itself is still far ahead. The fence is tested on
+     * every poll exactly as before; progress and the EClock deadline are
+     * sampled every CP_PROGRESS_EVERY-th poll so the contended loop stays
+     * as cheap as the original single-read poll. */
     if (state->TimerOpen && state->EClockRate)
         deadline = CpClock(state) + CpWaitTicks(state, CP_RING_WAIT_MS);
     lastReadPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
@@ -1040,14 +1059,17 @@ BOOL RadeonCpWait(struct BoardInfo *bi)
             state->PendingUnfenced = 0;
             return TRUE;
         }
-        readPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) & CP_RING_MASK;
-        if (readPointer != lastReadPointer) {
-            lastReadPointer = readPointer;
-            stall = 0;
-        } else if (++stall >= CP_STALL_POLLS)
-            return FALSE;
-        if (deadline && (LONG)(CpClock(state) - deadline) >= 0)
-            return FALSE;
+        if (++polls >= CP_PROGRESS_EVERY) {
+            ULONG readPointer = RadeonRead32(bi, RADEON_CP_RB_RPTR) &
+                                CP_RING_MASK;
+            polls = 0;
+            if (readPointer != lastReadPointer)
+                lastReadPointer = readPointer;
+            else if (++stall >= CP_STALL_POLLS / CP_PROGRESS_EVERY)
+                return FALSE;
+            if (deadline && (LONG)(CpClock(state) - deadline) >= 0)
+                return FALSE;
+        }
         RadeonDelayUs(1);
     }
 }
