@@ -402,6 +402,32 @@ the lease (heartbeat STALE mid-run), and heartbeat delivery should not
 depend on transport latency through a busy host. The lease stays opt-in
 until those land.
 
+**Consumer integration status (2026-10-20, chip 0.41, MiniGL `d6ee2b3`):**
+precalc gears 600 frames fullscreen 640x480x16 now completes under the
+lease with error=0. The blockers above had these causes:
+
+- Every lease batch parked a ~20 ms `WaitTime` tick: the wait loops yielded
+  on poll 0. They are progress-aware now. They park only after a full spin
+  budget with no `RB_RPTR`/`SCRATCH` movement, and fail after 1 s without
+  movement.
+- The black/failed presents were a buffer-rotation race. The host answers
+  `CP_SURFACE` only for its live drawing target and rotates it on present,
+  so lease batches stamped targets the host had already left (emitter stage
+  60). The frontend now releases the lease before each present, waits for
+  the host to consume it, and re-acquires.
+- A lease-only frame never published the client's sync state, so the host
+  presented with a vblank flip (~22 ms) instead of the blit.
+- Lease commands now use the shared mailbox (MiniGL protocol 16 cap bit
+  17). That fix also exposed a consumer regression: the DLL had stopped
+  requesting the mailbox since the v16 bump.
+
+Measured: 84.3 fps lease vs 189.9 bounded on the same stack. Remaining
+per-frame cost is LEASE_END ~3.7 ms, per-batch `WAIT_IDLE` fence waits
+~2.4 ms, and the present resume ~1.3 ms. The next steps are lazy
+retirement and a CP-emitted fullscreen present, which removes the
+per-frame handover. The driver release drain must gain an engine-idle
+wait before `WAIT_IDLE` leaves the tail.
+
 ## 8. Open questions
 
 1. Does the Sonnet/WarpOS PPC alias the full Amiga address map (including
