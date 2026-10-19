@@ -329,6 +329,7 @@ From the measured attribution (see
 | 2026-09-12 | chip | 77,940 | `CEB838A6` | indirect render physical validation |
 | 2026-09-17 | debug chip, probes off | 86,504 | `1FE4C2D3` | boot-safe debug class |
 | 2026-10-19 | chip + card | 80,544 / 7,796 | `AD91B2F0` / `62926EE4` | atom-reservation emitter (commit `bbae1b2`, branch `optimizations`); deployed to the reference machine, cold boot clean, R3DINFO interface 20 probe ok. Prior pair kept as `.previous`. Note: the machine's active monitor icon is `DEVS:Monitors/Prometheus.info` (not `Radeon.info` as in docs/05 section 4), ToolTypes `BOARDTYPE=Prometheus`/`DMASIZE=1024K`/`CP=YES`/`Output=DVI` active and `(SETTINGSFILE=...)` inert with only `SYS:Devs/Picasso96Settings` present - left untouched, documented here as-found.
+| 2026-10-19 | chip + card (opts2) | 80,756 / 7,796 | `7A542247` / `62926EE4` | CommitRecords pre-walk removal + progress-based ring waits (branch `opts2`, commits `05057ea`+`5f0d1b9`); deployed, cold boot clean, R3DINFO interface 20 probe ok. Prior pair kept as `.previous`. `Work:r3dopt/r3dreplay` staged (`3157D3AA`) for unpaced back-pressure validation. |
 
 Matched cards used across these runs: `18A453D6` (known-good), `1DC1ABC0`
 (debug card). The card build embeds a date/time, so card CRCs change per
