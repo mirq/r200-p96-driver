@@ -158,7 +158,19 @@ three of nine unpaced 2000-frame replay runs hit this (`fail=1188..5712`).
 Since 2026-10-19 the ring waits are progress-based: every `RB_RPTR` advance
 resets the stall budget and an EClock deadline caps the total wait, so a
 consuming GPU is back-pressure, not death (docs/07 section 4, candidate 6).
-Hardware re-validation of the unpaced replay runs pending.
+The first cut sampled the EClock deadline on every poll iteration; at 2031
+submissions per 600-frame gears run the polling itself became the stall and
+the semantic path dropped 18-46% across all modes against `main`
+(135.7 vs 189.9 FPS at 16-bit, 106.0 vs 125.0 at 32-bit; cpemit 174.4 vs
+188.7), while the gears semantic path never touches the candidate-1
+CommitRecords change (Execute never ran the pre-walk). Sampling progress and
+deadline every `CP_PROGRESS_EVERY`-th (16th) poll restored parity within
+noise (126.0/186.3/191.1 semantic, 194.8 cpemit vs main's
+125.0/189.9/194.8/188.7, single cold-boot samples per stack) and left
+cpemit slightly ahead. Lesson: the contended poll loop must cost the same
+one register read plus `DelayUs(1)` as the code it replaces; anything
+per-iteration on that path multiplies by the submission count. Hardware
+re-validation of the unpaced replay runs pending.
 
 ## 5. 3D ceilings - the replay benchmark
 
