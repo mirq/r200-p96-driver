@@ -365,6 +365,7 @@ int main(int argc, char **argv)
     ULONG failedSubmits = 0;
     ULONG clearOnly = HasFlag(argc, argv, "-clearonly");
     ULONG noClear = HasFlag(argc, argv, "-noclear");
+    ULONG noFence = HasFlag(argc, argv, "-nofence");
     ULONG offscreen = HasFlag(argc, argv, "-offscreen");
     ULONG useZ = HasFlag(argc, argv, "-z");
     ULONG pace = ParseValue(argc, argv, "-pace", DEFAULT_PACE);
@@ -656,12 +657,24 @@ int main(int argc, char **argv)
                                            NULL);
     }
 
+    if (noFence) {
+        /* Only the last submit of a frame keeps the fence tail (cache
+         * flush + full idle wait); earlier submits pipeline and are
+         * covered by it. The warmup/validation frames stay fenced. */
+        ULONG rot, seg;
+        for (rot = 0; rot < FRAME_ROTATIONS; ++rot)
+            for (seg = 0; seg + 1UL < SEGMENT_COUNT; ++seg)
+                batches[rot][seg].Flags = RADEON3D_SUBMIT_NO_FENCE;
+    }
+
     ReadEClock(&startClock);
     for (frame = 0; frame < frames; ++frame) {
         rotation = frame % FRAME_ROTATIONS;
         if (!noClear &&
             !Radeon3DExecute(device, clearRecord,
-                             RADEON3D_EXEC_CLEAR_DWORDS, 0UL, NULL)) {
+                             RADEON3D_EXEC_CLEAR_DWORDS,
+                             noFence ? RADEON3D_SUBMIT_NO_FENCE : 0UL,
+                             NULL)) {
             ++failedSubmits;
             if (failedSubmits == 1UL && Radeon3DGetInfo(device, &info))
                 printf("R3DREPLAY loopfail call=clear frame=%lu "
@@ -707,7 +720,7 @@ int main(int argc, char **argv)
                        elapsed);
     printf("R3DREPLAY_SUMMARY version=3 mode=%s target=%s z=%s pace=%lu "
            "width=%lu height=%lu depth=%lu frames=%lu elapsed_ticks=%lu "
-           "eclock_hz=%lu fps_x1000=%lu calls=%lu fail=%lu\n",
+           "eclock_hz=%lu fps_x1000=%lu calls=%lu fail=%lu fence=%s\n",
            clearOnly ? "clearonly" : (noClear ? "noclear" : "full"),
            offscreen ? "offscreen" : "screen",
            useZ ? "on" : "off",
@@ -720,7 +733,8 @@ int main(int argc, char **argv)
            (unsigned long)(frame * (clearOnly ? 1UL :
                                     (noClear ? SEGMENT_COUNT :
                                      SEGMENT_COUNT + 1UL))),
-           (unsigned long)failedSubmits);
+           (unsigned long)failedSubmits,
+           noFence ? "nofence" : "fenced");
     printf("R3DREPLAY status=ok\n");
 
 out:

@@ -1124,7 +1124,9 @@ BOOL Radeon3DSubmit(
     if (result) {
         submitAttempted = TRUE;
         phase = ServiceExecTicks(base);
-        result = RadeonCpSubmitStream(bi, trusted, commandCount, TRUE,
+        result = RadeonCpSubmitStream(bi, trusted, commandCount,
+                                      (flags & RADEON3D_SUBMIT_NO_FENCE)
+                                          ? FALSE : TRUE,
                                       &internalFence);
         submitTicks = ServiceExecTicks(base) - phase;
     }
@@ -1133,6 +1135,11 @@ BOOL Radeon3DSubmit(
         RadeonMark3DSubmitted(bi);
         if ((flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
             *fenceOut = internalFence;
+    } else if (result) {
+        /* NO_FENCE: the ring holds the work; the next fenced
+         * submission or 2D transition covers it. LastFence tracks
+         * fenced submissions only. */
+        RadeonMark3DSubmitted(bi);
     } else if (submitAttempted) {
         (void)RadeonRecoverAcceleration(bi);
     }
@@ -1312,16 +1319,22 @@ BOOL Radeon3DExecute(
     submitStart = RDEBUG_PHASE_BEGIN();
     {
         ULONG phase = ServiceExecTicks(base);
-        result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
+        result = RadeonCpSubmitStream(bi, generated, emitter->Count,
+                                      (flags & RADEON3D_SUBMIT_NO_FENCE)
+                                          ? FALSE : TRUE,
                                       &internalFence);
         submitTicks = ServiceExecTicks(base) - phase;
         base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
     }
-    if (result) {
+    if (result && internalFence) {
         device->LastFence = internalFence;
         RadeonMark3DSubmitted(bi);
         if ((flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
             *fenceOut = internalFence;
+    } else if (result) {
+        /* NO_FENCE: covered by the next fenced submit or 2D
+         * transition; LastFence tracks fenced submits only. */
+        RadeonMark3DSubmitted(bi);
     } else {
         (void)RadeonRecoverAcceleration(bi);
     }
@@ -1644,15 +1657,21 @@ static BOOL CommitRecords(
         return FALSE;
     }
     phase = ServiceExecTicks(base);
-    result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
+    result = RadeonCpSubmitStream(bi, generated, emitter->Count,
+                                  (flags & RADEON3D_SUBMIT_NO_FENCE)
+                                      ? FALSE : TRUE,
                                   &internalFence);
     submitTicks = ServiceExecTicks(base) - phase;
     base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
-    if (result) {
+    if (result && internalFence) {
         device->LastFence = internalFence;
         RadeonMark3DSubmitted(bi);
         if ((flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
             *fenceOut = internalFence;
+    } else if (result) {
+        /* NO_FENCE: covered by the next fenced submit or 2D
+         * transition; LastFence tracks fenced submits only. */
+        RadeonMark3DSubmitted(bi);
     } else {
         COMMIT_FAIL(base, 8UL);
         if (fenceOut)
@@ -1940,15 +1959,22 @@ BOOL Radeon3DCommitStateBatch(
     }
 
     phase = ServiceExecTicks(base);
-    result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
+    result = RadeonCpSubmitStream(bi, generated, emitter->Count,
+                                  ((request.Flags &
+                                    RADEON3D_SUBMIT_NO_FENCE) ? FALSE
+                                                              : TRUE),
                                   &internalFence);
     submitTicks = ServiceExecTicks(base) - phase;
     base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
-    if (result) {
+    if (result && internalFence) {
         device->LastFence = internalFence;
         RadeonMark3DSubmitted(bi);
         if ((request.Flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
             *fenceOut = internalFence;
+    } else if (result) {
+        /* NO_FENCE: covered by the next fenced submit or 2D
+         * transition; LastFence tracks fenced submits only. */
+        RadeonMark3DSubmitted(bi);
     } else {
         COMMIT_FAIL(base, 86UL);
         if (fenceOut)

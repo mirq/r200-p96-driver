@@ -101,7 +101,7 @@ typedef char Radeon3DSegmentV1SizeCheck[
  * record[10] vertex count is the real count, but only HeaderDwords dwords
  * are supplied — the vertices are fetched from the segment by the hardware.
  * OffsetBytes must be 4-byte aligned and leave room for the full vertex
- * array inside the segment. Flags accept RADEON3D_SUBMIT_FENCE. */
+ * array inside the segment. Flags accept RADEON3D_SUBMIT_FENCE and RADEON3D_SUBMIT_NO_FENCE. */
 #define RADEON3D_COMMIT_VERSION 1UL
 
 struct Radeon3DCommit {
@@ -223,7 +223,13 @@ typedef char Radeon3DIndirectV1SizeCheck[
     sizeof(struct Radeon3DIndirect) == RADEON3D_INDIRECT_V1_SIZE ? 1 : -1];
 
 #define RADEON3D_SUBMIT_FENCE (1UL << 0)
-#define RADEON3D_SUBMIT_FLAGS  RADEON3D_SUBMIT_FENCE
+/* Inline submits are ring-ordered: NO_FENCE skips the fence tail (cache
+ * flush + full idle wait) so batches pipeline, and the submission is
+ * covered by the next fenced submit or 2D transition. fenceOut stays 0
+ * and LastFence tracks only fenced submissions. */
+#define RADEON3D_SUBMIT_NO_FENCE (1UL << 1)
+#define RADEON3D_SUBMIT_FLAGS  (RADEON3D_SUBMIT_FENCE | \
+                                RADEON3D_SUBMIT_NO_FENCE)
 
 #define RADEON3D_EXEC_CLEAR          1UL
 #define RADEON3D_EXEC_DRAW_TRIANGLES 2UL

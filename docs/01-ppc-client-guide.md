@@ -361,6 +361,8 @@ batch.RecordDwords = headerDwords;
 batch.VertexOffsets = offsets;
 batch.RecordCount = n;
 batch.Flags = RADEON3D_SUBMIT_FENCE;
+/* Or RADEON3D_SUBMIT_NO_FENCE on all but the last submit of a frame:
+ * batches pipeline; the last fence covers them. */
 ULONG fence;
 BOOL ok = Radeon3DCommitBatch(dev, &batch, &fence);
 ```
