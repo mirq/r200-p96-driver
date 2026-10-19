@@ -68,8 +68,7 @@ caller before every structure-taking call.
 | -156 | `Radeon3DAcquireLease(struct Radeon3DDevice *, struct Radeon3DLease *lease)` | interface 20+, PPC engine lease |
 | -162 | `Radeon3DReleaseLease(struct Radeon3DDevice *, ULONG lastFence)` | interface 20+, drains via the lease's last fence |
 
-`RADEON3D_SUBMIT_FENCE` (`1UL << 0`) and `RADEON3D_SUBMIT_NO_FENCE`
-(`1UL << 1`) are the public submission flags for
+`RADEON3D_SUBMIT_FENCE` (`1UL << 0`) is the only public submission flag for
 `Execute`/`Submit`/commit calls. `RADEON3D_INDIRECT_NO_FENCE` (`1UL << 1`) is
 the indirect-dispatch flag (parked).
 
@@ -691,15 +690,6 @@ the target. Anything else is rejected before the ring write pointer changes.
 
 ## 12. Fence and error semantics
 
-- `RADEON3D_SUBMIT_NO_FENCE` skips the fence tail (cache flush + full idle
-  wait) so consecutive inline submits pipeline on the GPU; the submission is
-  ring-ordered and is covered by the next fenced submission or the next 2D
-  transition (both drain). `fenceOut` stays 0, `LastFence` and returned
-  fences track fenced submissions only. Unpaced NO_FENCE streams are
-  bounded by ring back-pressure (`CpReserve`), which is progress-based, not
-  by fence retirement. Added 2026-10-19 for the inline paths
-  (Execute/Submit/CommitStateBatch/CommitRecords); the indirect dispatch
-  keeps its interface-19 `RADEON3D_INDIRECT_NO_FENCE`.
 - A successful submission with `RADEON3D_SUBMIT_FENCE` writes a nonzero fence
   token to `fenceOut`. `Radeon3DSubmit` always creates an internal fence; it
   reports it only when the flag is set.
