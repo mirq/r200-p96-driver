@@ -23,9 +23,9 @@
  */
 static const char LibName[] = "Radeon9200.chip";
 static const char LibIdString[] =
-    "Radeon9200.chip 3.0 (2.9.2026)\r\n";
+    "Radeon9200.chip 3.0 (19.10.2026)\r\n";
 static const char VerTag[] USED =
-    "\0$VER: Radeon9200.chip 3.0 (2.9.2026)";
+    "\0$VER: Radeon9200.chip 3.0 (19.10.2026)";
 
 struct Library *PrometheusBase;
 
