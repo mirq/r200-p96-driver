@@ -254,8 +254,26 @@ CPU-only emitter benchmark (`tools/r3demitbench.c`, EClock ticks, 200 repeats):
 | 5 draws | 237,079 | 60,499 | 3.92x |
 | 20 draws | 354,134 | 102,339 | 3.46x |
 
-The 20-draw case emits 419 dwords (CRC `A8A11546`) on both paths. These are
-single-session diagnostic samples, not benchmark medians.
+Historical (pre atom-reservation emitter). The 20-draw case emits 419 dwords
+(CRC `A8A11546`) on both paths. These are single-session diagnostic samples,
+not benchmark medians.
+
+Atom-level output reservation (docs/07 section 4, candidate 2, measured
+2026-10-19): the same bench on the same physical 68060 after the emitter
+switched from per-dword `Words[Count++]` stores to one reserve/commit per
+atom. Emitted streams are byte-identical on every run: the 20-draw textured
+case still produces 419 dwords with CRC `A8A11546`. Local-Fast placement,
+EClock 709379 Hz, textured TRI_LIST rows (the `crc` column identifies the
+exact case); three bridge runs, all samples, median:
+
+| Case | Samples (ticks) | Median | vs historical |
+|---|---|---:|---:|
+| 1 draw (crc `508D4FAC`) | 37,409 / 37,565 / 44,980 | 37,565 | -14.4% |
+| 5 draws (crc `0AC4F59F`) | 50,186 / 51,107 / 56,141 | 51,107 | -15.5% |
+| 20 draws (crc `A8A11546`) | 86,059 / 90,930 / 97,385 | 90,930 | -11.2% |
+
+Three-run diagnostic protocol against the recorded historical column; no
+other build or ToolType variable changed.
 
 Production effect, six independent bridge cold reboots (three per build),
 600-frame precalc gears, 640x480x32 fullscreen, two buffers, no sync, host

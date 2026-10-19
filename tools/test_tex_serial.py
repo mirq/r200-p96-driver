@@ -26,7 +26,7 @@ def main():
         abi, removed = re.subn(
             r"typedef char Radeon3D\w+SizeCheck\[[^\]]*\];", "",
             (ROOT / "include/radeon3d.h").read_text())
-        if removed != 8:  # includes the interface-18 indirect request
+        if removed != 9:  # includes the interface-18 indirect request
             raise SystemExit("review changed Radeon3D ABI size checks")
         (path / "radeon3d.h").write_text(abi)
         (path / "radeon3d_emit.h").write_text(

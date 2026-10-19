@@ -261,10 +261,17 @@ From the measured attribution (see
    emitter count draws as it consumes, guard `CommitDrawIndex < recordCount`,
    and compare the final count before submission. Removes one complete
    cached-memory pass.
-2. **Atom-level output reservation in the emitter.** Every `ExecuteEmitWord()`
-   bounds-checks and post-increments `Count`; reserve capacity once per state
-   block/matrix/vertex batch and commit `Count` once. Identified as likely
-   worth more than hand-written assembly.
+2. ~~**Atom-level output reservation in the emitter.**~~ **Implemented
+   2026-10-19.** `ExecuteEmitRegister()`, the matrix/vector/scalar block
+   emitters and both per-vertex loops in `EmitExecuteVertices()` now reserve
+   capacity once per atom (`ExecuteEmitReserve()`/`ExecuteEmitCommit()`) and
+   write through a local cursor; `ExecuteEmitWord()` remains only for
+   odd-length single dwords. Byte-identical output confirmed by the fixture
+   CRC (`A8A11546`, 419 dwords) and the tex-matrix/tex-serial host gates;
+   vbcc `+warpos` PPC build compiles unchanged. Emitter bench on the physical
+   68060, three bridge runs, medians: 20-draw 102,339 -> 90,930 ticks
+   (-11.2%), 5-draw 60,499 -> 51,107 (-15.5%), 1-draw 43,886 -> 37,565
+   (-14.4%) (docs/04 section 7).
 3. **2D per-`RenderInfo` surface-layout cache.** `ValidateSurface()` recomputes
    format datatype, limits, pitch/address alignment and biases on every 2D
    callback. Layout is invariant per (board, memory, pitch, format, sizes,

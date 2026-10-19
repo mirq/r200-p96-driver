@@ -261,33 +261,59 @@ static BOOL ExecuteEmitWord(struct Radeon3DEmitter *emitter,
     return TRUE;
 }
 
+/* Reserve room for one output atom and hand back its write cursor. The
+ * caller stores every dword of the atom through the cursor and commits
+ * once with ExecuteEmitCommit(). A per-dword Words[Count++] forces the
+ * compiler to reload and re-store Count through memory on every dword,
+ * because the Words pointer may legally alias Count inside the
+ * same struct. Count can only grow to RADEON3D_MAX_BATCH_DWORDS, so the check cannot
+ * wrap. */
+static ULONG *ExecuteEmitReserve(struct Radeon3DEmitter *emitter, ULONG n)
+{
+    if (emitter->Count + n > RADEON3D_MAX_BATCH_DWORDS)
+        return NULL;
+    return emitter->Words + emitter->Count;
+}
+
+static void ExecuteEmitCommit(struct Radeon3DEmitter *emitter, ULONG n)
+{
+    emitter->Count += n;
+}
+
+
 static BOOL ExecuteEmitRegister(struct Radeon3DEmitter *emitter,
                                 ULONG reg, ULONG value)
 {
-    return ExecuteEmitWord(emitter, RADEON_CP_PACKET0(reg, 0)) &&
-           ExecuteEmitWord(emitter, value);
+    ULONG *out = ExecuteEmitReserve(emitter, 2UL);
+
+    if (!out)
+        return FALSE;
+    out[0] = RADEON_CP_PACKET0(reg, 0);
+    out[1] = value;
+    ExecuteEmitCommit(emitter, 2UL);
+    return TRUE;
 }
 
 static BOOL ExecuteEmitMatrix(struct Radeon3DEmitter *emitter,
                                const ULONG *matrix, ULONG vectorAddress,
                                BOOL transpose)
 {
+    ULONG *out = ExecuteEmitReserve(emitter, 21UL);
     ULONG row, column;
 
-    if (!ExecuteEmitRegister(emitter, R200_SE_TCL_STATE_FLUSH, 0) ||
-        !ExecuteEmitRegister(emitter, R200_SE_TCL_VECTOR_INDX_REG,
-                              (1UL << R200_VEC_INDX_OCTWORD_STRIDE_SHIFT) |
-                                  vectorAddress) ||
-        !ExecuteEmitWord(emitter,
-                         RADEON_CP_PACKET0_ONE(R200_SE_TCL_VECTOR_DATA_REG,
-                                               15UL)))
+    if (!out)
         return FALSE;
+    out[0] = RADEON_CP_PACKET0(R200_SE_TCL_STATE_FLUSH, 0);
+    out[1] = 0;
+    out[2] = RADEON_CP_PACKET0(R200_SE_TCL_VECTOR_INDX_REG, 0);
+    out[3] = (1UL << R200_VEC_INDX_OCTWORD_STRIDE_SHIFT) | vectorAddress;
+    out[4] = RADEON_CP_PACKET0_ONE(R200_SE_TCL_VECTOR_DATA_REG, 15UL);
+    out += 5;
     for (row = 0; row < 4UL; ++row)
         for (column = 0; column < 4UL; ++column)
-            if (!ExecuteEmitWord(emitter,
-                                 matrix[transpose ? column * 4UL + row :
-                                                    row * 4UL + column]))
-                return FALSE;
+            *out++ = matrix[transpose ? column * 4UL + row :
+                                        row * 4UL + column];
+    ExecuteEmitCommit(emitter, 21UL);
     return TRUE;
 }
 
@@ -297,20 +323,20 @@ static BOOL ExecuteEmitVectorBlock(struct Radeon3DEmitter *emitter,
                                    ULONG address, ULONG stride,
                                    const ULONG *data, ULONG count)
 {
+    ULONG *out = ExecuteEmitReserve(emitter, 5UL + count);
     ULONG index;
 
-    if (!ExecuteEmitRegister(emitter, R200_SE_TCL_STATE_FLUSH, 0) ||
-        !ExecuteEmitRegister(emitter, R200_SE_TCL_VECTOR_INDX_REG,
-                              (stride <<
-                               R200_VEC_INDX_OCTWORD_STRIDE_SHIFT) |
-                                  address) ||
-        !ExecuteEmitWord(emitter,
-                         RADEON_CP_PACKET0_ONE(R200_SE_TCL_VECTOR_DATA_REG,
-                                               count - 1UL)))
+    if (!out)
         return FALSE;
+    out[0] = RADEON_CP_PACKET0(R200_SE_TCL_STATE_FLUSH, 0);
+    out[1] = 0;
+    out[2] = RADEON_CP_PACKET0(R200_SE_TCL_VECTOR_INDX_REG, 0);
+    out[3] = (stride << R200_VEC_INDX_OCTWORD_STRIDE_SHIFT) | address;
+    out[4] = RADEON_CP_PACKET0_ONE(R200_SE_TCL_VECTOR_DATA_REG, count - 1UL);
+    out += 5;
     for (index = 0; index < count; ++index)
-        if (!ExecuteEmitWord(emitter, data[index]))
-            return FALSE;
+        *out++ = data[index];
+    ExecuteEmitCommit(emitter, 5UL + count);
     return TRUE;
 }
 
@@ -318,36 +344,36 @@ static BOOL ExecuteEmitScalarBlock(struct Radeon3DEmitter *emitter,
                                    ULONG address, ULONG stride,
                                    const ULONG *data, ULONG count)
 {
+    ULONG *out = ExecuteEmitReserve(emitter, 3UL + count);
     ULONG index;
 
-    if (!ExecuteEmitRegister(emitter, R200_SE_TCL_SCALAR_INDX_REG,
-                             address | (stride <<
-                                        R200_SCAL_INDX_DWORD_STRIDE_SHIFT)) ||
-        !ExecuteEmitWord(emitter,
-                         RADEON_CP_PACKET0_ONE(R200_SE_TCL_SCALAR_DATA_REG,
-                                               count - 1UL)))
+    if (!out)
         return FALSE;
+    out[0] = RADEON_CP_PACKET0(R200_SE_TCL_SCALAR_INDX_REG, 0);
+    out[1] = address | (stride << R200_SCAL_INDX_DWORD_STRIDE_SHIFT);
+    out[2] = RADEON_CP_PACKET0_ONE(R200_SE_TCL_SCALAR_DATA_REG, count - 1UL);
+    out += 3;
     for (index = 0; index < count; ++index)
-        if (!ExecuteEmitWord(emitter, data[index]))
-            return FALSE;
+        *out++ = data[index];
+    ExecuteEmitCommit(emitter, 3UL + count);
     return TRUE;
 }
 
 static BOOL ExecuteEmitGuardClipState(struct Radeon3DEmitter *emitter)
 {
-    ULONG index;
+    ULONG *out = ExecuteEmitReserve(emitter, 7UL);
 
-    if (!ExecuteEmitRegister(emitter, R200_SE_TCL_SCALAR_INDX_REG,
-                             R200_SS_VERT_GUARD_CLIP_ADJ_ADDR |
-                                 (1UL <<
-                                  R200_SCAL_INDX_DWORD_STRIDE_SHIFT)) ||
-        !ExecuteEmitWord(emitter,
-                         RADEON_CP_PACKET0_ONE(R200_SE_TCL_SCALAR_DATA_REG,
-                                               3UL)))
+    if (!out)
         return FALSE;
-    for (index = 0; index < 4UL; ++index)
-        if (!ExecuteEmitWord(emitter, 0x3f800000UL))
-            return FALSE;
+    out[0] = RADEON_CP_PACKET0(R200_SE_TCL_SCALAR_INDX_REG, 0);
+    out[1] = R200_SS_VERT_GUARD_CLIP_ADJ_ADDR |
+             (1UL << R200_SCAL_INDX_DWORD_STRIDE_SHIFT);
+    out[2] = RADEON_CP_PACKET0_ONE(R200_SE_TCL_SCALAR_DATA_REG, 3UL);
+    out[3] = 0x3f800000UL;
+    out[4] = 0x3f800000UL;
+    out[5] = 0x3f800000UL;
+    out[6] = 0x3f800000UL;
+    ExecuteEmitCommit(emitter, 7UL);
     return TRUE;
 }
 
@@ -1511,29 +1537,37 @@ static BOOL EmitExecuteVertices(struct Radeon3DEmitter *emitter,
                      ? !ValidUnitFloat(input[fogIndex])
                       : input[fogIndex]))
                 return FALSE;
-            if (!ExecuteEmitWord(emitter,input[0]) ||
-                !ExecuteEmitWord(emitter,input[1]) ||
-                !ExecuteEmitWord(emitter,input[2]) ||
-                !ExecuteEmitWord(emitter,input[3]))
-                return FALSE;
-            if (normalVertex &&
-                (!ExecuteEmitWord(emitter,input[4]) ||
-                 !ExecuteEmitWord(emitter,input[5]) ||
-                 !ExecuteEmitWord(emitter,input[6])))
-                return FALSE;
-            if (!ExecuteEmitWord(emitter,input[colorIndex]))
-                return FALSE;
-            if (textured &&
-                (!ExecuteEmitWord(emitter,input[st0Index]) ||
-                 !ExecuteEmitWord(emitter,input[st0Index + 1UL])))
-                return FALSE;
-            if ((vertexState & RADEON3D_VERTEX_TEXTURE1) &&
-                (!ExecuteEmitWord(emitter,input[st1Index]) ||
-                 !ExecuteEmitWord(emitter,input[st1Index + 1UL])))
-                return FALSE;
-            if ((vertexState & RADEON3D_VERTEX_FOG) &&
-                !ExecuteEmitWord(emitter,input[fogIndex]))
-                return FALSE;
+            {
+                ULONG *out = ExecuteEmitReserve(emitter, dwordsPerVertex);
+
+                if (!out)
+                    return FALSE;
+                out[0] = input[0];
+                out[1] = input[1];
+                out[2] = input[2];
+                out[3] = input[3];
+                out += 4;
+                if (normalVertex) {
+                    out[0] = input[4];
+                    out[1] = input[5];
+                    out[2] = input[6];
+                    out += 3;
+                }
+                *out++ = input[colorIndex];
+                if (textured) {
+                    out[0] = input[st0Index];
+                    out[1] = input[st0Index + 1UL];
+                    out += 2;
+                }
+                if (vertexState & RADEON3D_VERTEX_TEXTURE1) {
+                    out[0] = input[st1Index];
+                    out[1] = input[st1Index + 1UL];
+                    out += 2;
+                }
+                if (vertexState & RADEON3D_VERTEX_FOG)
+                    *out++ = input[fogIndex];
+                ExecuteEmitCommit(emitter, dwordsPerVertex);
+            }
             continue;
         }
 
@@ -1562,31 +1596,37 @@ static BOOL EmitExecuteVertices(struct Radeon3DEmitter *emitter,
                            ? !ValidPositiveFloat(input[8])
                           : input[8] != 0))))
             return FALSE;
-        if (!ExecuteEmitWord(emitter, input[0]) ||
-            !ExecuteEmitWord(emitter, input[1]))
-            return FALSE;
-        if ((useDepth || perspective) && !ExecuteEmitWord(emitter,input[2]))
-            return FALSE;
-        if (perspective && !ExecuteEmitWord(emitter,input[8]))
-            return FALSE;
-        if (extendedVertex && (vertexState & RADEON3D_VERTEX_FOG) &&
-            !ExecuteEmitWord(emitter, input[8]))
-            return FALSE;
-        if (extendedVertex && !ExecuteEmitWord(emitter, input[5]))
-            return FALSE;
-        if (textured) {
-            if (fragmentStatePresent && !extendedVertex &&
-                !ExecuteEmitWord(emitter, input[5]))
+        {
+            ULONG *out = ExecuteEmitReserve(emitter, dwordsPerVertex);
+
+            if (!out)
                 return FALSE;
-            if (!ExecuteEmitWord(emitter, input[3]) ||
-                !ExecuteEmitWord(emitter, input[4]))
-                return FALSE;
-        } else if (!extendedVertex && !ExecuteEmitWord(emitter, input[5]))
-            return FALSE;
-        if (extendedVertex && (vertexState & RADEON3D_VERTEX_TEXTURE1) &&
-            (!ExecuteEmitWord(emitter, input[6]) ||
-              !ExecuteEmitWord(emitter, input[7])))
-            return FALSE;
+            out[0] = input[0];
+            out[1] = input[1];
+            out += 2;
+            if (useDepth || perspective)
+                *out++ = input[2];
+            if (perspective)
+                *out++ = input[8];
+            if (extendedVertex && (vertexState & RADEON3D_VERTEX_FOG))
+                *out++ = input[8];
+            if (extendedVertex)
+                *out++ = input[5];
+            if (textured) {
+                if (fragmentStatePresent && !extendedVertex)
+                    *out++ = input[5];
+                out[0] = input[3];
+                out[1] = input[4];
+                out += 2;
+            } else if (!extendedVertex)
+                *out++ = input[5];
+            if (extendedVertex && (vertexState & RADEON3D_VERTEX_TEXTURE1)) {
+                out[0] = input[6];
+                out[1] = input[7];
+                out += 2;
+            }
+            ExecuteEmitCommit(emitter, dwordsPerVertex);
+        }
     }
     return TRUE;
 }
