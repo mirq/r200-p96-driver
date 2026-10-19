@@ -8,7 +8,7 @@ view ([`01-ppc-client-guide.md`](01-ppc-client-guide.md)) and the ABI
 flowchart TB
     subgraph LIB["Radeon9200.chip library base"]
         BASE["RadeonChipBase<br/>ServiceLock, generation, pools"]
-        DEV["Radeon3DDevice sessions<br/>trusted/generated buffers,<br/>emitter, segments, surfaces"]
+        DEV["Radeon3DDevice sessions<br/>segments, surfaces"]
         CPST["RadeonCpState<br/>ring, WPTR, fences, timer"]
     end
     subgraph BOARD["BoardInfo + RadeonBoardData"]
@@ -43,9 +43,8 @@ flowchart TB
 | `src/radeon_accel.c` | 2D engine callbacks, engine-state cache, fallbacks, 3D/2D arbitration |
 | `src/radeon_cp.c` | command processor: ring, microcode, fences, waits, recovery |
 | `src/r200_microcode.c` | R200 CP microcode image (licensed; see `R200_MICROCODE_LICENSE.txt`) |
-| `src/radeon3d_emit.c` | dual-target R200 command emitter (semantic records -> CP dwords) |
-| `include/radeon3d_emit.h` | emitter structures and capture-zone contract |
-| `src/radeon3d_service.c` | Radeon3D service: sessions, surfaces, commits, indirect, telemetry |
+| `include/radeon3d_emit.h` | shared float validators for stream validation |
+| `src/radeon3d_service.c` | Radeon3D service: sessions, surfaces, submits, indirect, lease, telemetry |
 | `src/radeon_debug.c/.h` | DEBUG-only passive stats port and probes |
 | `src/dma.c` | private VRAM carve/free helpers |
 | `src/runtime_shim.c` | freestanding `memcpy`/`memset` |
@@ -152,9 +151,10 @@ Each open session (`struct Radeon3DDevice`) records:
 - magic `0x52334453` ("R3DS"), session generation, granted interface version,
 - base pointer, owner pin (`rtg.library` open reference), opaque handle,
 - active-call count, `LastFence`, closing/cleanup flags,
-- `ExecuteTrusted` and `ExecuteGenerated` (8192 dwords each),
-- `ExecuteEmitter` (session-owned, ~1.6 KiB + captures),
 - 12 segment slots, and a `MinList` of surface handles.
+
+(The semantic-era session working buffers - `ExecuteTrusted`,
+`ExecuteGenerated`, `ExecuteEmitter` - were removed with the record path.)
 
 Generation rules:
 
@@ -197,7 +197,10 @@ reference until after `Radeon3DClose()` returns.
 
 ## 4. Working memory
 
-Private 68k working buffers use `AllocExecuteMemory()`:
+The semantic-era private 68k working buffers (the `AllocExecuteMemory()`
+trio below) were removed with the record path. The policy is documented
+because it remains the template for any future driver-side allocation that
+a PPC task's environment could poison:
 
 ```c
 memory = AllocMem(bytes, MEMF_LOCAL);
@@ -209,17 +212,13 @@ The reason: the WarpOS/Sonnet task allocator hook redirects `PUBLIC` or `FAST`
 requests to PPC RAM even when `LOCAL` is set. A 68k task then pays PCI-memory
 latency for every access. Requesting only `MEMF_LOCAL` avoids the hook, and the
 `TypeOfMem` FAST check rejects Chip RAM. If local Fast RAM is unavailable, the
-plain public allocation is the fallback. This policy applies to
-`ExecuteGenerated`, `ExecuteEmitter` and `ExecuteTrusted`; the measured effect
-is in [`04-performance.md`](04-performance.md#7-ppc-memory-placement).
+plain public allocation is the fallback. The measured effect is in
+[`04-performance.md`](04-performance.md#7-ppc-memory-placement).
 
 Sizes:
 
 | Buffer | Size | Notes |
 |---|---:|---|
-| `ExecuteGenerated` | 8192 dwords = 32 KiB | CP stream built by the emitter |
-| `ExecuteTrusted` | 8192 dwords = 32 KiB | state-batch staging snapshot |
-| `ExecuteEmitter` | ~1.6 KiB + 2 captures | session-owned, too large for a stack |
 | sample ring | 1024 x 36 B = 36 KiB | allocated with the timer on first session |
 | CP ring | 1 MiB | private VRAM |
 
@@ -503,8 +502,10 @@ What it records (version-gated fields, see `src/radeon_debug.h`):
 - CP functional checks (forced wrap, near-full reserve, bounded reserve
   timeout, ordered fences) and indirect-buffer bring-up probes.
 - `BoardLock` ownership samples.
-- Execute stage attribution (`ExecuteCopy/Build/SubmitTicks`) and version-23
-  state-batch failure attribution (`StateBatchFail*`).
+
+(The version-18 `Execute*` stage attribution and version-23
+`StateBatchFail*` counters were removed with the record path; the DEBUG
+stats block is version 24.)
 
 Boot-time engine probes (MMIO/VRAM sampling, CP no-op batches, CP function
 matrix, indirect-buffer matrix, fallback probe, stream dumps) are compiled only
@@ -541,4 +542,5 @@ with `tools/decode_debug_stats.py`.
 - `ValidateSurface()` bounds/pitch/overflow checks on every 2D path.
 - `src/startup.c` and `src/library.c` stay first in link order.
 - Treat warnings as defects (`-Werror` for chip and tools).
-- The emitter stays platform-free (no ExecBase, no locking, no I/O).
+- The reserved LVO slots (-96/-120/-126/-132) never move; later vectors
+  keep their offsets so the PPC cpemit client's inline stubs stay valid.

@@ -87,7 +87,8 @@ int main(void)
         result = 10;
     } else {
         if (info.Size >= 56UL && info.ExecCalls) {
-            /* V2 tail: cumulative Execute phase attribution in microseconds. */
+            /* V2 tail: cumulative submission phase attribution in
+             * microseconds (historical R3DEXEC key kept for captures). */
             printf("R3DEXEC calls=%lu record_dwords=%lu generated_dwords=%lu "
                    "copy_us=%lu build_us=%lu submit_us=%lu\n",
                    (unsigned long)info.ExecCalls, (unsigned long)info.ExecRecordDwords,

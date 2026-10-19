@@ -15,15 +15,16 @@ Run these on the development host; none of them touches the Amiga.
 | `make abi-check` | Public structures have identical size/layout/offsets under GCC and vbcc |
 | `make r3d-tools` | All vbcc 68k service probes build |
 | `make tools` | `p96screen`, `p96overlap`, `p96windowmove`, `rtgpresent` build |
-| `make r3dreplay r3dtexupdate r3dib r3dstream vramstream` | Remaining probes build |
+| `make r3dreplay r3dib vramstream` | Remaining probes build |
 | `python3 tools/test_indirect_dispatch.py` | Extracts the production indirect-dispatch/usability/capability code and runs 94 cases with ASan/UBSan: hook ordering, valid id 0, malformed requests, bounds/overflow, prepare failure, prepare-with-invalidation, failed submits, missing fences, recovery without retry, `LastFence` ordering, short descriptors, caller mutation during prepare, odd-count rejection |
 | `python3 tools/test_cp_drain_guard.py` | 20 source-structure checks: the 2D transition drains full idle (not `RB_RPTR`), the MMIO guard gating, and the SubmitFence kick shape |
 | `python3 tools/test_cp_copy.py` | Extracts the real CP copy/commit functions: host exhaustive 2,816 copy + 5,934 commit cases (ASan/UBSan), native smoke 2,816 + 1,966, against a pinned baseline object |
-| `python3 tools/test_tex_matrix.py` | Real emitter + texture-matrix fixture: 1,188 checks over all five matrix blocks, cross-unit changes, lighting fallbacks, promotion, capacity failure; also builds an early-return mutant and requires it to fail (139 failures) |
-| `python3 tools/test_tex_serial.py` | Texture content serials 0/1/5/65535, both units, inline and committed draws, reserved low bits, invalid min filters; old-mask mutant must fail |
-| `python3 tools/test_execute_memory.py -v` | `AllocExecuteMemory` selection, fallback, reuse, partial success directions, mixed pools, rejected Chip RAM cleanup |
-| `python3 tools/decode_debug_stats.py <dump>` | Decodes a `Radeon9200.Debug` block (version 23) |
+| `python3 tools/decode_debug_stats.py <dump>` | Decodes a `Radeon9200.Debug` block (version 24) |
 | `python3 tools/perfplot.py <capture>` | Parses `R3DSAMPLE` lines, groups frames, reports per-phase medians/p95 and estimated FPS |
+
+(The emitter fixtures `test_tex_matrix.py`/`test_tex_serial.py` and the
+`AllocExecuteMemory` test `test_execute_memory.py` were retired with the
+semantic record path.)
 
 Run the whole set before deploying anything to hardware. The Python tests
 deliberately compile the *production* functions rather than reimplementing
@@ -33,14 +34,11 @@ them; if a refactor moves code the tests cannot find, they fail loudly.
 
 | Tool | Interface | Coverage | Output / exit |
 |---|---|---|---|
-| `radeon3dinfo` | any | Opens the service, dumps caps/VRAM/max batch, cumulative `R3DEXEC` totals, `R3DCLOCK` and the `R3DSAMPLE` ring | `R3DINFO`, `R3DEXEC`, `R3DCLOCK`, `R3DSAMPLE`; 0 ok, 10 service, 20 library |
+| `radeon3dinfo` | any | Opens the service, dumps caps/VRAM/max batch, cumulative `R3DEXEC` submission totals, `R3DCLOCK` and the `R3DSAMPLE` ring | `R3DINFO`, `R3DEXEC`, `R3DCLOCK`, `R3DSAMPLE`; 0 ok, 10 service, 20 library |
 | `radeon3dsessions` | any | 10,000 open/close cycles x2 batches, public-memory leak check (<= 1024 bytes on the second batch), stale-handle rejection after close | `R3DSESSIONS status=ok|leak_or_stale_handle|open_failed` |
 | `radeon3dphase1` | 1+ | Malformed packet/bounds/flags/future-fence rejection, 70 fenced 8192-dword submissions crossing the ring wrap, triangle readback, immediate 3D->2D transition, import/release, planar rejection | `R3DPHASE1 status=ok ...` |
-| `radeon3dformats` | 6+ | 8/16/32-bit semantic targets with exact readback, dithered RGB332 bounds, legacy-interface rejection, sphere-map samples (interface 12+) | `R3DFORMAT`, `R3DFORMATS status=ok` |
-| `radeon3dstream` | 13+ | Raw segment commit: single and batch commit, fence stage encoding on bad args, VBUF draw renders identically to an inline control | `R3D...` |
 | `r3dib` | 18+ | Trusted indirect dispatch gate: PACKET2 health, 64-dword IB, max 8192-dword IB at offset 4096, negative checks with documented error encoding, interface-17 rejection | `status=fence_timeout` on a timeout - treat the machine as suspect |
-| `r3dreplay` | 13/15+ | Pre-serialized frame replay into a visible 800x600 screen; `-z` adds Z16; `-pace N` paces fences; `-offscreen` target mode; counts failed submits | `R3DREPLAY_SUMMARY` with FPS |
-| `r3dtexupdate` | 17+ | Texture visibility gate: 176 verified draws over RGB565 and BGRA aux textures, 16 in-place write/sample rounds, release/reallocate reuse (16 observed address reuses) | 0 PASS, 5 pixel, 10 reuse not observed, 20 setup |
+| `r3dreplay` | 1+ | cpemit submit-path back-pressure replay: pre-serialized clear + two 252-vertex immediate triangle lists per frame; `-pace N` paces fences; renders to the screen at 16-bit, to an offscreen RGB565 bitmap otherwise; counts failed submits | `R3DREPLAY_SUMMARY` with FPS |
 | `vramstream` | 13+ | Segment write throughput (fast RAM store/copy, VRAM store, byte-swapped store, fast->VRAM copy) | throughput table |
 | `p96screen` | 2D | Format-specific fill, pattern, template, text, copy, mask, overlap and readback checks for 8/16/32-bit modes | `FAIL` on any check |
 | `p96overlap` | 2D | layers.library split workload: empty vs 19 `ClipRect` overlap, median of seven trials | result table with `ClipRect` counts |
@@ -56,7 +54,7 @@ them; if a refactor moves code the tests cannot find, they fail loudly.
 flowchart LR
     H["Host gates<br/>make, DEBUG, abi-check,<br/>python tests"] --> DEP["Deploy matched pair<br/>plus .previous copies"]
     DEP --> G2["p96screen 8/16/32/8"]
-    G2 -->|pass| G3["radeon3dinfo, sessions,<br/>phase1, formats"]
+    G2 -->|pass| G3["radeon3dinfo, sessions,<br/>phase1, r3dib"]
     G3 --> BENCH["p96speed, overlap, windowmove,<br/>r3dreplay, consumer suites"]
     BENCH --> REC["record metadata:<br/>hashes, ToolTypes, boot state,<br/>raw samples, median"]
     G2 -->|fail| REJECT["reject build, restore pair"]
@@ -84,10 +82,8 @@ With `CP=YES` and a matched pair installed:
 radeon3dinfo
 radeon3dsessions
 radeon3dphase1
-radeon3dformats
 r3dib            # only when touching indirect dispatch
-r3dtexupdate     # only when touching texture residency/visibility
-r3dreplay        # ceiling/regression probe
+r3dreplay        # submit-path back-pressure/ceiling probe
 ```
 
 For a full release also run the consumer (MiniGL) acceptance suites: bootstrap,
@@ -185,7 +181,7 @@ For a version-3.0 baseline (2D or 3D):
 7. Run current `p96windowmove` twice, retain `TOTAL`, `STAGES`, `TRIALS`,
    `RESULT`.
 8. For a 3D release: `radeon3dinfo`, `radeon3dphase1`, `radeon3dsessions`,
-   `radeon3dformats`, `r3dreplay` and the MiniGL acceptance executables;
+   `r3dreplay`, `r3dib` and the MiniGL acceptance executables;
    record exact artifact hashes and summary lines.
 
 Focused attribution: `p96screen <depth> <seconds> test` reports complete-copy,

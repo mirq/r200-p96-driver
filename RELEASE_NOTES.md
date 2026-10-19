@@ -1,8 +1,25 @@
-# Radeon9200 Prometheus integration 3.0
+# Radeon9200 Prometheus integration 3.1
 
-Release 3.0 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
-The chip reports `$VER: Radeon9200.chip 3.0 (2.9.2026)` and exposes Radeon3D
-interface 20. The reference documentation is in [`docs/`](docs/README.md).
+Release 3.1 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
+The chip reports `$VER: Radeon9200.chip 3.1 (19.10.2026)` and exposes
+Radeon3D interface 20 with the semantic record path removed (the record
+entry points are reserved LVO slots returning FALSE; the client is a
+trusted cpemit producer on the indirect path). The reference documentation
+is in [`docs/`](docs/README.md).
+
+## Highlights (3.1)
+
+- Semantic record path removal: `Radeon3DExecute`, `Radeon3DCommitDraw`,
+  `Radeon3DCommitBatch`, `Radeon3DCommitStateBatch`, the record emitter,
+  the `RADEON3D_EXEC_*` ABI and the record capability bits are gone; the
+  surviving entry points keep every LVO offset.
+- `r3dreplay` reworked onto the cpemit submit path as the standing
+  back-pressure regression tool; semantic-era probes retired.
+- Vendored MiniGL consumer header synced with the ABI change.
+
+Release 3.0 (kept below for context) shipped interface 20.
+The chip reported `$VER: Radeon9200.chip 3.0 (2.9.2026)` and exposed
+Radeon3D interface 20.
 
 ## Highlights
 
@@ -29,10 +46,8 @@ interface 20. The reference documentation is in [`docs/`](docs/README.md).
 - Release-safe per-submission EClock telemetry and capture/plot tooling.
 - Pre-serialized Radeon3D replay benchmark for isolating driver and
   command-processor throughput.
-- Immutable record-chain emission, ordered commits, state batching, and
-  client-written VRAM streaming segments.
 - Bounded surface validation, session generation checks, submission fences,
-  recovery, and failure attribution for rejected semantic commits.
+  recovery, and failure attribution for rejected submissions.
 - Picasso96 display, cursor, 2D acceleration, VGA, and validated internal-TMDS
   DVI support retained from 0.21.
 

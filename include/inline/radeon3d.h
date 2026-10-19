@@ -56,18 +56,12 @@
 
 #define Radeon3DReleaseSurface(device, surface) \
     LP2NR(0x5a, Radeon3DReleaseSurface, \
-        struct Radeon3DDevice *, device, a0, \
-        struct Radeon3DSurface *, surface, a1, \
+          struct Radeon3DDevice *, device, a0, \
+          struct Radeon3DSurface *, surface, a1, \
           , RADEON3D_BASE_NAME)
 
-#define Radeon3DExecute(device, records, recordDwords, flags, fenceOut) \
-    LP5(0x60, BOOL, Radeon3DExecute, \
-        struct Radeon3DDevice *, device, a0, \
-        const ULONG *, records, a1, \
-        ULONG, recordDwords, d0, \
-        ULONG, flags, d1, \
-        ULONG *, fenceOut, a2, \
-        , RADEON3D_BASE_NAME)
+/* -96 (Radeon3DExecute) is a reserved slot since the remove-semantic
+ * change; the offsets below are unchanged and must never shift. */
 
 #define Radeon3DInvalidateForTest(device) \
     LP1(0x66, BOOL, Radeon3DInvalidateForTest, \
@@ -87,26 +81,8 @@
         ULONG, segmentId, d0, \
         , RADEON3D_BASE_NAME)
 
-#define Radeon3DCommitDraw(device, commit, fenceOut) \
-    LP3(0x78, BOOL, Radeon3DCommitDraw, \
-        struct Radeon3DDevice *, device, a0, \
-        const struct Radeon3DCommit *, commit, a1, \
-        ULONG *, fenceOut, a2, \
-        , RADEON3D_BASE_NAME)
-
-#define Radeon3DCommitBatch(device, commit, fenceOut) \
-    LP3(0x7e, BOOL, Radeon3DCommitBatch, \
-        struct Radeon3DDevice *, device, a0, \
-        const struct Radeon3DCommitBatch *, commit, a1, \
-        ULONG *, fenceOut, a2, \
-        , RADEON3D_BASE_NAME)
-
-#define Radeon3DCommitStateBatch(device, batch, fenceOut) \
-    LP3(0x84, BOOL, Radeon3DCommitStateBatch, \
-        struct Radeon3DDevice *, device, a0, \
-        const struct Radeon3DStateBatch *, batch, a1, \
-        ULONG *, fenceOut, a2, \
-        , RADEON3D_BASE_NAME)
+/* -120/-126/-132 (Radeon3DCommitDraw/CommitBatch/CommitStateBatch) are
+ * reserved slots since the remove-semantic change. */
 
 #define Radeon3DAllocSurface(device, width, height, format, surface) \
     LP5(0x8a, BOOL, Radeon3DAllocSurface, \

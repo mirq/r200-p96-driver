@@ -114,11 +114,8 @@ FIELDS.extend([
     "BlitRectBoundsSuccess", "BlitRectProbeCalls", "BlitRectProbeTicks",
 ])
 
-# Version 18: Radeon3DExecute stage attribution.
-FIELDS.extend([
-    "ExecuteCalls", "ExecuteRecordDwords", "ExecuteGeneratedDwords",
-    "ExecuteCopyTicks", "ExecuteBuildTicks", "ExecuteSubmitTicks",
-])
+# Version 18 held Radeon3DExecute stage attribution; version 24 removed
+# the six fields together with the semantic record path.
 
 # Version 19/21: indirect-buffer bring-up probe (case 1 + cases 2 and 3).
 FIELDS.extend([
@@ -133,13 +130,10 @@ FIELDS.extend([
     "Ib3NextReady", "Ib3CsqMode",
 ])
 
-# Version 23: StateBatch emitter rejection detail.
-FIELDS.extend([
-    "StateBatchFailStage", "StateBatchFailDraws", "StateBatchFailHeader",
-    "StateBatchFailPrim", "StateBatchFailCount",
-])
+# Version 23 held StateBatch emitter rejection detail; version 24 removed
+# the five fields together with the state-batch path.
 
-KNOWN_VERSION = 23
+KNOWN_VERSION = 24
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}
@@ -365,23 +359,6 @@ def main():
               (values["CompleteValidateMaxTicks"] * us,
                values["CompleteSubmitMaxTicks"] * us,
                values["CompleteDefaultMaxTicks"] * us))
-    if "ExecuteCalls" in values and values["ExecuteCalls"]:
-        records = values["ExecuteRecordDwords"]
-        generated = values["ExecuteGeneratedDwords"]
-        calls = values["ExecuteCalls"]
-        print("execute n=%-6d records=%d dwords (%.1f KiB/call) "
-              "generated=%d dwords" %
-              (calls, records, records * 4.0 / 1024.0 / max(calls, 1),
-               generated))
-        print("execute stage ms/frame-equivalent totals: copy=%.2f "
-              "build=%.2f submit=%.2f" %
-              (values["ExecuteCopyTicks"] * us / 1000.0,
-               values["ExecuteBuildTicks"] * us / 1000.0,
-               values["ExecuteSubmitTicks"] * us / 1000.0))
-        print("execute per call us: copy=%.2f build=%.2f submit=%.2f" %
-              (values["ExecuteCopyTicks"] * us / max(calls, 1),
-               values["ExecuteBuildTicks"] * us / max(calls, 1),
-               values["ExecuteSubmitTicks"] * us / max(calls, 1)))
 
 
 if __name__ == "__main__":

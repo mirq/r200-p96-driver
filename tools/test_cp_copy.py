@@ -23,7 +23,10 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = "13e7077d8a8e60625d8872d0b7a1f892906c5af1"
+# Pinned baseline: the 0.40 release commit (opts2 progress-based ring
+# waits). The 0.31 pin predated that rework and tripped the
+# "changed outside the copy optimization" guard spuriously.
+BASELINE = "98bd554180ac5246e4780a30859797735f3a7884"
 CROSS = "/opt/amiga/bin/m68k-amigaos-"
 # Keep these identical to the release driver's Makefile CFLAGS.
 CFLAGS = shlex.split(
@@ -106,12 +109,10 @@ def main():
     (out / "cp_constants.h").write_text(constants + "\n")
     (out / "cp_current.h").write_text("\n\n".join(function(source, name) for name in (
         "CpStreamDword", "CpBurstCopySwapped", "CpCommitStream")) + "\n")
-    # The former staging helper exists only in this generated test include.
-    start = baseline.rindex("#if defined(__GNUC__)", 0,
-                            baseline.index("static void CpBurstStore8"))
-    end = baseline.index(old_copy) + len(old_copy)
-    old = baseline[start:end].replace("CpBurstStore8", "OldBurstStore8")
-    old = old.replace("CpBurstCopySwapped", "OldBurstCopySwapped")
+    # The baseline copy function is self-contained since the burst-store
+    # consolidation (the separate CpBurstStore8 staging helper is gone):
+    # renaming it is all the A/B fixture needs.
+    old = old_copy.replace("CpBurstCopySwapped", "OldBurstCopySwapped")
     (out / "cp_old.h").write_text(old + "\n")
     fake = out / "fake/exec"
     fake.mkdir(parents=True, exist_ok=True)

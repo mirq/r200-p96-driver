@@ -1,18 +1,26 @@
 /*
- * r3dreplay - pre-serialized frame replay benchmark.
+ * r3dreplay - cpemit submit-path frame replay benchmark.
  *
- * Proves the driver + GPU ceiling when the client does no per-frame work:
- * five fully pre-serialized frames (one clear record plus two TCL state
- * batches each, differing only in the ModelProjection rotation) are
- * replayed round-robin into a visible 800x600 screen. The torus vertices
- * are hardware-TCL-transformed, written once into two 256 KiB vertex
- * segments at startup, and never touched again -- the timed loop only
- * issues three prebuilt API calls per frame with no fences, so ordered
- * commits keep the pipeline full.
+ * Back-pressure/back-pressure-regression tool for the surviving client
+ * submit path. Five fully pre-serialized frames are replayed round-robin
+ * into an imported RGB565 surface; the timed loop issues exactly three
+ * prebuilt Radeon3DSubmit() calls per frame -- one full-screen clear quad
+ * plus two 252-vertex immediate triangle lists -- so per-call fail counts
+ * stay directly comparable with the historical fail=N/6000 signature from
+ * the state-batch era (2000 unpaced frames = 6000 calls).
  *
- * -z attaches a 16-bit depth surface (gears shape: color clear + Z16
- * clear + depth-tested/written geometry), so the 16 vs 32 bpp comparison
- * includes the depth traffic that the real MiniGL stack always pays.
+ * The immediate triangle list is the interface-1 bounded contract: RGB565
+ * target, screen-space vertices, no depth. At -depth 32 the tool still
+ * opens the 32-bit screen (same board-pinning behavior as the historical
+ * 800x600x32 config) and renders into an offscreen RGB565 bitmap instead.
+ *
+ * The workload never fences, so a long run can outpace the GPU until the
+ * ring-space wait in the service stalls or a submit fails; the service
+ * treats a submit failure as CP trouble and runs recovery, which
+ * invalidates the session and every later submit then fails. Drain the
+ * ring every PACE frames by waiting on the last batch's fence: that only
+ * bounds the outstanding queue to a sustainable level, like a real
+ * client's present.
  *
  * Output: R3DREPLAY_SUMMARY with EClock-timed FPS. Run Work:radeon3dinfo
  * right after to dump the driver's per-submission sample ring.
@@ -40,125 +48,34 @@
 
 #define CHIP_LIBRARY_NAME "Radeon9200.chip"
 
-#define HEADER_DWORDS      44UL
-#define VERTEX_STRIDE      10UL
-#define RING_SEGS          54UL
-#define TUBE_SEGS          60UL
-#define RINGS_PER_SEGMENT  27UL
-#define QUADS_PER_SEGMENT  (RINGS_PER_SEGMENT * TUBE_SEGS)
-#define VERTS_PER_SEGMENT  (QUADS_PER_SEGMENT * 4UL)
-#define SEGMENT_BYTES      (VERTS_PER_SEGMENT * VERTEX_STRIDE * 4UL)
-#define SEGMENT_COUNT      2UL
-#define FRAME_ROTATIONS    5UL
-#define WARMUP_FRAMES      30UL
-#define DEFAULT_FRAMES     2000UL
-/* Ordered commits keep the pipeline full, but the tool never fences, so a
- * long run can outpace the GPU until the CP ring space wait expires; the
- * service treats any submit failure as CP death and runs full recovery,
- * which invalidates the session and every later submit then fails. Drain
- * the ring every PACE frames by waiting on the last batch's fence: the
- * internal fence already exists on every submit, so this only bounds the
- * outstanding queue to a sustainable level, like a real client's present. */
-#define DEFAULT_PACE       64UL
+/* The published interface-1 wire contract: 22 single-register PACKET0
+ * writes, then PACKET3(3D_DRAW_IMMD_2) + its parameter dword, then
+ * vertexCount * 3 vertex dwords. */
+#define STREAM_HEADER_DWORDS 46UL
+#define CLEAR_VERTICES       6UL
+#define CLEAR_DWORDS         (STREAM_HEADER_DWORDS + CLEAR_VERTICES * 3UL)
+#define BATCH_VERTICES       252UL
+#define BATCH_DWORDS         (STREAM_HEADER_DWORDS + BATCH_VERTICES * 3UL)
+#define BATCH_COLS           12UL
+#define BATCH_ROWS           (BATCH_VERTICES / 3UL / BATCH_COLS)
+#define FRAME_ROTATIONS      5UL
+#define BATCHES_PER_FRAME    2UL
+#define WARMUP_FRAMES        30UL
+#define DEFAULT_FRAMES       2000UL
+#define DEFAULT_PACE         64UL
 
 struct Library *Radeon9200Base;
 struct Library *P96Base;
 struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
 
-static const ULONG kRingCos[54UL] = {
-    0x3f800000UL, 0x3f7e44deUL, 0x3f791978UL, 0x3f708fb2UL, 0x3f64c51cUL, 0x3f55e287UL,
-    0x3f441b7dUL, 0x3f2fad88UL, 0x3f18df63UL, 0x3f000000UL, 0x3ecacaf8UL, 0x3e92d7e0UL,
-    0x3e31d0d4UL, 0x3d6e2946UL, 0xbd6e2946UL, 0xbe31d0d4UL, 0xbe92d7e0UL, 0xbecacaf8UL,
-    0xbf000000UL, 0xbf18df63UL, 0xbf2fad88UL, 0xbf441b7dUL, 0xbf55e287UL, 0xbf64c51cUL,
-    0xbf708fb2UL, 0xbf791978UL, 0xbf7e44deUL, 0xbf800000UL, 0xbf7e44deUL, 0xbf791978UL,
-    0xbf708fb2UL, 0xbf64c51cUL, 0xbf55e287UL, 0xbf441b7dUL, 0xbf2fad88UL, 0xbf18df63UL,
-    0xbf000000UL, 0xbecacaf8UL, 0xbe92d7e0UL, 0xbe31d0d4UL, 0xbd6e2946UL, 0x3d6e2946UL,
-    0x3e31d0d4UL, 0x3e92d7e0UL, 0x3ecacaf8UL, 0x3f000000UL, 0x3f18df63UL, 0x3f2fad88UL,
-    0x3f441b7dUL, 0x3f55e287UL, 0x3f64c51cUL, 0x3f708fb2UL, 0x3f791978UL, 0x3f7e44deUL,
-};
+#define PACKET0(reg)      ((ULONG)(reg) >> 2)
 
-static const ULONG kRingSin[54UL] = {
-    0x00000000UL, 0x3dedc21fUL, 0x3e6c2691UL, 0x3eaf1d44UL, 0x3ee5c902UL, 0x3f0cac9fUL,
-    0x3f248dbbUL, 0x3f3a3529UL, 0x3f4d57f2UL, 0x3f5db3d7UL, 0x3f6b1036UL, 0x3f753ecdUL,
-    0x3f7c1c5cUL, 0x3f7f9120UL, 0x3f7f9120UL, 0x3f7c1c5cUL, 0x3f753ecdUL, 0x3f6b1036UL,
-    0x3f5db3d7UL, 0x3f4d57f2UL, 0x3f3a3529UL, 0x3f248dbbUL, 0x3f0cac9fUL, 0x3ee5c902UL,
-    0x3eaf1d44UL, 0x3e6c2691UL, 0x3dedc21fUL, 0x250d3132UL, 0xbdedc21fUL, 0xbe6c2691UL,
-    0xbeaf1d44UL, 0xbee5c902UL, 0xbf0cac9fUL, 0xbf248dbbUL, 0xbf3a3529UL, 0xbf4d57f2UL,
-    0xbf5db3d7UL, 0xbf6b1036UL, 0xbf753ecdUL, 0xbf7c1c5cUL, 0xbf7f9120UL, 0xbf7f9120UL,
-    0xbf7c1c5cUL, 0xbf753ecdUL, 0xbf6b1036UL, 0xbf5db3d7UL, 0xbf4d57f2UL, 0xbf3a3529UL,
-    0xbf248dbbUL, 0xbf0cac9fUL, 0xbee5c902UL, 0xbeaf1d44UL, 0xbe6c2691UL, 0xbdedc21fUL,
-};
-
-static const ULONG kTubeCos[60UL] = {
-    0x3f800000UL, 0x3f7e98fdUL, 0x3f7a67e2UL, 0x3f737871UL, 0x3f69de1dUL, 0x3f5db3d7UL,
-    0x3f4f1bbdUL, 0x3f3e3ebdUL, 0x3f2b4c25UL, 0x3f167918UL, 0x3f000000UL, 0x3ed03fc9UL,
-    0x3e9e377aUL, 0x3e54e6cdUL, 0x3dd61305UL, 0x25a34c4cUL, 0xbdd61305UL, 0xbe54e6cdUL,
-    0xbe9e377aUL, 0xbed03fc9UL, 0xbf000000UL, 0xbf167918UL, 0xbf2b4c25UL, 0xbf3e3ebdUL,
-    0xbf4f1bbdUL, 0xbf5db3d7UL, 0xbf69de1dUL, 0xbf737871UL, 0xbf7a67e2UL, 0xbf7e98fdUL,
-    0xbf800000UL, 0xbf7e98fdUL, 0xbf7a67e2UL, 0xbf737871UL, 0xbf69de1dUL, 0xbf5db3d7UL,
-    0xbf4f1bbdUL, 0xbf3e3ebdUL, 0xbf2b4c25UL, 0xbf167918UL, 0xbf000000UL, 0xbed03fc9UL,
-    0xbe9e377aUL, 0xbe54e6cdUL, 0xbdd61305UL, 0xa553c9caUL, 0x3dd61305UL, 0x3e54e6cdUL,
-    0x3e9e377aUL, 0x3ed03fc9UL, 0x3f000000UL, 0x3f167918UL, 0x3f2b4c25UL, 0x3f3e3ebdUL,
-    0x3f4f1bbdUL, 0x3f5db3d7UL, 0x3f69de1dUL, 0x3f737871UL, 0x3f7a67e2UL, 0x3f7e98fdUL,
-};
-
-static const ULONG kTubeSin[60UL] = {
-    0x00000000UL, 0x3dd61305UL, 0x3e54e6cdUL, 0x3e9e377aUL, 0x3ed03fc9UL, 0x3f000000UL,
-    0x3f167918UL, 0x3f2b4c25UL, 0x3f3e3ebdUL, 0x3f4f1bbdUL, 0x3f5db3d7UL, 0x3f69de1dUL,
-    0x3f737871UL, 0x3f7a67e2UL, 0x3f7e98fdUL, 0x3f800000UL, 0x3f7e98fdUL, 0x3f7a67e2UL,
-    0x3f737871UL, 0x3f69de1dUL, 0x3f5db3d7UL, 0x3f4f1bbdUL, 0x3f3e3ebdUL, 0x3f2b4c25UL,
-    0x3f167918UL, 0x3f000000UL, 0x3ed03fc9UL, 0x3e9e377aUL, 0x3e54e6cdUL, 0x3dd61305UL,
-    0x26234c4cUL, 0xbdd61305UL, 0xbe54e6cdUL, 0xbe9e377aUL, 0xbed03fc9UL, 0xbf000000UL,
-    0xbf167918UL, 0xbf2b4c25UL, 0xbf3e3ebdUL, 0xbf4f1bbdUL, 0xbf5db3d7UL, 0xbf69de1dUL,
-    0xbf737871UL, 0xbf7a67e2UL, 0xbf7e98fdUL, 0xbf800000UL, 0xbf7e98fdUL, 0xbf7a67e2UL,
-    0xbf737871UL, 0xbf69de1dUL, 0xbf5db3d7UL, 0xbf4f1bbdUL, 0xbf3e3ebdUL, 0xbf2b4c25UL,
-    0xbf167918UL, 0xbf000000UL, 0xbed03fc9UL, 0xbe9e377aUL, 0xbe54e6cdUL, 0xbdd61305UL,
-};
-
-static const ULONG kMatrices[5UL][16UL] = {
-    {
-        0x3c000000UL, 0x00000000UL, 0x00000000UL, 0x00000000UL,
-        0x80000000UL, 0x3bddb3d7UL, 0x3b800000UL, 0x00000000UL,
-        0x00000000UL, 0xbb800000UL, 0x3bddb3d7UL, 0x00000000UL,
-        0x00000000UL, 0x00000000UL, 0x00000000UL, 0x3f800000UL,
-    },
-    {
-        0x3b1e377aUL, 0x3bf37871UL, 0x00000000UL, 0x00000000UL,
-        0xbbd2da03UL, 0x3b09050aUL, 0x3b800000UL, 0x00000000UL,
-        0x3b737871UL, 0xba9e377aUL, 0x3bddb3d7UL, 0x00000000UL,
-        0x00000000UL, 0x00000000UL, 0x00000000UL, 0x3f800000UL,
-    },
-    {
-        0xbbcf1bbdUL, 0x3b967918UL, 0x00000000UL, 0x00000000UL,
-        0xbb82503fUL, 0xbbb35c71UL, 0x3b800000UL, 0x00000000UL,
-        0x3b167918UL, 0x3b4f1bbdUL, 0x3bddb3d7UL, 0x00000000UL,
-        0x00000000UL, 0x00000000UL, 0x00000000UL, 0x3f800000UL,
-    },
-    {
-        0xbbcf1bbdUL, 0xbb967918UL, 0x00000000UL, 0x00000000UL,
-        0x3b82503fUL, 0xbbb35c71UL, 0x3b800000UL, 0x00000000UL,
-        0xbb167918UL, 0x3b4f1bbdUL, 0x3bddb3d7UL, 0x00000000UL,
-        0x00000000UL, 0x00000000UL, 0x00000000UL, 0x3f800000UL,
-    },
-    {
-        0x3b1e377aUL, 0xbbf37871UL, 0x00000000UL, 0x00000000UL,
-        0x3bd2da03UL, 0x3b09050aUL, 0x3b800000UL, 0x00000000UL,
-        0xbb737871UL, 0xba9e377aUL, 0x3bddb3d7UL, 0x00000000UL,
-        0x00000000UL, 0x00000000UL, 0x00000000UL, 0x3f800000UL,
-    },
-};
-
-static int Fail(const char *check)
+static void EmitRegister(ULONG *commands, ULONG *count,
+                         ULONG reg, ULONG value)
 {
-    printf("R3DREPLAY status=fail check=%s\n", check);
-    return 10;
-}
-
-static ULONG Rev(ULONG value)
-{
-    return (value << 24) | ((value << 8) & 0x00ff0000UL) |
-           ((value >> 8) & 0x0000ff00UL) | (value >> 24);
+    commands[(*count)++] = PACKET0(reg);
+    commands[(*count)++] = value;
 }
 
 static ULONG FloatBits(ULONG value)
@@ -174,136 +91,100 @@ static ULONG FloatBits(ULONG value)
            ((value << (23UL - top)) & 0x007fffffUL);
 }
 
-static float BitsToFloat(ULONG bits)
+/* One complete immediate-triangle-list stream against an imported RGB565
+ * surface. The register shape is the interface-1 contract the service
+ * validates exactly (docs/02 section 11); phase1 proved it on hardware. */
+static void BuildStream(ULONG *commands, ULONG gpuAddress, ULONG pitch,
+                        ULONG width, ULONG height,
+                        const ULONG *vertices, ULONG vertexCount)
 {
-    union {
-        float f;
-        ULONG u;
-    } cvt;
-
-    cvt.u = bits;
-    return cvt.f;
-}
-
-static ULONG FloatToBits(float value)
-{
-    union {
-        float f;
-        ULONG u;
-    } cvt;
-
-    cvt.f = value;
-    return cvt.u;
-}
-
-static void BuildFrameHeader(ULONG *header, ULONG handle, ULONG depthHandle,
-                             const ULONG *matrix, ULONG width,
-                             ULONG height, ULONG useDepth)
-{
+    ULONG count = 0;
     ULONG index;
 
-    for (index = 0; index < HEADER_DWORDS; ++index)
-        header[index] = 0;
-    header[0] = RADEON3D_EXEC_DRAW_QUADS;
-    header[1] = HEADER_DWORDS;
-    header[2] = handle;
-    header[3] = depthHandle;
-    header[5] = RADEON3D_DRAW_FRAGMENT_STATE |
-                RADEON3D_DRAW_EXTENDED_VERTEX |
-                RADEON3D_DRAW_HW_TCL;
-    if (useDepth)
-        header[5] |= RADEON3D_DRAW_DEPTH_LESS |
-                     RADEON3D_DRAW_DEPTH_WRITE;
-    header[8] = width;
-    header[9] = height;
-    header[10] = VERTS_PER_SEGMENT;
-    for (index = 0; index < 16UL; ++index)
-        header[21UL + index] = matrix[index];
-    header[37] = FloatBits(width / 2UL);
-    header[38] = FloatBits(width / 2UL);
-    header[39] = 0x80000000UL | FloatBits(height / 2UL);
-    header[40] = FloatBits(height / 2UL);
-    header[41] = 0x3f800000UL;
-    header[42] = 0x3f800000UL;
-    header[43] = 16UL << RADEON3D_TRANSFORM_POINT_SIZE_SHIFT;
+    EmitRegister(commands, &count, 0x2140UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x2080UL, 0x00250000UL);
+    EmitRegister(commands, &count, 0x2180UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x20b0UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x2088UL, 0x00000800UL);
+    EmitRegister(commands, &count, 0x208cUL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x1c4cUL, 0x9800021eUL);
+    EmitRegister(commands, &count, 0x1c38UL, 0x00001000UL);
+    EmitRegister(commands, &count, 0x2f00UL, 0x00001000UL);
+    EmitRegister(commands, &count, 0x2f04UL, 0x00011000UL);
+    EmitRegister(commands, &count, 0x2f08UL, 0x00001000UL);
+    EmitRegister(commands, &count, 0x2f0cUL, 0x00011000UL);
+    EmitRegister(commands, &count, 0x2cc4UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x26f0UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x1c50UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x26c0UL, 0x00000000UL);
+    EmitRegister(commands, &count, 0x1c44UL,
+                 ((height - 1UL) << 16) | (width - 1UL));
+    EmitRegister(commands, &count, 0x1d84UL, 0xffffffffUL);
+    EmitRegister(commands, &count, 0x1c20UL, 0x20210000UL);
+    EmitRegister(commands, &count, 0x1c3cUL, 0x00001000UL);
+    EmitRegister(commands, &count, 0x1c40UL, gpuAddress);
+    EmitRegister(commands, &count, 0x1c48UL, pitch / 2UL);
+
+    commands[count++] = 0xc0003500UL | ((vertexCount * 3UL) << 16);
+    commands[count++] = (vertexCount << 16) | 0x00000034UL;
+    for (index = 0; index < vertexCount * 3UL; ++index)
+        commands[count++] = vertices[index];
 }
 
-static void BuildClearRecord(ULONG *record, ULONG handle, ULONG depthHandle,
-                             ULONG width, ULONG height, ULONG useDepth)
+/* Full-screen quad as a two-triangle list, in the clear color. */
+static void BuildClearVertices(ULONG *verts, ULONG width, ULONG height,
+                               ULONG color)
 {
-    record[0] = RADEON3D_EXEC_CLEAR;
-    record[1] = RADEON3D_EXEC_CLEAR_DWORDS;
-    record[2] = handle;
-    record[3] = useDepth ? depthHandle : 0;
-    record[4] = useDepth ? (RADEON3D_CLEAR_COLOR |
-                            RADEON3D_CLEAR_DEPTH) : RADEON3D_CLEAR_COLOR;
-    record[5] = 0xff202040UL;
-    record[6] = 0x3f800000UL; /* 1.0f */
-    record[7] = 0;
-    record[8] = 0;
-    record[9] = width;
-    record[10] = height;
+    static const ULONG corners[12] = {
+        0, 0, 1, 0, 1, 1,
+        0, 0, 1, 1, 0, 1
+    };
+    ULONG vertex;
+
+    for (vertex = 0; vertex < CLEAR_VERTICES; ++vertex) {
+        verts[vertex * 3UL] = FloatBits(corners[vertex * 2UL] ?
+                                        width - 1UL : 0UL);
+        verts[vertex * 3UL + 1UL] = FloatBits(corners[vertex * 2UL + 1UL] ?
+                                              height - 1UL : 0UL);
+        verts[vertex * 3UL + 2UL] = color;
+    }
 }
 
-/* One closed half-torus per segment: 27 ring steps x 60 tube steps of
- * quads, positions within +/-155 so the GPU clips the rim at 800x600.
- * All dwords are byte-reversed: the VAP fetches the segment
- * little-endian, opposite to the inline Execute copy. */
-static void FillSegment(volatile ULONG *seg, ULONG ringBase)
+/* BATCH_VERTICES screen-space triangles arranged as a BATCH_COLS x
+ * BATCH_ROWS grid of cells; the five rotations shift the fill phase and
+ * hue so consecutive frames differ on screen. Everything stays inside the
+ * validated target rectangle. */
+static void BuildBatchVertices(ULONG *verts, ULONG rotation, ULONG batch,
+                               ULONG width, ULONG height)
 {
-    const float outer = 95.0f;
-    const float tube = 60.0f;
-    ULONG quad;
-    ULONG index = 0;
+    ULONG cellW = (width - 32UL) / BATCH_COLS;
+    ULONG cellH = (height - 32UL) / BATCH_ROWS;
+    ULONG tri;
 
-    for (quad = 0; quad < QUADS_PER_SEGMENT; ++quad) {
-        ULONG ring = quad / TUBE_SEGS;
-        ULONG tube0 = quad % TUBE_SEGS;
-        ULONG tube1 = (tube0 + 1UL) % TUBE_SEGS;
-        ULONG ring0 = ringBase + ring;
-        ULONG ring1 = ringBase + ((ring + 1UL) % RINGS_PER_SEGMENT);
-        ULONG cornerRing[4];
-        ULONG cornerTube[4];
-        ULONG corner;
-        ULONG red = ((ring * 255UL) / (RINGS_PER_SEGMENT - 1UL)) << 16;
-        ULONG greenBase = (tube0 * 255UL) / (TUBE_SEGS - 1UL);
+    if (!cellW)
+        cellW = 2UL;
+    if (!cellH)
+        cellH = 2UL;
+    for (tri = 0; tri < BATCH_VERTICES / 3UL; ++tri) {
+        ULONG col = tri % BATCH_COLS;
+        ULONG row = tri / BATCH_COLS;
+        ULONG phase = (row + rotation * 3UL + batch) % BATCH_ROWS;
+        ULONG x0 = 16UL + col * cellW;
+        ULONG y0 = 16UL + phase * cellH;
+        ULONG red = ((phase * 255UL) / (BATCH_ROWS - 1UL)) << 16;
+        ULONG green = ((col * 255UL) / (BATCH_COLS - 1UL)) << 8;
+        ULONG blue = rotation * 40UL;
+        ULONG color = 0xff000000UL | red | green | blue;
 
-        cornerRing[0] = ring0;
-        cornerTube[0] = tube0;
-        cornerRing[1] = ring1;
-        cornerTube[1] = tube0;
-        cornerRing[2] = ring1;
-        cornerTube[2] = tube1;
-        cornerRing[3] = ring0;
-        cornerTube[3] = tube1;
-
-        for (corner = 0; corner < 4UL; ++corner) {
-            float cosT = BitsToFloat(kTubeCos[cornerTube[corner]]);
-            float sinT = BitsToFloat(kTubeSin[cornerTube[corner]]);
-            float cosR = BitsToFloat(kRingCos[cornerRing[corner]]);
-            float sinR = BitsToFloat(kRingSin[cornerRing[corner]]);
-            float arm = outer + tube * cosT;
-            float x = arm * cosR;
-            float y = arm * sinR;
-            float z = tube * sinT;
-            ULONG green = (greenBase + corner) % 256UL;
-            ULONG color = 0xff000000UL | red | (green << 8);
-            ULONG words[VERTEX_STRIDE];
-            ULONG word;
-
-            words[0] = FloatToBits(x);
-            words[1] = FloatToBits(y);
-            words[2] = FloatToBits(z);
-            words[3] = 0x3f800000UL;
-            words[4] = color;
-            words[5] = 0;
-            words[6] = 0;
-            words[7] = 0;
-            words[8] = 0;
-            words[9] = 0;
-            for (word = 0; word < VERTEX_STRIDE; ++word)
-                seg[index++] = Rev(words[word]);
-        }
+        verts[tri * 9UL] = FloatBits(x0);
+        verts[tri * 9UL + 1UL] = FloatBits(y0);
+        verts[tri * 9UL + 2UL] = color;
+        verts[tri * 9UL + 3UL] = FloatBits(x0 + cellW - 2UL);
+        verts[tri * 9UL + 4UL] = FloatBits(y0);
+        verts[tri * 9UL + 5UL] = color;
+        verts[tri * 9UL + 6UL] = FloatBits(x0);
+        verts[tri * 9UL + 7UL] = FloatBits(y0 + cellH - 2UL);
+        verts[tri * 9UL + 8UL] = color;
     }
 }
 
@@ -330,26 +211,71 @@ static BOOL HasFlag(int argc, char **argv, const char *name)
     return FALSE;
 }
 
+static int Fail(const char *check)
+{
+    printf("R3DREPLAY status=fail check=%s\n", check);
+    return 10;
+}
+
+/* A 16-bit RGB565 friend bitmap for the 3D target: the immediate
+ * triangle list validates its target against an imported R5G6B5PC
+ * surface, so at any other screen depth the workload renders offscreen
+ * (r200_surface.c AllocateSeedBitMap pattern: the friend bitmap must
+ * match the requested depth or P96 upgrades the allocation). */
+static struct BitMap *AllocateRgb565BitMap(ULONG width, ULONG height)
+{
+    struct TagItem modeTags[] = {
+        {P96_BESTMODE_FORMATS_ALLOWED, RGBFF_R5G6B5PC},
+        {P96_BESTMODE_NOMINAL_WIDTH, 640UL},
+        {P96_BESTMODE_NOMINAL_HEIGHT, 480UL},
+        {P96_BESTMODE_DEPTH, 16UL},
+        {TAG_DONE, 0}
+    };
+    struct TagItem screenTags[] = {
+        {P96_SCREEN_DISPLAY_ID, 0},
+        {P96_SCREEN_DEPTH, 16UL},
+        {P96_SCREEN_RGB_FORMAT, RGBFB_R5G6B5PC},
+        {P96_SCREEN_SHOW_TITLE, FALSE},
+        {P96_SCREEN_BEHIND, TRUE},
+        {P96_SCREEN_QUIET, TRUE},
+        {TAG_DONE, 0}
+    };
+    struct Screen *friendScreen;
+    struct BitMap *bitmap;
+    ULONG mode = p96BestModeIDTagList(modeTags);
+
+    if (mode == 0xffffffffUL)
+        return NULL;
+    screenTags[0].ti_Data = mode;
+    friendScreen = p96OpenScreenTagList(screenTags);
+    if (!friendScreen)
+        return NULL;
+    bitmap = p96AllocBitMap(width, height, 16,
+                            BMF_CLEAR | BMF_DISPLAYABLE,
+                            friendScreen->RastPort.BitMap,
+                            RGBFB_R5G6B5PC);
+    p96CloseScreen(friendScreen);
+    return bitmap;
+}
+
 int main(int argc, char **argv)
 {
     struct Radeon3DInfo info;
     struct Radeon3DSurface surface;
-    struct Radeon3DSurface depthSurface;
-    struct Radeon3DSegment segment[SEGMENT_COUNT];
     struct Screen *screen = NULL;
     struct BitMap *bitmap = NULL;
-    struct BitMap *depthBitmap = NULL;
+    struct BitMap *targetBitmap;
     struct MsgPort *timerPort = NULL;
     struct timerequest *timerIO = NULL;
     struct EClockVal startClock;
     struct EClockVal endClock;
-    static ULONG headers[FRAME_ROTATIONS][HEADER_DWORDS];
-    static ULONG clearRecord[RADEON3D_EXEC_CLEAR_DWORDS];
-    static struct Radeon3DStateBatch batches[FRAME_ROTATIONS][SEGMENT_COUNT];
-    static struct Radeon3DStateBatchDraw draws[SEGMENT_COUNT];
+    static ULONG clearCommands[CLEAR_DWORDS];
+    static ULONG clearVertices[CLEAR_VERTICES * 3UL];
+    static ULONG batchCommands[FRAME_ROTATIONS][BATCHES_PER_FRAME]
+                              [BATCH_DWORDS];
+    static ULONG batchVertices[BATCH_VERTICES * 3UL];
     struct Device *TimerBase;
     struct Radeon3DDevice *device = NULL;
-    volatile ULONG *vertices;
     ULONG width = ParseValue(argc, argv, "-width", 800UL);
     ULONG height = ParseValue(argc, argv, "-height", 600UL);
     ULONG depth = ParseValue(argc, argv, "-depth", 32UL);
@@ -361,16 +287,12 @@ int main(int argc, char **argv)
     ULONG elapsed;
     ULONG fpsX1000;
     ULONG rotation;
-    ULONG segIndex;
+    ULONG batchIndex;
     ULONG failedSubmits = 0;
     ULONG clearOnly = HasFlag(argc, argv, "-clearonly");
     ULONG noClear = HasFlag(argc, argv, "-noclear");
-    ULONG offscreen = HasFlag(argc, argv, "-offscreen");
-    ULONG useZ = HasFlag(argc, argv, "-z");
     ULONG pace = ParseValue(argc, argv, "-pace", DEFAULT_PACE);
     int result = 0;
-
-    memset(segment, 0, sizeof(segment));
 
     Radeon9200Base = OpenLibrary(
         (CONST_STRPTR)CHIP_LIBRARY_NAME, RADEON3D_LIBRARY_VERSION);
@@ -390,16 +312,17 @@ int main(int argc, char **argv)
         result = Fail("open_service");
         goto out;
     }
-    memset(&depthSurface, 0, sizeof(depthSurface));
     printf("R3DREPLAY iface=%lu caps=%08lx generation=%lu\n",
            (unsigned long)info.Version, (unsigned long)info.Caps,
            (unsigned long)info.Generation);
-    if ((info.Caps & (RADEON3D_CAP_STREAM_SEGMENTS |
-                      RADEON3D_CAP_COMMIT_STATE_BATCH |
-                      RADEON3D_CAP_ORDERED_COMMITS)) !=
-        (RADEON3D_CAP_STREAM_SEGMENTS |
-         RADEON3D_CAP_COMMIT_STATE_BATCH |
-         RADEON3D_CAP_ORDERED_COMMITS)) {
+    if ((info.Caps & (RADEON3D_CAP_CP_READY |
+                      RADEON3D_CAP_FENCES |
+                      RADEON3D_CAP_BITMAP_IMPORT |
+                      RADEON3D_CAP_IMMD_TRI_LIST)) !=
+        (RADEON3D_CAP_CP_READY |
+         RADEON3D_CAP_FENCES |
+         RADEON3D_CAP_BITMAP_IMPORT |
+         RADEON3D_CAP_IMMD_TRI_LIST)) {
         result = Fail("capabilities");
         goto out;
     }
@@ -432,201 +355,78 @@ int main(int argc, char **argv)
             result = Fail("open_screen");
             goto out;
         }
-        if (offscreen) {
-            /* Keep the screen open for the whole run: closing it lets a
-             * deferred board release advance the service generation and
-             * silently invalidate the session mid-run. */
-            bitmap = p96AllocBitMap(width, height, depth,
-                                    BMF_CLEAR | BMF_DISPLAYABLE,
-                                    screen->RastPort.BitMap, rgbFormat);
+        /* Keep the screen open for the whole run: closing it lets a
+         * deferred board release advance the service generation and
+         * silently invalidate the session mid-run. */
+        if (depth == 16UL) {
+            targetBitmap = screen->RastPort.BitMap;
+        } else {
+            bitmap = AllocateRgb565BitMap(width, height);
             if (!bitmap) {
                 result = Fail("alloc_bitmap");
                 goto out;
             }
-        } else {
-            bitmap = screen->RastPort.BitMap;
+            targetBitmap = bitmap;
         }
     }
 
     surface.Size = sizeof(surface);
-    if (!Radeon3DImportBitMap(device, bitmap, &surface) ||
-        surface.Version != RADEON3D_SURFACE_VERSION) {
+    if (!Radeon3DImportBitMap(device, targetBitmap, &surface) ||
+        surface.Version != RADEON3D_SURFACE_VERSION ||
+        surface.Format != RADEON3D_FORMAT_R5G6B5PC) {
         result = Fail("import_bitmap");
         goto out;
     }
-    printf("R3DREPLAY surface cpu=%08lx gpu=%08lx pitch=%lu\n",
+    printf("R3DREPLAY surface cpu=%08lx gpu=%08lx pitch=%lu "
+           "target=%s\n",
            (unsigned long)surface.CpuAddress,
            (unsigned long)surface.GpuAddress,
-           (unsigned long)surface.Pitch);
+           (unsigned long)surface.Pitch,
+           depth == 16UL ? "screen" : "offscreen");
 
-    if (useZ) {
-        /* RGB565 storage like minigl.library's depth bitmaps: width
-         * padded so the pitch is whole 64-pixel tile pairs (128 bytes),
-         * height identical to the color target.  The friend bitmap must
-         * match the requested depth: a 32-bit screen friend makes P96
-         * hand out a 32-bit bitmap regardless of the rgbFormat argument
-         * (r200_surface.c AllocateSeedBitMap pattern). */
-        ULONG depthWidth = (width + 63UL) & ~63UL;
-        struct TagItem seedModeTags[] = {
-            {P96_BESTMODE_FORMATS_ALLOWED, RGBFF_R5G6B5PC},
-            {P96_BESTMODE_NOMINAL_WIDTH, 640UL},
-            {P96_BESTMODE_NOMINAL_HEIGHT, 480UL},
-            {P96_BESTMODE_DEPTH, 16UL},
-            {TAG_DONE, 0}
-        };
-        struct TagItem seedScreenTags[] = {
-            {P96_SCREEN_DISPLAY_ID, 0},
-            {P96_SCREEN_DEPTH, 16UL},
-            {P96_SCREEN_RGB_FORMAT, RGBFB_R5G6B5PC},
-            {P96_SCREEN_SHOW_TITLE, FALSE},
-            {P96_SCREEN_BEHIND, TRUE},
-            {P96_SCREEN_QUIET, TRUE},
-            {TAG_DONE, 0}
-        };
-        struct Screen *seedScreen;
-        struct BitMap *seedFriend;
-        ULONG seedMode = p96BestModeIDTagList(seedModeTags);
-
-        if (seedMode == 0xffffffffUL) {
-            result = Fail("seed_mode");
-            goto out;
-        }
-        seedScreenTags[0].ti_Data = seedMode;
-        seedScreen = p96OpenScreenTagList(seedScreenTags);
-        if (!seedScreen) {
-            result = Fail("seed_screen");
-            goto out;
-        }
-        seedFriend = p96AllocBitMap(16UL, 16UL, 16UL,
-                                    BMF_CLEAR | BMF_DISPLAYABLE,
-                                    seedScreen->RastPort.BitMap,
-                                    RGBFB_R5G6B5PC);
-        p96CloseScreen(seedScreen);
-        if (!seedFriend) {
-            result = Fail("alloc_seed_bitmap");
-            goto out;
-        }
-        depthBitmap = p96AllocBitMap(depthWidth, height, 16UL,
-                                     BMF_CLEAR | BMF_DISPLAYABLE,
-                                     seedFriend, RGBFB_R5G6B5PC);
-        p96FreeBitMap(seedFriend);
-        if (!depthBitmap) {
-            result = Fail("alloc_depth_bitmap");
-            goto out;
-        }
-        printf("R3DREPLAY depthattrs w=%lu h=%lu bpr=%lu bpp=%lu "
-               "fmt=%lu mem=%08lx onboard=%lu p96=%lu\n",
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_WIDTH),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_HEIGHT),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_BYTES_PER_ROW),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_BYTES_PER_PIXEL),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_RGB_FORMAT),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_MEMORY),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_IS_ON_BOARD),
-               (unsigned long)p96GetBitMapAttr(depthBitmap,
-                                               P96_BITMAP_IS_P96));
-        depthSurface.Size = sizeof(depthSurface);
-        if (!Radeon3DImportBitMap(device, depthBitmap, &depthSurface)) {
-            result = Fail("import_depth_bitmap");
-            goto out;
-        }
-        if (depthSurface.Version != RADEON3D_SURFACE_VERSION) {
-            result = Fail("import_depth_version");
-            goto out;
-        }
-        if (depthSurface.Format != RADEON3D_FORMAT_R5G6B5PC) {
-            result = Fail("import_depth_format");
-            goto out;
-        }
-        printf("R3DREPLAY depth cpu=%08lx gpu=%08lx pitch=%lu "
-               "width=%lu\n",
-               (unsigned long)depthSurface.CpuAddress,
-               (unsigned long)depthSurface.GpuAddress,
-               (unsigned long)depthSurface.Pitch,
-               (unsigned long)depthWidth);
-    }
-
-    for (segIndex = 0; segIndex < SEGMENT_COUNT; ++segIndex) {
-        segment[segIndex].Size = sizeof(segment[segIndex]);
-        if (!Radeon3DAllocSegment(device, SEGMENT_BYTES,
-                                  &segment[segIndex]) ||
-            segment[segIndex].Version != RADEON3D_SEGMENT_VERSION ||
-            !segment[segIndex].CpuAddress) {
-            result = Fail("alloc_segment");
-            goto out;
-        }
-        vertices = (volatile ULONG *)segment[segIndex].CpuAddress;
-        FillSegment(vertices, segIndex * RINGS_PER_SEGMENT);
-        printf("R3DREPLAY segment id=%lu gpu=%08lx bytes=%lu "
-               "verts=%lu\n",
-               (unsigned long)segment[segIndex].Id,
-               (unsigned long)segment[segIndex].GpuAddress,
-               (unsigned long)segment[segIndex].Bytes,
-               (unsigned long)VERTS_PER_SEGMENT);
-    }
-
-    BuildClearRecord(clearRecord, (ULONG)surface.Handle,
-                     (ULONG)depthSurface.Handle, width, height, useZ);
+    /* Pre-serialize all five frames. Nothing in the timed loop builds
+     * commands; the client does no per-frame work, so the measured
+     * ceiling is the service validate + ring submit + GPU path. */
+    BuildClearVertices(clearVertices, width, height, 0xff202040UL);
+    BuildStream(clearCommands, surface.GpuAddress, surface.Pitch,
+                surface.Width, surface.Height, clearVertices,
+                CLEAR_VERTICES);
     for (rotation = 0; rotation < FRAME_ROTATIONS; ++rotation) {
-        BuildFrameHeader(headers[rotation], (ULONG)surface.Handle,
-                         useZ ? (ULONG)depthSurface.Handle : 0UL,
-                         kMatrices[rotation], width, height, useZ);
-        for (segIndex = 0; segIndex < SEGMENT_COUNT; ++segIndex) {
-            draws[segIndex].OffsetBytes = 0;
-            draws[segIndex].VertexCount = VERTS_PER_SEGMENT;
-            batches[rotation][segIndex].Size =
-                sizeof(batches[rotation][segIndex]);
-            batches[rotation][segIndex].Version =
-                RADEON3D_STATE_BATCH_VERSION;
-            batches[rotation][segIndex].Generation = info.Generation;
-            batches[rotation][segIndex].SegmentId =
-                segment[segIndex].Id;
-            batches[rotation][segIndex].Primitive =
-                RADEON3D_EXEC_DRAW_QUADS;
-            batches[rotation][segIndex].Header = headers[rotation];
-            batches[rotation][segIndex].HeaderDwords = HEADER_DWORDS;
-            batches[rotation][segIndex].Draws = &draws[segIndex];
-            batches[rotation][segIndex].DrawCount = 1;
-            batches[rotation][segIndex].Flags = RADEON3D_SUBMIT_FENCE;
+        for (batchIndex = 0; batchIndex < BATCHES_PER_FRAME;
+             ++batchIndex) {
+            BuildBatchVertices(batchVertices, rotation, batchIndex,
+                               surface.Width, surface.Height);
+            BuildStream(batchCommands[rotation][batchIndex],
+                        surface.GpuAddress, surface.Pitch,
+                        surface.Width, surface.Height, batchVertices,
+                        BATCH_VERTICES);
         }
     }
 
-    /* Validation frame: fence + wait so a rejected record shape fails
-     * loudly here instead of silently dropping frames in the loop. */
+    /* Validation frame: fence + wait so a rejected stream fails loudly
+     * here instead of silently dropping frames in the loop. */
     {
         ULONG validateFence = 0;
-        BOOL ok;
 
-        ok = Radeon3DExecute(device, clearRecord,
-                             RADEON3D_EXEC_CLEAR_DWORDS,
-                             RADEON3D_SUBMIT_FENCE, &validateFence);
-        if (!ok || !validateFence ||
+        if (!Radeon3DSubmit(device, clearCommands, CLEAR_DWORDS,
+                            RADEON3D_SUBMIT_FENCE, &validateFence) ||
+            !validateFence ||
             !Radeon3DWaitFence(device, validateFence, 10000UL)) {
             result = Fail("validate_clear");
             goto out;
         }
-        for (segIndex = 0; segIndex < SEGMENT_COUNT; ++segIndex) {
-            validateFence = 0;
-            ok = Radeon3DCommitStateBatch(device, &batches[0][segIndex],
-                                          &validateFence);
-            if (!ok || !validateFence ||
-                !Radeon3DWaitFence(device, validateFence, 10000UL)) {
-                info.Size = sizeof(info);
-                if (Radeon3DGetInfo(device, &info))
-                    printf("R3DREPLAY commit_fail_stage=%lu "
-                           "fence=%08lx\n",
-                           (unsigned long)info.CommitFailStage,
-                           (unsigned long)validateFence);
-                result = Fail("validate_batch");
-                goto out;
-            }
+        validateFence = 0;
+        if (!Radeon3DSubmit(device, batchCommands[0][0], BATCH_DWORDS,
+                            RADEON3D_SUBMIT_FENCE, &validateFence) ||
+            !validateFence ||
+            !Radeon3DWaitFence(device, validateFence, 10000UL)) {
+            info.Size = sizeof(info);
+            if (Radeon3DGetInfo(device, &info))
+                printf("R3DREPLAY submit_fail_stage=%lu fence=%08lx\n",
+                       (unsigned long)info.CommitFailStage,
+                       (unsigned long)validateFence);
+            result = Fail("validate_batch");
+            goto out;
         }
         printf("R3DREPLAY validate=ok\n");
     }
@@ -648,20 +448,24 @@ int main(int argc, char **argv)
     }
 
     for (frame = 0; frame < WARMUP_FRAMES; ++frame) {
-        (void)Radeon3DExecute(device, clearRecord,
-                              RADEON3D_EXEC_CLEAR_DWORDS, 0UL, NULL);
-        for (segIndex = 0; segIndex < SEGMENT_COUNT; ++segIndex)
-            (void)Radeon3DCommitStateBatch(device,
-                                           &batches[frame % FRAME_ROTATIONS][segIndex],
-                                           NULL);
+        rotation = frame % FRAME_ROTATIONS;
+        if (!noClear)
+            (void)Radeon3DSubmit(device, clearCommands, CLEAR_DWORDS,
+                                 0UL, NULL);
+        if (!clearOnly) {
+            (void)Radeon3DSubmit(device, batchCommands[rotation][0],
+                                 BATCH_DWORDS, 0UL, NULL);
+            (void)Radeon3DSubmit(device, batchCommands[rotation][1],
+                                 BATCH_DWORDS, 0UL, NULL);
+        }
     }
 
     ReadEClock(&startClock);
     for (frame = 0; frame < frames; ++frame) {
         rotation = frame % FRAME_ROTATIONS;
         if (!noClear &&
-            !Radeon3DExecute(device, clearRecord,
-                             RADEON3D_EXEC_CLEAR_DWORDS, 0UL, NULL)) {
+            !Radeon3DSubmit(device, clearCommands, CLEAR_DWORDS,
+                            0UL, NULL)) {
             ++failedSubmits;
             if (failedSubmits == 1UL && Radeon3DGetInfo(device, &info))
                 printf("R3DREPLAY loopfail call=clear frame=%lu "
@@ -671,18 +475,24 @@ int main(int argc, char **argv)
         }
         if (!clearOnly) {
             ULONG drain = pace && ((frame % pace) == pace - 1UL);
-            for (segIndex = 0; segIndex < SEGMENT_COUNT; ++segIndex) {
+
+            for (batchIndex = 0; batchIndex < BATCHES_PER_FRAME;
+                 ++batchIndex) {
                 ULONG fence = 0;
-                BOOL ok = Radeon3DCommitStateBatch(
-                    device, &batches[rotation][segIndex],
-                    (drain && segIndex == SEGMENT_COUNT - 1UL) ? &fence
-                                                               : NULL);
+                BOOL ok = Radeon3DSubmit(
+                    device, batchCommands[rotation][batchIndex],
+                    BATCH_DWORDS,
+                    (drain && batchIndex == BATCHES_PER_FRAME - 1UL) ?
+                        RADEON3D_SUBMIT_FENCE : 0UL,
+                    (drain && batchIndex == BATCHES_PER_FRAME - 1UL) ?
+                        &fence : NULL);
+
                 if (!ok) {
                     ++failedSubmits;
                     if (failedSubmits == 1UL &&
                         Radeon3DGetInfo(device, &info))
-                        printf("R3DREPLAY loopfail call=batch frame=%lu "
-                               "stage=%lu\n",
+                        printf("R3DREPLAY loopfail call=batch "
+                               "frame=%lu stage=%lu\n",
                                (unsigned long)frame,
                                (unsigned long)info.CommitFailStage);
                 } else if (fence &&
@@ -705,12 +515,11 @@ int main(int argc, char **argv)
     fpsX1000 = (ULONG)((unsigned long long)frame *
                        (unsigned long long)eclockHz * 1000ULL /
                        elapsed);
-    printf("R3DREPLAY_SUMMARY version=3 mode=%s target=%s z=%s pace=%lu "
+    printf("R3DREPLAY_SUMMARY version=4 mode=%s target=%s z=off pace=%lu "
            "width=%lu height=%lu depth=%lu frames=%lu elapsed_ticks=%lu "
            "eclock_hz=%lu fps_x1000=%lu calls=%lu fail=%lu\n",
            clearOnly ? "clearonly" : (noClear ? "noclear" : "full"),
-           offscreen ? "offscreen" : "screen",
-           useZ ? "on" : "off",
+           depth == 16UL ? "screen" : "offscreen",
            (unsigned long)pace,
            (unsigned long)width, (unsigned long)height,
            (unsigned long)depth, (unsigned long)frame,
@@ -718,18 +527,12 @@ int main(int argc, char **argv)
            (unsigned long)eclockHz,
            (unsigned long)fpsX1000,
            (unsigned long)(frame * (clearOnly ? 1UL :
-                                    (noClear ? SEGMENT_COUNT :
-                                     SEGMENT_COUNT + 1UL))),
+                                    (noClear ? BATCHES_PER_FRAME :
+                                     BATCHES_PER_FRAME + 1UL))),
            (unsigned long)failedSubmits);
     printf("R3DREPLAY status=ok\n");
 
 out:
-    for (segIndex = 0; segIndex < SEGMENT_COUNT; ++segIndex) {
-        if (device && segment[segIndex].CpuAddress)
-            (void)Radeon3DFreeSegment(device, segment[segIndex].Id);
-    }
-    if (depthBitmap)
-        FreeBitMap(depthBitmap);
     if (timerIO) {
         if (timerIO->tr_node.io_Device)
             CloseDevice((struct IORequest *)timerIO);
@@ -739,8 +542,8 @@ out:
         DeleteMsgPort(timerPort);
     if (screen)
         p96CloseScreen(screen);
-    if (bitmap && offscreen)
-        FreeBitMap(bitmap);
+    if (bitmap)
+        p96FreeBitMap(bitmap);
     if (IntuitionBase)
         CloseLibrary((struct Library *)IntuitionBase);
     if (GfxBase)

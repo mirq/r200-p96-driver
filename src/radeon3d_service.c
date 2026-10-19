@@ -9,46 +9,6 @@
 #include "radeon_regs.h"
 #include "radeon3d_emit.h"
 
-#ifdef DEBUG
-/*
- * Temporary diagnostics: dump the first Execute and the first CommitBatch
- * (record chain + generated CP stream) so the host can disassemble exactly
- * what the card was asked to do. Compiled only with RADEON_BOOT_PROBES: the
- * dump path runs dos.library calls (Open/Write/Close via libc's _DOSBase,
- * which this chip-based freestanding build never initializes) inside render
- * callbacks, and file I/O there is a wedge risk. Post-boot stream capture
- * must not be part of an ordinary boot path.
- */
-#ifdef RADEON_BOOT_PROBES
-static void DumpStreamFile(struct ExecBase *SysBase, const char *path,
-                           const ULONG *records, ULONG recordDwords,
-                           const ULONG *generated, ULONG generatedDwords)
-{
-    BPTR file;
-    ULONG header[4];
-
-    if (!SysBase)
-        return;
-    file = Open((STRPTR)path, MODE_NEWFILE);
-    if (!file)
-        return;
-    header[0] = 0x52334455UL; /* 'R3DU' */
-    header[1] = 1UL;
-    header[2] = recordDwords;
-    header[3] = generatedDwords;
-    (void)Write(file, header, sizeof(header));
-    if (recordDwords)
-        (void)Write(file, (APTR)records, recordDwords * sizeof(ULONG));
-    if (generatedDwords)
-        (void)Write(file, (APTR)generated, generatedDwords * sizeof(ULONG));
-    Close(file);
-}
-
-static LONG FirstExecuteDumpPending = 1;
-static LONG FirstCommitDumpPending = 1;
-#endif /* RADEON_BOOT_PROBES */
-#endif /* DEBUG */
-
 #define RADEON3D_SESSION_MAGIC 0x52334453UL
 
 /* Diagnostic: which check rejected the most recent submission. Reported
@@ -78,9 +38,6 @@ struct Radeon3DDevice {
     UBYTE Closing;
     UBYTE CleanupDone;
     UBYTE CleanupReady;
-    ULONG *ExecuteTrusted;
-    ULONG *ExecuteGenerated;
-    struct Radeon3DEmitter *ExecuteEmitter;
     struct Radeon3DSegmentSlot Segments[RADEON3D_MAX_SEGMENTS];
     struct MinList Surfaces;
 };
@@ -164,7 +121,7 @@ static void RemoveServiceDevice(struct Radeon3DDevice *device)
 }
 
 /*
- * Execute-phase attribution clock, live in every build. Opens timer.device
+ * Submission-phase attribution clock, live in every build. Opens timer.device
  * once on the first session open and brackets each phase with ReadEClock():
  * one direct device call per boundary, no message round trip, which the
  * DEBUG microbenchmark measures at well under a microsecond -- the old
@@ -300,32 +257,6 @@ void Radeon3DFreeExecTimer(struct RadeonChipBase *base)
     }
 }
 
-/* Trusted-record copy: both sides are cached memory, so the cost is pure
- * instruction count. Eight values held in registers per iteration give the
- * scheduler independent loads/stores instead of a dependent per-dword
- * chain; no intermediate staging pass. */
-static void ExecCopyRecords(ULONG *dst, const ULONG *src, ULONG words)
-{
-    while (words >= 8UL) {
-        ULONG a = src[0], b = src[1], c = src[2], d = src[3];
-        ULONG e = src[4], f = src[5], g = src[6], h = src[7];
-
-        dst[0] = a;
-        dst[1] = b;
-        dst[2] = c;
-        dst[3] = d;
-        dst[4] = e;
-        dst[5] = f;
-        dst[6] = g;
-        dst[7] = h;
-        src += 8;
-        dst += 8;
-        words -= 8;
-    }
-    while (words--)
-        *(dst++) = *(src++);
-}
-
 static void ReapRetiredDevicesLocked(struct RadeonChipBase *base)
 {
     struct ExecBase *SysBase = base->ExecBase;
@@ -373,17 +304,6 @@ static void RemoveSurfaceHandle(struct Radeon3DSurfaceHandle *surface)
     surface->Node.mln_Succ->mln_Pred = surface->Node.mln_Pred;
     surface->Node.mln_Succ = NULL;
     surface->Node.mln_Pred = NULL;
-}
-
-static void FreeExecuteEmitter(struct RadeonChipBase *base,
-                               struct Radeon3DDevice *device)
-{
-    struct ExecBase *SysBase = base->ExecBase;
-
-    if (!device->ExecuteEmitter)
-        return;
-    FreeMem(device->ExecuteEmitter, sizeof(*device->ExecuteEmitter));
-    device->ExecuteEmitter = NULL;
 }
 
 static void FreeDeviceSegments(struct RadeonChipBase *base,
@@ -489,17 +409,6 @@ static void FreeDeviceSurfaces(struct RadeonChipBase *base,
             AuxPoolFree(base, surface->PoolOffset, surface->PoolBytes);
         FreeMem(surface, sizeof(*surface));
     }
-    if (device->ExecuteTrusted) {
-        FreeMem(device->ExecuteTrusted,
-                RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
-        device->ExecuteTrusted = NULL;
-    }
-    if (device->ExecuteGenerated) {
-        FreeMem(device->ExecuteGenerated,
-                RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
-        device->ExecuteGenerated = NULL;
-    }
-    FreeExecuteEmitter(base, device);
 }
 
 static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
@@ -519,51 +428,14 @@ static void FillInfo(struct RadeonChipBase *base, struct Radeon3DInfo *info,
                  RADEON3D_CAP_FENCES |
                  RADEON3D_CAP_BITMAP_IMPORT |
                  RADEON3D_CAP_IMMD_TRI_LIST;
-    if (interfaceVersion >= 2UL)
-        info->Caps |= RADEON3D_CAP_PHASE2_EXECUTE;
-    if (interfaceVersion >= 3UL)
-        info->Caps |= RADEON3D_CAP_DEPTH_FUNCS;
-    if (interfaceVersion >= 4UL)
-        info->Caps |= RADEON3D_CAP_TEXTURE_STATE;
-    if (interfaceVersion >= 5UL)
-        info->Caps |= RADEON3D_CAP_FOG_MULTITEX;
+    /* Bits 7-12 and 14-20 were the semantic record capabilities; they are
+     * no longer advertised (see the retired-bits note in radeon3d.h). */
 #ifdef DEBUG
     if (interfaceVersion >= 5UL)
         info->Caps |= RADEON3D_CAP_TEST_INVALIDATE;
 #endif
-    if (interfaceVersion >= 6UL)
-        info->Caps |= RADEON3D_CAP_COLOR_TARGET_FORMATS;
-    if (interfaceVersion >= 7UL)
-        info->Caps |= RADEON3D_CAP_NATIVE_TRI_PRIMITIVES;
-    if (interfaceVersion >= 8UL)
-        info->Caps |= RADEON3D_CAP_NATIVE_QUAD_LISTS;
-    if (interfaceVersion >= 9UL)
-        info->Caps |= RADEON3D_CAP_HW_TRANSFORM_CLIP;
-    if (interfaceVersion >= 10UL)
-        info->Caps |= RADEON3D_CAP_HW_TEXGEN;
-    if (interfaceVersion >= 11UL)
-        info->Caps |= RADEON3D_CAP_HW_NORMALS |
-                      RADEON3D_CAP_HW_LIGHTING;
-    if (interfaceVersion >= 12UL)
-        info->Caps |= RADEON3D_CAP_HW_SPHERE_MAP;
-    if (interfaceVersion >= 12UL)
-        info->Caps |= RADEON3D_CAP_COMPACT_TCL_VERTEX;
     if (interfaceVersion >= 13UL && base->StreamSegmentPool)
         info->Caps |= RADEON3D_CAP_STREAM_SEGMENTS;
-    if (interfaceVersion >= 14UL)
-        info->Caps |= RADEON3D_CAP_COMMIT_STATE_REUSE;
-    /* 2026-08-30 reboot-isolated 800x600x32 windowed gears ladder (300
-     * frames each): state batches + ordered commits 52.456 median,
-     * state batches + drain-before-submit 47.845, inline fallback
-     * 39.621. The state-batch shape submits ~3.5 batches/frame, each
-     * re-emitting a full TCL header; the next win is client-side state
-     * grouping, not driver shapes. The 55.5 figure from the async-present
-     * entry used a client-side commit-chain shape that no longer exists
-     * in the reconciled client. */
-    if (interfaceVersion >= 15UL)
-        info->Caps |= RADEON3D_CAP_COMMIT_STATE_BATCH;
-    if (interfaceVersion >= 16UL)
-        info->Caps |= RADEON3D_CAP_ORDERED_COMMITS;
     if (interfaceVersion >= 17UL && base->AuxSurfacePool)
         info->Caps |= RADEON3D_CAP_AUX_SURFACES;
     if (interfaceVersion >= 18UL && base->StreamSegmentPool)
@@ -1086,9 +958,11 @@ BOOL Radeon3DSubmit(
     ULONG *trusted;
     ULONG internalFence = 0;
     ULONG index;
+    ULONG copyTicks = 0;
     ULONG buildTicks = 0;
     ULONG submitTicks = 0;
-    ULONG phase = 0;
+    ULONG phase;
+    ULONG generatedDwords = 0;
     BOOL submitAttempted = FALSE;
     BOOL result;
 
@@ -1101,8 +975,10 @@ BOOL Radeon3DSubmit(
     trusted = AllocMem(commandCount * sizeof(*trusted), MEMF_PUBLIC);
     if (!trusted)
         return FALSE;
+    phase = ServiceExecTicks(base);
     for (index = 0; index < commandCount; ++index)
         trusted[index] = commands[index];
+    copyTicks = ServiceExecTicks(base) - phase;
     bi = LockServiceBoard(base, &device);
     if (!bi) {
         FreeMem(trusted, commandCount * sizeof(*trusted));
@@ -1121,12 +997,14 @@ BOOL Radeon3DSubmit(
     if (result)
         result = RadeonPrepare3D(bi);
     buildTicks = ServiceExecTicks(base) - phase;
+    base->ExecBuildMicros += ExecTicksToMicros(base, buildTicks);
     if (result) {
         submitAttempted = TRUE;
         phase = ServiceExecTicks(base);
         result = RadeonCpSubmitStream(bi, trusted, commandCount, TRUE,
                                       &internalFence);
         submitTicks = ServiceExecTicks(base) - phase;
+        base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
     }
     if (result && internalFence) {
         device->LastFence = internalFence;
@@ -1136,210 +1014,16 @@ BOOL Radeon3DSubmit(
     } else if (submitAttempted) {
         (void)RadeonRecoverAcceleration(bi);
     }
+    base->ExecCalls++;
+    base->ExecRecordDwords += commandCount;
+    if (submitAttempted)
+        generatedDwords = commandCount;
+    base->ExecGeneratedDwords += generatedDwords;
     RecordExecSample(base, RADEON3D_SAMPLE_SUBMIT, commandCount,
-                     commandCount, 0UL, buildTicks, submitTicks, result);
+                     generatedDwords, copyTicks, buildTicks, submitTicks,
+                     result);
     UnlockServiceBoard(base, bi, device);
     FreeMem(trusted, commandCount * sizeof(*trusted));
-    return result;
-}
-
-/* Execute buffers are allocated on first use. Both the record path and the
- * streaming commit path need them, so a client whose very first submission
- * is a commit must not find them missing. */
-/* Emitter resolve hook: maps a record's raw surface handle to a value
- * descriptor through the session's surface table. This is the only
- * device-dependent piece of record processing. */
-static struct Radeon3DEmitSurface *Radeon3DEmitResolveSurface(
-    void *user, ULONG handleValue, struct Radeon3DEmitSurface *slot)
-{
-    struct Radeon3DDevice *device = user;
-    struct Radeon3DSurfaceHandle *surface =
-        FindSurfaceHandle(device, (APTR)handleValue);
-
-    if (!surface)
-        return NULL;
-    slot->CpuAddress = surface->CpuAddress;
-    slot->GpuAddress = surface->GpuAddress;
-    slot->Pitch = surface->Pitch;
-    slot->Width = surface->Width;
-    slot->Height = surface->Height;
-    slot->Format = surface->Format;
-    return slot;
-}
-
-static APTR AllocExecuteMemory(struct ExecBase *SysBase, ULONG bytes)
-{
-    /* The PPC-task AllocMem hook redirects PUBLIC or FAST requests to PPC
-     * RAM, even when LOCAL is also set. Request only LOCAL for this private
-     * 68k working storage, then reject Chip RAM. Keep the old allocation
-     * path if local Fast RAM is unavailable. No shared/DMA buffer uses this. */
-    APTR memory = AllocMem(bytes, MEMF_LOCAL);
-
-    if (memory && !(TypeOfMem(memory) & MEMF_FAST)) {
-        FreeMem(memory, bytes);
-        memory = NULL;
-    }
-
-    return memory ? memory : AllocMem(bytes, MEMF_PUBLIC);
-}
-
-static BOOL EnsureExecuteBuffers(struct RadeonChipBase *base,
-                                 struct Radeon3DDevice *device)
-{
-    struct ExecBase *SysBase = base->ExecBase;
-
-    if (!device->ExecuteGenerated)
-        device->ExecuteGenerated = AllocExecuteMemory(
-            SysBase, RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
-    /* The emitter is session-owned rather than automatic: with lighting
-     * state it is far too large for a client's stack. */
-    if (!device->ExecuteEmitter)
-        device->ExecuteEmitter = AllocExecuteMemory(
-            SysBase, sizeof(*device->ExecuteEmitter));
-    if (device->ExecuteGenerated && device->ExecuteEmitter) {
-        device->ExecuteEmitter->Resolve = Radeon3DEmitResolveSurface;
-        device->ExecuteEmitter->ResolveUser = device;
-        device->ExecuteEmitter->InterfaceVersion =
-            device->InterfaceVersion;
-        device->ExecuteEmitter->FailStage = 0;
-        return TRUE;
-    }
-    if (device->ExecuteGenerated) {
-        FreeMem(device->ExecuteGenerated,
-                RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
-        device->ExecuteGenerated = NULL;
-    }
-    FreeExecuteEmitter(base, device);
-    return FALSE;
-}
-
-/* Records reach the emitter straight out of the caller's buffer, so the
- * only path still needing a driver-side staging copy is CommitStateBatch:
- * it rewrites dword 10 of the header and re-reads the header and the draw
- * descriptors after validating them. Allocated on that path's first use so
- * a session that never issues a state batch does not carry 32 KiB, and so
- * Execute/CommitDraw/CommitBatch no longer fail on an allocation they have
- * no use for. */
-static BOOL EnsureStateBatchBuffer(struct RadeonChipBase *base,
-                                   struct Radeon3DDevice *device)
-{
-    struct ExecBase *SysBase = base->ExecBase;
-
-    if (!device->ExecuteTrusted)
-        device->ExecuteTrusted = AllocExecuteMemory(
-            SysBase, RADEON3D_MAX_BATCH_DWORDS * sizeof(ULONG));
-    return device->ExecuteTrusted != NULL;
-}
-
-BOOL Radeon3DExecute(
-    __REGA0(struct Radeon3DDevice *device),
-    __REGA1(const ULONG *records),
-    __REGD0(ULONG recordDwords),
-    __REGD1(ULONG flags),
-    __REGA2(ULONG *fenceOut),
-    __REGA6(struct RadeonChipBase *base))
-{
-    struct BoardInfo *bi;
-    struct ExecBase *SysBase = base ? base->ExecBase : NULL;
-    struct Radeon3DEmitter *emitter;
-    ULONG *generated;
-    ULONG internalFence = 0;
-    ULONG buildStart, submitStart;
-    ULONG buildTicks = 0, submitTicks = 0;
-    BOOL result = FALSE;
-
-    if (fenceOut)
-        *fenceOut = 0;
-    if (!SysBase || !records || !recordDwords ||
-        recordDwords > RADEON3D_MAX_BATCH_DWORDS ||
-        (flags & ~RADEON3D_SUBMIT_FLAGS))
-        return FALSE;
-    bi = LockServiceBoard(base, &device);
-    if (!bi)
-        return FALSE;
-    if (device->InterfaceVersion < 2UL) {
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    if (base->LeaseActive) {
-        COMMIT_FAIL(base, 122UL);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    if (!EnsureExecuteBuffers(base, device)) {
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    generated = device->ExecuteGenerated;
-    emitter = device->ExecuteEmitter;
-    if (!generated || !emitter) {
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    /* The emitter validates and consumes the record chain in a single pass
-     * from const memory, and the calling task is blocked for the duration,
-     * so it reads the client's buffer directly -- no trusted snapshot. */
-    emitter->Words = generated;
-    emitter->Count = 0;
-    Radeon3DEmitResetCaptures(emitter);
-    emitter->Live->TextureState = 0;
-    emitter->Live->Texture1State = 0;
-    emitter->GuardClipEmitted = FALSE;
-    emitter->MatrixValid = FALSE;
-    emitter->TexGenMatrixValid[0] = FALSE;
-    emitter->TexGenMatrixValid[1] = FALSE;
-    emitter->ModelViewValid = FALSE;
-    emitter->InvModelViewValid = FALSE;
-    emitter->CommitVbuf = FALSE;
-    emitter->CommitSegmentBytes = 0;
-    emitter->CommitVbufAddress = 0;
-    buildStart = RDEBUG_PHASE_BEGIN();
-    {
-        ULONG phase = ServiceExecTicks(base);
-        result = Radeon3DEmitStream(emitter, records, recordDwords);
-        if (result)
-            result = RadeonPrepare3D(bi);
-        buildTicks = ServiceExecTicks(base) - phase;
-        base->ExecBuildMicros += ExecTicksToMicros(base, buildTicks);
-    }
-    if (!result) {
-        RecordExecSample(base, RADEON3D_SAMPLE_EXECUTE, recordDwords,
-                         emitter->Count, 0UL, buildTicks, 0UL, FALSE);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    RDEBUG_EXECUTE_PHASE(RADEON_DEBUG_EXEC_BUILD, buildStart);
-    submitStart = RDEBUG_PHASE_BEGIN();
-    {
-        ULONG phase = ServiceExecTicks(base);
-        result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
-                                      &internalFence);
-        submitTicks = ServiceExecTicks(base) - phase;
-        base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
-    }
-    if (result) {
-        device->LastFence = internalFence;
-        RadeonMark3DSubmitted(bi);
-        if ((flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
-            *fenceOut = internalFence;
-    } else {
-        (void)RadeonRecoverAcceleration(bi);
-    }
-#if defined(DEBUG) && defined(RADEON_BOOT_PROBES)
-    if (FirstExecuteDumpPending) {
-        FirstExecuteDumpPending = 0;
-        DumpStreamFile(base->ExecBase, "T:r3d_first_execute.bin",
-                       records, recordDwords, generated, emitter->Count);
-    }
-#endif
-    RDEBUG_EXECUTE_PHASE(RADEON_DEBUG_EXEC_SUBMIT, submitStart);
-    RDEBUG_EXECUTE_SAMPLE(recordDwords, emitter->Count);
-    base->ExecCalls++;
-    base->ExecRecordDwords += recordDwords;
-    base->ExecGeneratedDwords += emitter->Count;
-    RecordExecSample(base, RADEON3D_SAMPLE_EXECUTE, recordDwords,
-                     emitter->Count, 0UL, buildTicks, submitTicks, result);
-    UnlockServiceBoard(base, bi, device);
     return result;
 }
 
@@ -1533,439 +1217,6 @@ out:
     return added;
 }
 
-static BOOL CommitRecords(
-    struct Radeon3DDevice *device, struct BoardInfo *bi,
-    const ULONG *records, ULONG recordDwords,
-    const ULONG *vertexOffsets, ULONG recordCount,
-    const struct Radeon3DSegmentSlot *slot, ULONG flags, ULONG *fenceOut,
-    ULONG sampleType)
-{
-    struct ExecBase *SysBase = bi->ExecBase;
-    struct RadeonChipBase *base = device->Base;
-    struct Radeon3DEmitter *emitter;
-    ULONG *generated;
-    ULONG internalFence = 0;
-    ULONG phase;
-    ULONG buildTicks = 0;
-    ULONG submitTicks = 0;
-    BOOL streamBuilt;
-    BOOL result;
-
-    if (fenceOut)
-        *fenceOut = 0;
-    if (!SysBase || !records || !recordDwords ||
-        recordDwords > RADEON3D_MAX_BATCH_DWORDS ||
-        !vertexOffsets || !recordCount || !slot ||
-        (flags & ~RADEON3D_SUBMIT_FLAGS)) {
-        COMMIT_FAIL(base, 1UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 1UL;
-        return FALSE;
-    }
-    if (device->InterfaceVersion < 13UL ||
-        !EnsureExecuteBuffers(base, device)) {
-        COMMIT_FAIL(base, 2UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 2UL;
-        return FALSE;
-    }
-    /* Draw records carry no inline vertices here, so each one consumes a
-     * fetch offset; clears may ride along and consume none. There is no
-     * separate structural pre-walk: the emitter validates every record as
-     * it consumes the chain and guards each fetch-offset consume against
-     * CommitRecordCount, so an offsets/draw-count mismatch fails the
-     * stream (stage 5 below) before anything reaches the CP. */
-    generated = device->ExecuteGenerated;
-    emitter = device->ExecuteEmitter;
-    base->CommitFailStage = 0;
-    /* Records were structurally walked above and the emitter re-validates as
-     * it consumes; both read the caller's buffer directly. */
-    emitter->Words = generated;
-    emitter->Count = 0;
-    Radeon3DEmitResetCaptures(emitter);
-    emitter->Live->TextureState = 0;
-    emitter->Live->Texture1State = 0;
-    emitter->GuardClipEmitted = FALSE;
-    emitter->MatrixValid = FALSE;
-    emitter->TexGenMatrixValid[0] = FALSE;
-    emitter->TexGenMatrixValid[1] = FALSE;
-    emitter->ModelViewValid = FALSE;
-    emitter->InvModelViewValid = FALSE;
-    emitter->CommitVbuf = TRUE;
-    emitter->CommitSegmentGpuBase = slot->GpuAddress;
-    emitter->CommitSegmentBytes = slot->Bytes;
-    emitter->CommitVertexOffsets = vertexOffsets;
-    emitter->CommitRecordCount = recordCount;
-    emitter->CommitDrawIndex = 0;
-    phase = ServiceExecTicks(base);
-    streamBuilt = Radeon3DEmitStream(emitter, records, recordDwords);
-    if (streamBuilt &&
-        emitter->CommitDrawIndex != recordCount) {
-        /* The chain emitted cleanly but consumed a
-         * different number of fetch offsets than the
-         * caller supplied: reject before submission
-         * (the structural pre-walk stage 5). */
-        COMMIT_FAIL(base, 5UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 5UL;
-        buildTicks = ServiceExecTicks(base) - phase;
-        (void)RadeonRecoverAcceleration(bi);
-        RecordExecSample(base, sampleType,
-                         recordDwords, emitter->Count,
-                         0UL, buildTicks, 0UL, FALSE);
-        return FALSE;
-    }
-    result = streamBuilt;
-    if (result)
-        result = RadeonPrepare3D(bi);
-    buildTicks = ServiceExecTicks(base) - phase;
-    base->ExecBuildMicros += ExecTicksToMicros(base, buildTicks);
-    emitter->CommitVbuf = FALSE;
-    emitter->CommitSegmentGpuBase = 0;
-    emitter->CommitSegmentBytes = 0;
-    emitter->CommitVertexOffsets = NULL;
-    emitter->CommitDrawIndex = 0;
-    emitter->CommitRecordCount = 0;
-    emitter->CommitVbufAddress = 0;
-    emitter->StateValid = FALSE;
-    if (!result) {
-        if (!streamBuilt && !base->CommitFailStage)
-            COMMIT_FAIL(base, 6UL);
-        else if (streamBuilt)
-            COMMIT_FAIL(base, 7UL);
-        /* Encode the emitter stage for clients whose info block predates
-         * CommitFailStage: fenceOut keeps 0 for success only. */
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | (6UL << 16) |
-                        (base->CommitFailStage & 0xffffUL);
-        (void)RadeonRecoverAcceleration(bi);
-        RecordExecSample(base, sampleType, recordDwords, emitter->Count,
-                         0UL, buildTicks, 0UL, FALSE);
-        return FALSE;
-    }
-    phase = ServiceExecTicks(base);
-    result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
-                                  &internalFence);
-    submitTicks = ServiceExecTicks(base) - phase;
-    base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
-    if (result) {
-        device->LastFence = internalFence;
-        RadeonMark3DSubmitted(bi);
-        if ((flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
-            *fenceOut = internalFence;
-    } else {
-        COMMIT_FAIL(base, 8UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | (8UL << 16) |
-                        (emitter->Count & 0xffffUL);
-        (void)RadeonRecoverAcceleration(bi);
-    }
-    base->ExecCalls++;
-    base->ExecRecordDwords += recordDwords;
-    base->ExecGeneratedDwords += emitter->Count;
-    RecordExecSample(base, sampleType, recordDwords, emitter->Count,
-                     0UL, buildTicks, submitTicks, result);
-    return result;
-}
-
-BOOL Radeon3DCommitDraw(
-    __REGA0(struct Radeon3DDevice *device),
-    __REGA1(const struct Radeon3DCommit *commit),
-    __REGA2(ULONG *fenceOut),
-    __REGA6(struct RadeonChipBase *base))
-{
-    struct BoardInfo *bi;
-    struct Radeon3DSegmentSlot *slot;
-    BOOL result;
-
-    if (fenceOut)
-        *fenceOut = 0;
-    if (!base || !commit ||
-        commit->Size < RADEON3D_COMMIT_V1_SIZE ||
-        commit->Version != RADEON3D_COMMIT_VERSION ||
-        !commit->Header || !commit->HeaderDwords ||
-        commit->HeaderDwords > RADEON3D_MAX_BATCH_DWORDS ||
-        (commit->OffsetBytes & 3UL) ||
-        (commit->Flags & ~RADEON3D_SUBMIT_FLAGS))
-        return FALSE;
-    bi = LockServiceBoard(base, &device);
-    if (!bi)
-        return FALSE;
-    if (commit->SegmentId >= RADEON3D_MAX_SEGMENTS ||
-        !device->Segments[commit->SegmentId].Allocated ||
-        commit->OffsetBytes >=
-            device->Segments[commit->SegmentId].Bytes) {
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    slot = &device->Segments[commit->SegmentId];
-    if (slot->GpuAddress > ~0UL - commit->OffsetBytes) {
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    if (base->LeaseActive) {
-        COMMIT_FAIL(base, 122UL);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    result = CommitRecords(device, bi, commit->Header, commit->HeaderDwords,
-                           &commit->OffsetBytes, 1UL, slot, commit->Flags,
-                           fenceOut, RADEON3D_SAMPLE_COMMIT_DRAW);
-    UnlockServiceBoard(base, bi, device);
-    return result;
-}
-
-BOOL Radeon3DCommitBatch(
-    __REGA0(struct Radeon3DDevice *device),
-    __REGA1(const struct Radeon3DCommitBatch *commit),
-    __REGA2(ULONG *fenceOut),
-    __REGA6(struct RadeonChipBase *base))
-{
-    struct BoardInfo *bi;
-    struct Radeon3DSegmentSlot *slot;
-    ULONG index;
-    BOOL result;
-
-    if (base)
-        COMMIT_FAIL(base, 40UL);
-    if (fenceOut)
-        *fenceOut = 0x80000000UL | 40UL;
-    if (!base || !commit ||
-        commit->Size < RADEON3D_COMMIT_BATCH_V1_SIZE ||
-        commit->Version != RADEON3D_COMMIT_BATCH_VERSION ||
-        !commit->Records || !commit->RecordDwords ||
-        !commit->VertexOffsets || !commit->RecordCount ||
-        commit->RecordDwords > RADEON3D_MAX_BATCH_DWORDS ||
-        (commit->Flags & ~RADEON3D_SUBMIT_FLAGS)) {
-        if (base)
-            COMMIT_FAIL(base, 41UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 41UL;
-        return FALSE;
-    }
-    bi = LockServiceBoard(base, &device);
-    if (!bi) {
-        COMMIT_FAIL(base, 42UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 42UL;
-        return FALSE;
-    }
-    if (commit->SegmentId >= RADEON3D_MAX_SEGMENTS ||
-        !device->Segments[commit->SegmentId].Allocated) {
-        UnlockServiceBoard(base, bi, device);
-        COMMIT_FAIL(base, 43UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 43UL;
-        return FALSE;
-    }
-    slot = &device->Segments[commit->SegmentId];
-    for (index = 0; index < commit->RecordCount; ++index) {
-        if (commit->VertexOffsets[index] >= slot->Bytes) {
-            UnlockServiceBoard(base, bi, device);
-            COMMIT_FAIL(base, 44UL);
-            if (fenceOut)
-                *fenceOut = 0x80000000UL | 44UL;
-            return FALSE;
-        }
-    }
-    if (base->LeaseActive) {
-        UnlockServiceBoard(base, bi, device);
-        COMMIT_FAIL(base, 122UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | 122UL;
-        return FALSE;
-    }
-    result = CommitRecords(device, bi, commit->Records, commit->RecordDwords,
-                           commit->VertexOffsets, commit->RecordCount, slot,
-                           commit->Flags, fenceOut,
-                           RADEON3D_SAMPLE_COMMIT_BATCH);
-#if defined(DEBUG) && defined(RADEON_BOOT_PROBES)
-    if (FirstCommitDumpPending) {
-        FirstCommitDumpPending = 0;
-        DumpStreamFile(base->ExecBase, "T:r3d_first_commit.bin",
-                       commit->Records, commit->RecordDwords, NULL, 0UL);
-    }
-#endif
-    UnlockServiceBoard(base, bi, device);
-    return result;
-}
-
-BOOL Radeon3DCommitStateBatch(
-    __REGA0(struct Radeon3DDevice *device),
-    __REGA1(const struct Radeon3DStateBatch *batch),
-    __REGA2(ULONG *fenceOut),
-    __REGA6(struct RadeonChipBase *base))
-{
-    struct Radeon3DStateBatch request;
-    struct Radeon3DStateBatchDraw *draws;
-    struct Radeon3DSegmentSlot *slot;
-    struct Radeon3DEmitter *emitter;
-    struct BoardInfo *bi;
-    ULONG *trusted;
-    ULONG *generated;
-    ULONG primitiveType;
-    ULONG internalFence = 0;
-    ULONG stagedDwords;
-    ULONG phase;
-    ULONG copyTicks = 0;
-    ULONG buildTicks = 0;
-    ULONG submitTicks = 0;
-    ULONG index;
-    BOOL streamBuilt;
-    BOOL result;
-
-    if (fenceOut)
-        *fenceOut = 0;
-    if (!base || !batch)
-        return FALSE;
-    request = *batch;
-    if (request.Size < RADEON3D_STATE_BATCH_V1_SIZE ||
-        request.Version != RADEON3D_STATE_BATCH_VERSION ||
-        !request.Header ||
-        request.HeaderDwords < RADEON3D_EXEC_DRAW_HW_TCL_HEADER_DWORDS ||
-        request.HeaderDwords > RADEON3D_MAX_BATCH_DWORDS ||
-        !request.Draws || !request.DrawCount ||
-        request.DrawCount > RADEON3D_STATE_BATCH_MAX_DRAWS ||
-        request.DrawCount >
-            (RADEON3D_MAX_BATCH_DWORDS - request.HeaderDwords) /
-                (RADEON3D_STATE_BATCH_DRAW_V1_SIZE / sizeof(ULONG)) ||
-        !Radeon3DEmitPrimitiveType(request.Primitive, &primitiveType) ||
-        (request.Flags & ~RADEON3D_SUBMIT_FLAGS)) {
-        COMMIT_FAIL(base, 80UL);
-        return FALSE;
-    }
-    stagedDwords = request.HeaderDwords +
-                   request.DrawCount *
-                       (RADEON3D_STATE_BATCH_DRAW_V1_SIZE / sizeof(ULONG));
-    bi = LockServiceBoard(base, &device);
-    if (!bi)
-        return FALSE;
-    if (device->InterfaceVersion < 15UL ||
-        request.Generation != device->Generation ||
-        request.Generation != base->ServiceGeneration ||
-        request.SegmentId >= RADEON3D_MAX_SEGMENTS ||
-        !device->Segments[request.SegmentId].Allocated ||
-        !EnsureExecuteBuffers(base, device) ||
-        !EnsureStateBatchBuffer(base, device)) {
-        COMMIT_FAIL(base, 81UL);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    if (base->LeaseActive) {
-        COMMIT_FAIL(base, 122UL);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    slot = &device->Segments[request.SegmentId];
-    trusted = device->ExecuteTrusted;
-    generated = device->ExecuteGenerated;
-    emitter = device->ExecuteEmitter;
-
-    base->CommitFailStage = 0;
-    phase = ServiceExecTicks(base);
-    ExecCopyRecords(trusted, request.Header, request.HeaderDwords);
-    draws = (struct Radeon3DStateBatchDraw *)(trusted +
-                                              request.HeaderDwords);
-    for (index = 0; index < request.DrawCount; ++index)
-        draws[index] = request.Draws[index];
-    copyTicks = ServiceExecTicks(base) - phase;
-    base->ExecCopyMicros += ExecTicksToMicros(base, copyTicks);
-
-    if (trusted[0] != request.Primitive ||
-        trusted[1] != request.HeaderDwords) {
-        COMMIT_FAIL(base, 82UL);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-    for (index = 0; index < request.DrawCount; ++index) {
-        if ((draws[index].OffsetBytes & 3UL) ||
-            draws[index].OffsetBytes >= slot->Bytes ||
-            !draws[index].VertexCount ||
-            slot->GpuAddress > ~0UL - draws[index].OffsetBytes) {
-            COMMIT_FAIL(base, 83UL);
-            UnlockServiceBoard(base, bi, device);
-            return FALSE;
-        }
-    }
-
-    emitter->Words = generated;
-    emitter->Count = 0;
-    Radeon3DEmitResetCaptures(emitter);
-    emitter->Live->TextureState = 0;
-    emitter->Live->Texture1State = 0;
-    emitter->GuardClipEmitted = FALSE;
-    emitter->MatrixValid = FALSE;
-    emitter->TexGenMatrixValid[0] = FALSE;
-    emitter->TexGenMatrixValid[1] = FALSE;
-    emitter->ModelViewValid = FALSE;
-    emitter->InvModelViewValid = FALSE;
-    emitter->CommitVbuf = TRUE;
-    emitter->CommitSegmentGpuBase = slot->GpuAddress;
-    emitter->CommitSegmentBytes = slot->Bytes;
-    emitter->CommitVertexOffsets = &draws[0].OffsetBytes;
-    emitter->CommitDrawIndex = 0;
-    emitter->CommitRecordCount = 1;
-
-    /* The first descriptor drives the normal parser and emits the complete
-     * state. Remaining descriptors draw directly from that validated state. */
-    trusted[10] = draws[0].VertexCount;
-    phase = ServiceExecTicks(base);
-    streamBuilt = Radeon3DEmitDraw(emitter, trusted,
-                                  request.HeaderDwords, primitiveType);
-    for (index = 1; streamBuilt && index < request.DrawCount; ++index)
-        streamBuilt = Radeon3DEmitVbufDraw(emitter, draws[index].OffsetBytes,
-            draws[index].VertexCount, primitiveType);
-    result = streamBuilt;
-    if (result)
-        result = RadeonPrepare3D(bi);
-    buildTicks = ServiceExecTicks(base) - phase;
-    base->ExecBuildMicros += ExecTicksToMicros(base, buildTicks);
-    emitter->CommitVbuf = FALSE;
-    if (!result) {
-        if (!streamBuilt && !base->CommitFailStage)
-            COMMIT_FAIL(base, 84UL);
-        else if (streamBuilt)
-            COMMIT_FAIL(base, 85UL);
-        if (!streamBuilt)
-            RDEBUG_STATEBATCH_FAIL(emitter->FailStage, request.DrawCount,
-                                   request.HeaderDwords, primitiveType);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | (9UL << 16) |
-                        (base->CommitFailStage & 0xffffUL);
-        (void)RadeonRecoverAcceleration(bi);
-        RecordExecSample(base, RADEON3D_SAMPLE_STATE_BATCH, stagedDwords,
-                         emitter->Count, copyTicks, buildTicks, 0UL, FALSE);
-        UnlockServiceBoard(base, bi, device);
-        return FALSE;
-    }
-
-    phase = ServiceExecTicks(base);
-    result = RadeonCpSubmitStream(bi, generated, emitter->Count, TRUE,
-                                  &internalFence);
-    submitTicks = ServiceExecTicks(base) - phase;
-    base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
-    if (result) {
-        device->LastFence = internalFence;
-        RadeonMark3DSubmitted(bi);
-        if ((request.Flags & RADEON3D_SUBMIT_FENCE) && fenceOut)
-            *fenceOut = internalFence;
-    } else {
-        COMMIT_FAIL(base, 86UL);
-        if (fenceOut)
-            *fenceOut = 0x80000000UL | (10UL << 16) |
-                        (emitter->Count & 0xffffUL);
-        (void)RadeonRecoverAcceleration(bi);
-    }
-    base->ExecCalls++;
-    base->ExecRecordDwords += stagedDwords;
-    base->ExecGeneratedDwords += emitter->Count;
-    RecordExecSample(base, RADEON3D_SAMPLE_STATE_BATCH, stagedDwords,
-                     emitter->Count, copyTicks, buildTicks, submitTicks,
-                     result);
-    UnlockServiceBoard(base, bi, device);
-    return result;
-}
-
 BOOL Radeon3DDispatchIndirect(
     __REGA0(struct Radeon3DDevice *device),
     __REGA1(const struct Radeon3DIndirect *indirect),
@@ -2149,6 +1400,12 @@ BOOL Radeon3DDispatchIndirect(
     }
     RecordExecSample(base, RADEON3D_SAMPLE_DISPATCH, request.DwordCount,
                      3UL, 0UL, 0UL, submitTicks, result);
+    base->ExecCalls++;
+    base->ExecRecordDwords += request.DwordCount;
+    if (result)
+        base->ExecGeneratedDwords += 3UL;
+    if (result)
+        base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
     UnlockServiceBoard(base, bi, device);
     if (fenceOut)
         *fenceOut = result ? fence : (0x80000000UL | 106UL);
@@ -2265,6 +1522,12 @@ BOOL Radeon3DSubmitFence(
     }
     RecordExecSample(base, RADEON3D_SAMPLE_DISPATCH, 2UL, 2UL,
                      0UL, 0UL, submitTicks, result);
+    if (result) {
+        base->ExecCalls++;
+        base->ExecRecordDwords += 2UL;
+        base->ExecGeneratedDwords += 2UL;
+        base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
+    }
     UnlockServiceBoard(base, bi, device);
     if (fenceOut)
         *fenceOut = result ? fence : (0x80000000UL | 116UL);

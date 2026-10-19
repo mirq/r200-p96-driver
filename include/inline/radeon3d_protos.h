@@ -40,13 +40,9 @@ void __Radeon3DReleaseSurface(
     __reg("a6") void *base,
     __reg("a0") struct Radeon3DDevice *device,
     __reg("a1") struct Radeon3DSurface *surface) = "\tjsr\t-90(a6)";
-BOOL __Radeon3DExecute(
-    __reg("a6") void *base,
-    __reg("a0") struct Radeon3DDevice *device,
-    __reg("a1") const ULONG *records,
-    __reg("d0") ULONG recordDwords,
-    __reg("d1") ULONG flags,
-    __reg("a2") ULONG *fenceOut) = "\tjsr\t-96(a6)";
+/* -96 (Radeon3DExecute), -120 (Radeon3DCommitDraw), -126
+ * (Radeon3DCommitBatch) and -132 (Radeon3DCommitStateBatch) are reserved
+ * slots since the remove-semantic change; offsets below never shift. */
 BOOL __Radeon3DInvalidateForTest(
     __reg("a6") void *base,
     __reg("a0") struct Radeon3DDevice *device) = "\tjsr\t-102(a6)";
@@ -59,21 +55,6 @@ BOOL __Radeon3DFreeSegment(
     __reg("a6") void *base,
     __reg("a0") struct Radeon3DDevice *device,
     __reg("d0") ULONG segmentId) = "\tjsr\t-114(a6)";
-BOOL __Radeon3DCommitDraw(
-    __reg("a6") void *base,
-    __reg("a0") struct Radeon3DDevice *device,
-    __reg("a1") const struct Radeon3DCommit *commit,
-    __reg("a2") ULONG *fenceOut) = "\tjsr\t-120(a6)";
-BOOL __Radeon3DCommitBatch(
-    __reg("a6") void *base,
-    __reg("a0") struct Radeon3DDevice *device,
-    __reg("a1") const struct Radeon3DCommitBatch *commit,
-    __reg("a2") ULONG *fenceOut) = "\tjsr\t-126(a6)";
-BOOL __Radeon3DCommitStateBatch(
-    __reg("a6") void *base,
-    __reg("a0") struct Radeon3DDevice *device,
-    __reg("a1") const struct Radeon3DStateBatch *batch,
-    __reg("a2") ULONG *fenceOut) = "\tjsr\t-132(a6)";
 BOOL __Radeon3DAllocSurface(
     __reg("a6") void *base,
     __reg("a0") struct Radeon3DDevice *device,
@@ -122,22 +103,12 @@ BOOL __Radeon3DHeartbeatLease(
     __Radeon3DImportBitMap(RADEON3D_BASE_NAME, (device), (bitmap), (surface))
 #define Radeon3DReleaseSurface(device, surface) \
     __Radeon3DReleaseSurface(RADEON3D_BASE_NAME, (device), (surface))
-#define Radeon3DExecute(device, records, recordDwords, flags, fenceOut) \
-    __Radeon3DExecute(RADEON3D_BASE_NAME, (device), (records), \
-                       (recordDwords), (flags), (fenceOut))
 #define Radeon3DInvalidateForTest(device) \
     __Radeon3DInvalidateForTest(RADEON3D_BASE_NAME, (device))
 #define Radeon3DAllocSegment(device, bytes, segment) \
     __Radeon3DAllocSegment(RADEON3D_BASE_NAME, (device), (bytes), (segment))
 #define Radeon3DFreeSegment(device, segmentId) \
     __Radeon3DFreeSegment(RADEON3D_BASE_NAME, (device), (segmentId))
-#define Radeon3DCommitDraw(device, commit, fenceOut) \
-    __Radeon3DCommitDraw(RADEON3D_BASE_NAME, (device), (commit), (fenceOut))
-#define Radeon3DCommitBatch(device, commit, fenceOut) \
-    __Radeon3DCommitBatch(RADEON3D_BASE_NAME, (device), (commit), (fenceOut))
-#define Radeon3DCommitStateBatch(device, batch, fenceOut) \
-    __Radeon3DCommitStateBatch(RADEON3D_BASE_NAME, (device), (batch), \
-                               (fenceOut))
 #define Radeon3DAllocSurface(device, width, height, format, surface) \
     __Radeon3DAllocSurface(RADEON3D_BASE_NAME, (device), (width), (height), \
                            (format), (surface))
