@@ -238,6 +238,18 @@ Measured attribution (elapsed phase intervals, **not** exclusive CPU):
 |---|---:|---:|---|
 | serfast PPC stack (300 frames) | 17.1 ms | 2.64 ms median | build 50.6%, submit 35.3%, copy 14.2% |
 | Synchronous 68k client | - | 2.23 ms/frame | - |
+
+**`Radeon3DDispatchIndirect` attribution (diagnostic branch
+`dispatch-attrib`, not in release builds).** That branch fills the
+otherwise unused `R3DEXEC copy_us`/`build_us` for dispatches: entry to
+board locked, and locked to ring submit. Measured 2026-10-20 on Quake
+demo1 640x480x16 (15,187 dispatches) with the MiniGL v6 ring: lock
+118 us, Prepare3D + session recheck + engine-guard MMIO 45 us, ring submit
+115 us per dispatch. The host-side timer agreed (floor 209 us). Raw MMIO
+costs 1.45 us, so most of this is time the priority -1 host loses at OS
+reschedule points (semaphores, `ReadEClock`). Cutting dispatches 20% did
+not change Quake fps, so this is not the current limiter. The release
+driver keeps the two extra EClock reads out of the hot path.
 | Pre-serialized replay | - | 1.05 ms/frame (103 record dwords) | GPU-bound loop with multi-ms submit stalls |
 
 ```mermaid

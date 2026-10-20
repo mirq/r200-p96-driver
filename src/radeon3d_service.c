@@ -1231,6 +1231,7 @@ BOOL Radeon3DDispatchIndirect(
     ULONG commands[3];
     ULONG generation;
     ULONG phase, submitTicks;
+    ULONG entryTicks, lockedTicks;
     ULONG fence = 0;
     BOOL addFence;
     BOOL result;
@@ -1261,7 +1262,12 @@ BOOL Radeon3DDispatchIndirect(
             *fenceOut = 0x80000000UL | 101UL;
         return FALSE;
     }
+    /* Attribution: entry -> board locked (ExecCopyMicros) and locked ->
+     * ring submit (ExecBuildMicros; Prepare3D, session recheck, engine
+     * guard MMIO). The ring submit itself stays in ExecSubmitMicros. */
+    entryTicks = ServiceExecTicks(base);
     bi = LockServiceBoard(base, &device);
+    lockedTicks = ServiceExecTicks(base);
     if (!bi) {
         COMMIT_FAIL(base, 102UL);
         if (fenceOut)
@@ -1404,8 +1410,12 @@ BOOL Radeon3DDispatchIndirect(
     base->ExecRecordDwords += request.DwordCount;
     if (result)
         base->ExecGeneratedDwords += 3UL;
-    if (result)
+    if (result) {
         base->ExecSubmitMicros += ExecTicksToMicros(base, submitTicks);
+        base->ExecCopyMicros += ExecTicksToMicros(base,
+                                                  lockedTicks - entryTicks);
+        base->ExecBuildMicros += ExecTicksToMicros(base, phase - lockedTicks);
+    }
     UnlockServiceBoard(base, bi, device);
     if (fenceOut)
         *fenceOut = result ? fence : (0x80000000UL | 106UL);
