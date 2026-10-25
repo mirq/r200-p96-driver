@@ -43,6 +43,7 @@ P96_SCREEN_TEST := $(BUILD_DIR)/p96screen
 P96_OVERLAP_TEST := $(BUILD_DIR)/p96overlap
 P96_WINDOWMOVE_TEST := $(BUILD_DIR)/p96windowmove
 RTG_PRESENT_TEST := $(BUILD_DIR)/rtgpresent
+P2C_TEST := $(BUILD_DIR)/p2ctest
 
 P96_DIR := Picasso96Develop
 BYTESWAP_DIR := OpenPci2.1-SDK290208/Include
@@ -182,7 +183,7 @@ PPC_INCLUDE := $(VBCC_ROOT)/build/targets/ppc-warpos/include
 all: $(TARGET) $(CARD_TARGET)
 
 tools: $(P96_SCREEN_TEST) $(P96_OVERLAP_TEST) $(P96_WINDOWMOVE_TEST) \
-	$(RTG_PRESENT_TEST)
+	$(RTG_PRESENT_TEST) $(P2C_TEST)
 
 vramstream: $(VRAM_STREAM_TEST)
 
@@ -315,6 +316,11 @@ $(P96_WINDOWMOVE_TEST): tools/p96windowmove.c
 		-Iinclude $< -lamiga -o $@
 
 $(RTG_PRESENT_TEST): tools/rtgpresent.c
+	mkdir -p $(dir $@)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
+		-Iinclude $< -lamiga -o $@
+
+$(P2C_TEST): tools/p2ctest.c
 	mkdir -p $(dir $@)
 	$(CC) -std=gnu99 -O2 -Wall -Wextra -Werror -m68020-60 -noixemul \
 		-Iinclude $< -lamiga -o $@

@@ -277,6 +277,28 @@ gears on 0.41 (one warm boot, `InitPPC` once): 189.873 / 191.082 / 193.548,
 median **191.082** FPS, error=0, 2031 dispatches / 511620 dwords / 600
 presents per run. That is the same band as the 0.40 series.
 
+### 2.13 Planar blits and the aperture read-ahead line (2026-10-25)
+
+HippoPlayer's scope windows ran at about 7 frames per second: rtg.library's
+software `BlitPlanar2Chunky` cost 24 ms per 330x64 frame through the aperture
+(the CPU was otherwise idle). The chip now installs `BlitPlanar2Chunky` and
+`BlitPlanar2Direct` (`PLANAR` ToolType, default on) as `HOST_DATA0`
+monochrome-expand passes: one masked pass per data plane for CLUT targets,
+2^k - 1 passes for k data planes on direct-colour targets, four or more data
+planes left to the default. 330x64 on the 24-bit screen: 1.3 / 5.6 / 20 ms for
+one, two and three planes against 24 / 26 / 27 ms. A CPU conversion route for
+the deeper sources measured slower than the default and was removed.
+
+The correctness run exposed a pre-existing readback defect that is not
+planar-specific (`p2ctest z` reproduces it with `RectFill`): the host aperture
+keeps one read-ahead line, and a line the CPU read before an engine write to
+it is served stale until a read of another line replaces it. `WaitBlit`,
+delays and 68060 cache flushes do not clear it. `SynchronizeEngine` now reads
+two distinct VRAM lines after every drain (`DropApertureReadLine`). With the
+fix, `p2ctest` passes 164 cases on the 24-bit screen and the 8-bit and 16-bit
+640x480 screens (CLUT readback masked to the pen: rtg.library returns the high
+byte of x in `p96ReadPixel`'s result for x >= 256).
+
 ## 3. Parked and rejected work
 
 ### 3.1 Interface-19 fence coalescing (parked)
@@ -384,6 +406,7 @@ From the measured attribution (see
 | 2026-10-19 | chip (opts2 fix) | 80,800 | `CB892CFF` | amortized ring-wait sampling (commit `a49cd72`): the first cut's per-poll EClock reads regressed the semantic gears path 18-46% vs `main` (measured, docs/04 section 4.1); after the fix, single-sample parity (semantic 126.0/186.3/191.1, cpemit 194.8 vs main 125.0/189.9/194.8/188.7), cpemit +3.2%. `.previous` holds main `AD91B2F0`. |
 | 2026-10-19 | chip + card (release 0.40) | 80,800 / 7,796 | `CB892CFF` / `F3D56BF6` | opts2 released: CommitRecords pre-walk removal + progress-based ring waits (amortized sampling). The RADEON3D_SUBMIT_NO_FENCE experiment (commit `310cf48`) was reverted same-day (`fa459fb`): its first replay test failed with the historical unpaced signature (fail=5714/6000 fenced baseline) before the mode could be compared; the suspected interaction is the 20k-poll no-progress budget vs long IMMD streaming stalls (old budget 100k) - open item, next candidate fix is restoring the larger budget now that progress resets make it cheap. |
 | 2026-10-19 | chip + card (release 0.41, deployed) | 54,080 / 7,796 | `D6C49D32` / `31D230C4` | remove-semantic: record path, emitter and EXEC ABI removed; reserved LVO slots; lib revision 3.1. Deployed as the active pair over the bridge (CRC-verified pushes; prior unrecorded build `020266F6`/81,044 preserved as `.presession`, the 0.40 pair stays `.previous`). Cold boot clean - no recovery notes, RTG present. Validation on the reference machine: p96screen 8/16/32/8 readback-exact; r3dinfo iface 20 caps `7e20007f` (bits 0-6, 21, 25-30; every retired record bit clear); r3dphase1 ok (70 fenced 8192-dword ring-wrap submits, triangle readback, 3D->2D transition); r3dsessions ok (20k cycles, no leak, stale rejected); r3dib pass; reworked r3dreplay paced+unpaced 800x600 at 32-bit (offscreen RGB565 target) and 16-bit (screen target): 4 x 6000 calls, **fail=0** (223-227 FPS; the historical unpaced fail signature did not reproduce); p96overlap and p96windowmove normal; post-run R3DEXEC counters accumulate from Submit/Dispatch. Not yet run: the MiniGL-tree cpemit gears matrix + InitPPC (owner's separate consumer tree; its non-cpemit host paths still reference the removed entry points). |
+| 2026-10-25 | chip + card (planar, deployed) | 58,180 / 7,860 | `0FD8700C` / `A4A97FE1` | `BlitPlanar2Chunky`/`BlitPlanar2Direct` host-data passes (`PLANAR` ToolType) and the aperture read-ahead line drop in `SynchronizeEngine`. Card built from the committed card source plus the `PLANAR` feature bit (bit 5); the owner's uncommitted vblank-interrupt card changes are not in it. Bridge reboot clean, RTG present; `p2ctest` 24-bit 164/164, 640x480 8-bit and 16-bit 328/328, `p2ctest z` 0 bad in all eight variants. `.previous` still holds the pre-planar pair `44A246CD` / `50186050`. |
 | 2026-10-20 | chip + card 0.41 (unchanged) + MiniGL consumer | 54,080 / 7,796 | `D6C49D32` / `31D230C4` | MiniGL consumer migrated (`4de79cd`/`fe7b41c`): warpelf `C07A8319`, DLL `16CB8018`, host `0010B189`, minigl.library `1680AD09`, precalc `1F3401F7`, under `DH2:p41`; `LIBS:minigl.library.pre41` kept. One warm (bridge) reboot, `InitPPC` once, `MGLPPC_NOALTIVEC=1`, `MGLPPC_HOSTPRI=-1`: gears FS 640x480x16 3 buffers nosync 600 frames 189.873 / 191.082 / 193.548 (median 191.082), error=0, 2031/511620/600 every run. Closes the "not yet run" item above (section 2.12). |
 
 Matched cards used across these runs: `18A453D6` (known-good), `1DC1ABC0`

@@ -122,6 +122,37 @@ closed shipping drivers). Measured effect on real strings at 16bpp:
 | 64px template | 32 | 123 |
 | Single character | 47 | 33 (software wins) |
 
+### 3.2 Planar-to-chunky passes (2026-10-25)
+
+Before `PLANAR`, the chip installed no `BlitPlanar2Chunky`/`BlitPlanar2Direct`
+and rtg.library converted every planar blit per pixel through the aperture: a
+330x64 HippoPlayer scope frame cost 24 ms on the 24-bit Workbench, so four
+scope windows ran at about 7 frames per second with the CPU otherwise idle.
+`HOST_DATA0` passes measured with `p2ctest` (`BltBitMapRastPort` 330x64 into a
+window on the 24-bit screen, chip `0FD8700C`):
+
+| Source depth (data planes) | 24-bit screen, hardware | 16-bit screen, hardware | rtg.library default (24/16-bit) |
+|---|---:|---:|---:|
+| 1 | 1.3-1.5 ms | 1.2 ms | 24 ms |
+| 2 | 5.6-5.9 ms | 6.2 ms | 26 ms |
+| 3 | 20-21 ms | 20.4 ms | 27 ms |
+| 4 / 5 / 8 (default kept) | 28 / 29 / 35 ms | 28 / 30 / 34 ms | same |
+
+Direct-colour targets need 2^k - 1 passes for k data planes, so the gain
+shrinks quickly; a CPU conversion route for k >= 4 measured 41-54 ms against
+the default's 36 ms and was removed. CLUT targets need one write-masked pass
+per plane and stay in hardware at every depth (640x480 8-bit screen):
+
+| Source depth | Hardware | rtg.library default |
+|---|---:|---:|
+| 1 | 1.4 ms | 11.5 ms |
+| 2 / 3 / 4 / 5 | 2.3 / 3.5 / 5.0 / 5.7 ms | - |
+| 8 | 8.8 ms | 19 ms |
+
+The aperture read-ahead line drop (`DropApertureReadLine`, docs/03 section 7)
+adds two aperture reads (about 3 us) to every engine drain that precedes CPU
+access; it is not on the engine-to-engine path.
+
 ## 4. Command processor and submission
 
 - The ring is 1 MiB of private VRAM; the CP microcode is loaded at init.

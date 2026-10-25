@@ -287,7 +287,8 @@ BOOL InitRadeonFeatures(__REGA0(struct BoardInfo *bi),
                 base->StreamSegmentPool);
     RadeonInstallCallbacks(
         bi, (features & PROM_RADEON_FEATURE_HWSPRITE) != 0,
-        (features & PROM_RADEON_FEATURE_HWTEXT) != 0);
+        (features & PROM_RADEON_FEATURE_HWTEXT) != 0,
+        (features & PROM_RADEON_FEATURE_PLANAR) != 0);
     RDEBUG_FALLBACK_PROBE(bi);
     if (RadeonCpIsReady(bi)) {
         Radeon3DAdvanceGeneration(base);

@@ -358,7 +358,8 @@ is still in flight. The feature is parked; see
 
 Entry points installed into `BoardInfo`: `FillRect`, `InvertRect`, `BlitRect`,
 `BlitPattern`, `BlitTemplate` (optional, `HWTEXT`), `BlitRectNoMaskComplete`,
-`DrawLine`, plus cursor and display callbacks. Every callback:
+`DrawLine`, `BlitPlanar2Chunky`/`BlitPlanar2Direct` (optional, `PLANAR`), plus
+cursor and display callbacks. Every callback:
 
 1. validates the target surface and rectangle (`ValidateSurface()`),
 2. synchronizes with any pending CP work (`SynchronizeEngine`) if the engine
@@ -395,6 +396,15 @@ Waits:
   `entries` free, bounded by `ACCEL_TIMEOUT_POLLS`; after `ACCEL_SPIN_POLLS`
   it inserts 1 us delays.
 - `WaitIdleAndFlush` waits for engine idle and flushes the 2D cache.
+- `DropApertureReadLine` runs after every successful drain in
+  `SynchronizeEngine`: two reads of distinct VRAM lines through the aperture.
+  The host aperture keeps one read-ahead line; a line the CPU read before the
+  engine wrote it is served stale (CPU writes merge into it, engine writes do
+  not) until a read of another line replaces it. The 68060 cache is not
+  involved (the aperture is cache-inhibited and `CacheClearE` does not help).
+  Without this, `ReadPixel` after a blit could return the pre-blit contents of
+  the 16-byte line it last read (measured: a 1x1 blit read back, then a 32x5
+  blit one pixel to the right lost its first three pixels on readback).
 - `SynchronizeEngine` handles the 2D<->3D transition: if CP work is pending it
   waits (`RadeonCpWait`), and if a 3D submission happened it restores the
   direct-MMIO 2D baseline (`RestoreEngineState`) and invalidates cached state.
@@ -416,6 +426,17 @@ Supported hardware work:
   on-board ranges.
 - Formats: CLUT8, `RGBFB_R5G6B5PC`, `RGBFB_B8G8R8A8`. Pitch must be 64-byte
   aligned, <= `ACCEL_MAX_PITCH` (16320), coordinates <= 8191.
+- `BlitPlanar2Chunky` / `BlitPlanar2Direct` (minterm `$C` only; the source
+  planes live in Amiga memory, the destination is on-board). Each selected
+  plane is streamed through `HOST_DATA0` as a `MONO_FG_BG` expand, the same
+  register sequence as `BlitTemplate` (`SubmitPlanarPass`). Chunky: NULL and
+  all-ones planes become a masked solid fill, every data plane one pass with
+  `DP_WRITE_MASK` = its bit, so masked-out planes keep the destination bits
+  as rtg.library's default does. Direct: the lowest data plane is an opaque
+  `FG_BG` pass with the two colours of `ColorIndexMapping`, every further
+  plane subset a transparent `FG_LA` pass of the ANDed planes (2^k - 1 passes
+  for k data planes); k >= 4 is left to the default, which is faster there.
+  Partial-byte source offsets are handled by the template word builders.
 
 `TEXTSTAGE=YES` stages the glyph bitmap in a 64 KiB VRAM buffer above
 `bi->MemorySize` and expands it from memory. It is **known broken** on the

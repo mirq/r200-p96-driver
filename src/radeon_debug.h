@@ -18,7 +18,7 @@
 struct BoardInfo;
 
 #define RADEON_DEBUG_MAGIC   0x52393244UL /* 'R92D' */
-#define RADEON_DEBUG_VERSION 24UL
+#define RADEON_DEBUG_VERSION 25UL
 
 /* Result of the monochrome-source-from-memory capability probe. */
 #define RADEON_PROBE_NOTRUN  0UL
@@ -37,7 +37,8 @@ struct BoardInfo;
 #define RADEON_DEBUG_OP_COMPLETE 5
 #define RADEON_DEBUG_OP_LINE     6
 #define RADEON_DEBUG_OP_DRAIN    7
-#define RADEON_DEBUG_OP_COUNT    8
+#define RADEON_DEBUG_OP_PLANAR   8
+#define RADEON_DEBUG_OP_COUNT    9
 
 /*
  * Laid out immediately after the struct MsgPort in one allocation. The host
@@ -256,9 +257,10 @@ struct RadeonDebugStats {
      * the fields together with the state-batch path. */
 };
 
-#define RADEON_DEBUG_STATS_V24_SIZE 764UL
-typedef char RadeonDebugStatsV24SizeCheck[
-    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V24_SIZE ? 1 : -1];
+/* Version 25 added the Planar op slot (four longwords). */
+#define RADEON_DEBUG_STATS_V25_SIZE 780UL
+typedef char RadeonDebugStatsV25SizeCheck[
+    sizeof(struct RadeonDebugStats) == RADEON_DEBUG_STATS_V25_SIZE ? 1 : -1];
 
 #define RADEON_DEBUG_WAIT_FIFO 1UL
 #define RADEON_DEBUG_WAIT_IDLE 2UL

@@ -96,6 +96,9 @@ record path; historical fixes remain recorded in
 | Engine wedged by 2D work, subsequent draws blank | Bounded waits should detect and recover; check DEBUG `RecoveryCalls/Success/Failure`, `LastWaitStatus/Kind/Pending`, `FinalAccelState`. Failed recovery leaves acceleration unsafe (software fallback) |
 | Window move/open takes seconds | Historical complete-copy opcode issue (`$6` = S XOR D); current driver maps all 16 minterms. If it returns, check `CompleteOpcode[16]` distribution and overlap direction selection |
 | Overlap workload much slower than a closed driver | Expected on old artifacts; layers.library splits the render. Compare `ClipRect` counts before comparing times |
+| `ReadPixel` after a blit returns the pre-blit contents of a few pixels (up to one 16-byte line), persisting across `WaitBlit` and delays | The host aperture's read-ahead line was fetched before the engine wrote it. `SynchronizeEngine` drops it after every drain (`DropApertureReadLine`); if it returns, check that the CPU access path still goes through `WaitBlitter`/`SynchronizeEngine`. A CPU cache flush does not help; a read of any other VRAM line does |
+| `p96ReadPixel` on a CLUT screen returns `0x1nn` for x >= 256 | rtg.library leaves the high byte of x in the return value; mask with `0xff` (as `p2ctest` does). The pixel itself is correct |
+| HippoPlayer scopes (planar `BltBitMapRastPort`) at a few frames per second | `PLANAR=NO`, or the source has four or more planes (the default path is kept there), or the destination format is not CLUT8/R5G6B5PC/B8G8R8A8 |
 
 ## 6. Display and DVI
 

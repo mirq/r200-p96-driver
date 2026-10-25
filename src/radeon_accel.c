@@ -364,6 +364,26 @@ static BOOL RecoverEngine(struct BoardInfo *bi)
     return TRUE;
 }
 
+/*
+ * The host aperture keeps one read-ahead line of VRAM. A line the CPU read
+ * before the engine wrote it is served stale (CPU writes merge into it,
+ * engine writes do not) until a read of another line replaces it; the 68060
+ * cache is not involved (CacheClearE does not help). Measured on the
+ * reference machine: a 1x1 engine blit at x=604 on a 24-bit screen, read
+ * back, then a 32x5 engine blit at x=605 read back pixels 605..607 as their
+ * pre-blit contents. Two reads of distinct lines after the drain drop
+ * whichever line was held, so the CPU access that follows sees VRAM.
+ */
+static void DropApertureReadLine(struct BoardInfo *bi)
+{
+    volatile ULONG *base = (volatile ULONG *)bi->MemoryBase;
+
+    if (!base)
+        return;
+    (void)base[0];
+    (void)base[64];
+}
+
 static BOOL SynchronizeEngine(struct BoardInfo *bi)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
@@ -382,6 +402,7 @@ static BOOL SynchronizeEngine(struct BoardInfo *bi)
         (pending == RADEON_PENDING_MMIO && WaitIdleAndFlush(bi))) {
         data->AccelPending = RADEON_PENDING_NONE;
         data->Need2DRestore = FALSE;
+        DropApertureReadLine(bi);
         return TRUE;
     }
     return RecoverEngine(bi);
@@ -1840,6 +1861,467 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
         bi->BlitTemplateDefault(bi, render, template, x, y,
                                 width, height, mask, format);
     RDEBUG_OP_END(RADEON_DEBUG_OP_TEMPLATE);
+}
+
+/*
+ * Planar-to-chunky blits: BlitPlanar2Chunky (CLUT targets) and
+ * BlitPlanar2Direct (R5G6B5PC and B8G8R8A8 targets).
+ *
+ * Without these callbacks rtg.library converts every planar BltBitMap()
+ * pixel by pixel through the framebuffer aperture: a 330x64 one-plane blit
+ * measured 24 ms on a 32-bit screen (HippoPlayer's scope windows, each one
+ * such blit per frame, shared 37 blits/s between five of them, 2026-10-25).
+ *
+ * Every plane is already a monochrome bitmap, so the engine's colour
+ * expansion does the work, fed through HOST_DATA exactly as BlitTemplate is
+ * (TEXTSTAGE staging is documented broken on the reference machine). A pass
+ * streams ceil(width/32)*height longwords; a 330x64 pass is ~700 writes.
+ *
+ * CLUT target: one write-masked pass per source plane, DP_WRITE_MASK = the
+ *   plane's bit, foreground 0xff and background 0x00, so bit p of every
+ *   destination byte becomes plane p. NULL planes clear their bit and
+ *   (PLANEPTR)-1 planes set it with a masked solid fill. Destination bits
+ *   outside the mask are preserved, as BltBitMap() specifies.
+ * Direct target: pixel = cim->Colors[index]. With one data plane that is a
+ *   single FG/BG pass. With two or three, the first plane's FG/BG pass is
+ *   followed by one transparent (FG/LA) pass per remaining bit combination
+ *   whose colour differs from what the first pass painted: at most 3 or 7
+ *   passes, each expanding the AND of the combination's planes and their
+ *   complements (330x64 measured 1.3 / 5.5 / 20 ms for one, two and three
+ *   data planes against 24 / 26 / 27 ms for the default). Four or more data
+ *   planes stay with rtg.library's default: a CPU conversion writing the
+ *   aperture once per pixel measured slower than it (41-54 ms against 36).
+ *   Planes outside the mask contribute zero bits, as rtg.library's default
+ *   and the other P96 drivers do.
+ *
+ * Only minterm $C (copy) is accelerated; everything else, on-board or
+ * malformed sources and surfaces the engine cannot address take the
+ * rtg.library default after the usual engine drain.
+ */
+
+#define PLANAR_MAX_PLANES   8U
+#define PLANAR_MINTERM_COPY 0x0cU
+#define PLANAR_MAX_PASS_PLANES 3U
+
+#define PLANE_ZERO 0U
+#define PLANE_ONES 1U
+#define PLANE_DATA 2U
+
+struct PlanarSource {
+    const UBYTE *Rows[PLANAR_MAX_PLANES];   /* byte holding srcX, first row */
+    UBYTE Class[PLANAR_MAX_PLANES];
+    ULONG BytesPerRow;
+    ULONG BitOffset;                         /* srcX & 7 */
+    UBYTE Depth;
+};
+
+static BOOL PreparePlanarSource(struct BoardInfo *bi,
+                                const struct BitMap *bm,
+                                WORD srcX, WORD srcY, WORD width, WORD height,
+                                struct PlanarSource *source)
+{
+    ULONG plane;
+
+    if (!bi || !bm || !source || width <= 0 || height <= 0 ||
+        srcX < 0 || srcY < 0 || !bm->BytesPerRow ||
+        bm->Depth > PLANAR_MAX_PLANES)
+        return FALSE;
+    if ((ULONG)(UWORD)srcX + (UWORD)width > (ULONG)bm->BytesPerRow * 8UL ||
+        (ULONG)(UWORD)srcY + (UWORD)height > (ULONG)bm->Rows)
+        return FALSE;
+
+    source->BytesPerRow = bm->BytesPerRow;
+    source->BitOffset = (ULONG)(UWORD)srcX & 7UL;
+    source->Depth = bm->Depth;
+    for (plane = 0; plane < bm->Depth; ++plane) {
+        PLANEPTR data = bm->Planes[plane];
+
+        source->Rows[plane] = NULL;
+        if (!data) {
+            source->Class[plane] = PLANE_ZERO;
+        } else if (data == (PLANEPTR)~0UL) {
+            source->Class[plane] = PLANE_ONES;
+        } else {
+            /* Plane rows in VRAM would be read back through the aperture. */
+            if (!IsOffboardMemory(bi, data))
+                return FALSE;
+            source->Class[plane] = PLANE_DATA;
+            source->Rows[plane] = (const UBYTE *)data +
+                                  (ULONG)(UWORD)srcY * bm->BytesPerRow +
+                                  ((ULONG)(UWORD)srcX >> 3);
+        }
+    }
+    return TRUE;
+}
+
+/*
+ * One HOST_DATA colour-expansion pass. The streamed bit for a pixel is the
+ * AND of its bits in the andMask planes and of the complements of its bits
+ * in the andNotMask planes. Mirrors SubmitTemplate's register sequence.
+ */
+static BOOL SubmitPlanarPass(struct BoardInfo *bi,
+                             const struct AccelSurface *surface,
+                             const struct PlanarSource *source,
+                             UBYTE andMask, UBYTE andNotMask,
+                             WORD x, WORD y, WORD width, WORD height,
+                             ULONG fgPen, ULONG bgPen, ULONG writeMask,
+                             BOOL transparent, RGBFTYPE format)
+{
+    ULONG bytesPerPixel;
+    ULONG datatype = HardwareDatatype(format, &bytesPerPixel);
+    ULONG sourceType = transparent ? RADEON_GMC_SRC_DATATYPE_MONO_FG_LA :
+                                     RADEON_GMC_SRC_DATATYPE_MONO_FG_BG;
+    ULONG destinationX = (ULONG)(UWORD)(x + surface->XBias);
+    ULONG destinationY = (ULONG)(UWORD)(y + surface->YBias);
+    ULONG paddedWidth = ((ULONG)(UWORD)width + 31UL) & ~31UL;
+    ULONG master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
+                   RADEON_GMC_DST_CLIPPING |
+                   RADEON_GMC_BRUSH_NONE | datatype | sourceType |
+                   RADEON_GMC_BYTE_MSB_TO_LSB | RADEON_ROP3_S |
+                   RADEON_DP_SRC_SOURCE_HOST_DATA |
+                   RADEON_GMC_CLR_CMP_CNTL_DIS;
+    ULONG words = paddedWidth >> 5;
+    ULONG tailWidth = (UWORD)width & 31UL;
+    ULONG fullCount = words - (tailWidth ? 1UL : 0UL);
+    const UBYTE *rows[PLANAR_MAX_PLANES];
+    ULONG invert[PLANAR_MAX_PLANES];
+    ULONG planes = 0;
+    ULONG plane;
+    BOOL ready;
+    UWORD row;
+
+    (void)bytesPerPixel;
+    for (plane = 0; plane < source->Depth; ++plane) {
+        if (!((andMask | andNotMask) & (1U << plane)))
+            continue;
+        if (source->Class[plane] != PLANE_DATA)
+            return FALSE;
+        rows[planes] = source->Rows[plane];
+        invert[planes] = (andNotMask >> plane) & 1U;
+        ++planes;
+    }
+    if (!planes)
+        return FALSE;
+    fgPen = HardwarePen(fgPen, format);
+    bgPen = HardwarePen(bgPen, format);
+
+    if (!PrepareMmioEngine(bi))
+        return FALSE;
+    BeginEnginePath(bi, TRUE);
+    ready = EngineState.HostTemplateReady;
+    EngineState.HostTemplateReady = FALSE;
+    if (!WaitFifo(bi, 13) ||
+        (!ready &&
+          !RadeonWrite32(bi, RADEON_RBBM_GUICNTL,
+                         RADEON_HOST_DATA_SWAP_NONE)) ||
+        !SetEngineState(bi, ENGINE_MASTER,
+                        RADEON_DP_GUI_MASTER_CNTL, master) ||
+        !SetEngineState(bi, ENGINE_WRITE_MASK,
+                        RADEON_DP_WRITE_MASK, writeMask) ||
+        !SetEngineState(bi, ENGINE_SRC_FG,
+                        RADEON_DP_SRC_FRGD_CLR, fgPen) ||
+        !SetEngineState(bi, ENGINE_SRC_BG,
+                        RADEON_DP_SRC_BKGD_CLR, bgPen) ||
+        !SetEngineState(bi, ENGINE_DP_CNTL, RADEON_DP_CNTL,
+                        RADEON_DST_X_LEFT_TO_RIGHT |
+                        RADEON_DST_Y_TOP_TO_BOTTOM) ||
+        (!ready &&
+          (!RadeonWrite32(bi, RADEON_DSTCACHE_CTLSTAT,
+                          RADEON_RB2D_DC_FLUSH_ALL) ||
+           !RadeonWrite32(bi, RADEON_WAIT_UNTIL,
+                          RADEON_WAIT_2D_IDLECLEAN |
+                              RADEON_WAIT_DMA_GUI_IDLE))) ||
+        !SetEngineState(bi, ENGINE_DST_PITCH_OFFSET,
+                        RADEON_DST_PITCH_OFFSET, surface->PitchOffset) ||
+        !SetEngineState(bi, ENGINE_SC_TOP_LEFT, RADEON_SC_TOP_LEFT,
+                        (destinationY << 16) | destinationX) ||
+        !SetEngineState(bi, ENGINE_SC_BOTTOM_RIGHT,
+                        RADEON_SC_BOTTOM_RIGHT,
+                        ((destinationY + (UWORD)height) << 16) |
+                        (destinationX + (UWORD)width)) ||
+        !RadeonWrite32(bi, RADEON_DST_Y_X,
+                       (destinationY << 16) | destinationX) ||
+        !RadeonWrite32(bi, RADEON_DST_HEIGHT_WIDTH,
+                       ((ULONG)(UWORD)height << 16) | paddedWidth))
+        return FALSE;
+
+    for (row = 0; row < (UWORD)height; ++row) {
+        const UBYTE *cursor[PLANAR_MAX_PLANES];
+        ULONG bitOffset = source->BitOffset;
+        ULONG index;
+
+        for (index = 0; index < planes; ++index)
+            cursor[index] = rows[index] + (ULONG)row * source->BytesPerRow;
+        if (planes == 1 && !invert[0]) {
+            /* The common one-plane case: no combination work per word. */
+            for (index = 0; index < fullCount; ++index)
+                AccelWriteHostData(bi, RADEON_HOST_DATA0,
+                                   TemplateFullWord(&cursor[0], bitOffset));
+            if (tailWidth)
+                AccelWriteHostData(bi, RADEON_HOST_DATA0,
+                                   TemplatePartialWord(cursor[0], bitOffset,
+                                                       tailWidth));
+            continue;
+        }
+        for (index = 0; index < fullCount; ++index) {
+            ULONG bits = 0xffffffffUL;
+            ULONG member;
+
+            for (member = 0; member < planes; ++member) {
+                ULONG word = TemplateFullWord(&cursor[member], bitOffset);
+
+                bits &= invert[member] ? ~word : word;
+            }
+            AccelWriteHostData(bi, RADEON_HOST_DATA0, bits);
+        }
+        if (tailWidth) {
+            ULONG bits = 0xffffffffUL;
+            ULONG member;
+
+            for (member = 0; member < planes; ++member) {
+                ULONG word = TemplatePartialWord(cursor[member], bitOffset,
+                                                 tailWidth);
+
+                /* Complemented padding is clipped by the scissor. */
+                bits &= invert[member] ? ~word : word;
+            }
+            AccelWriteHostData(bi, RADEON_HOST_DATA0, bits);
+        }
+    }
+    EngineState.HostTemplateReady = TRUE;
+    return TRUE;
+}
+
+static BOOL SubmitPlanarChunky(struct BoardInfo *bi,
+                               const struct AccelSurface *surface,
+                               const struct PlanarSource *source,
+                               WORD x, WORD y, WORD width, WORD height,
+                               UBYTE mask)
+{
+    UBYTE write = (UBYTE)(mask & ((1U << source->Depth) - 1U));
+    UBYTE zeros = 0;
+    UBYTE ones = 0;
+    ULONG plane;
+
+    for (plane = 0; plane < source->Depth; ++plane) {
+        UBYTE bit = (UBYTE)(1U << plane);
+
+        if (!(write & bit))
+            continue;
+        if (source->Class[plane] == PLANE_ZERO)
+            zeros |= bit;
+        else if (source->Class[plane] == PLANE_ONES)
+            ones |= bit;
+    }
+    if (zeros && !SubmitSolidRect(bi, surface, x, y, width, height,
+                                  0x00UL, zeros, RGBFB_CLUT, RADEON_ROP3_P))
+        return FALSE;
+    if (ones && !SubmitSolidRect(bi, surface, x, y, width, height,
+                                 0xffUL, ones, RGBFB_CLUT, RADEON_ROP3_P))
+        return FALSE;
+    for (plane = 0; plane < source->Depth; ++plane) {
+        UBYTE bit = (UBYTE)(1U << plane);
+
+        if ((write & bit) && source->Class[plane] == PLANE_DATA &&
+            !SubmitPlanarPass(bi, surface, source, bit, 0, x, y, width,
+                              height, 0xffUL, 0x00UL, (ULONG)bit, FALSE,
+                              RGBFB_CLUT))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/* Splits the masked planes into constant-one bits and data planes; returns
+ * the number of data planes. */
+static ULONG ClassifyPlanarDirect(const struct PlanarSource *source,
+                                  UBYTE mask, UBYTE *constBits,
+                                  UBYTE *dataBits)
+{
+    ULONG count = 0;
+    ULONG plane;
+
+    *constBits = 0;
+    *dataBits = 0;
+    for (plane = 0; plane < source->Depth; ++plane) {
+        UBYTE bit = (UBYTE)(1U << plane);
+
+        if (!(mask & bit))
+            continue;
+        if (source->Class[plane] == PLANE_ONES)
+            *constBits |= bit;
+        else if (source->Class[plane] == PLANE_DATA) {
+            *dataBits |= bit;
+            ++count;
+        }
+    }
+    return count;
+}
+
+static BOOL SubmitPlanarDirect(struct BoardInfo *bi,
+                               const struct AccelSurface *surface,
+                               const struct PlanarSource *source,
+                               const struct ColorIndexMapping *cim,
+                               WORD x, WORD y, WORD width, WORD height,
+                               UBYTE constBits, UBYTE dataBits,
+                               RGBFTYPE format)
+{
+    UBYTE first;
+    UBYTE subset;
+
+    if (!dataBits)
+        return SubmitSolidRect(bi, surface, x, y, width, height,
+                               cim->Colors[constBits], 0xffU, format,
+                               RADEON_ROP3_P);
+    first = (UBYTE)(dataBits & (UBYTE)(0U - dataBits));
+    if (!SubmitPlanarPass(bi, surface, source, first, 0, x, y, width,
+                          height, cim->Colors[constBits | first],
+                          cim->Colors[constBits], 0xffffffffUL, FALSE,
+                          format))
+        return FALSE;
+    for (subset = dataBits; subset; subset = (UBYTE)((subset - 1U) & dataBits)) {
+        ULONG painted;
+        ULONG color;
+
+        if (!(subset & ~first))
+            continue;   /* {first} alone: the FG/BG pass drew it */
+        painted = (subset & first) ? cim->Colors[constBits | first] :
+                                     cim->Colors[constBits];
+        color = cim->Colors[constBits | subset];
+        if (color == painted)
+            continue;
+        if (!SubmitPlanarPass(bi, surface, source, subset,
+                              (UBYTE)(dataBits & ~subset), x, y, width,
+                              height, color, 0, 0xffffffffUL, TRUE, format))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+void RadeonBlitPlanar2Chunky(__REGA0(struct BoardInfo *bi),
+                             __REGA1(struct BitMap *bm),
+                             __REGA2(struct RenderInfo *render),
+                             __REGD0(WORD srcX), __REGD1(WORD srcY),
+                             __REGD2(WORD dstX), __REGD3(WORD dstY),
+                             __REGD4(WORD width), __REGD5(WORD height),
+                             __REGD6(UBYTE minterm), __REGD7(UBYTE mask))
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct AccelSurface surface;
+    struct PlanarSource source;
+    enum SurfaceResult result;
+    RGBFTYPE format = render ? render->RGBFormat : RGBFB_NONE;
+    BOOL hardware;
+    BOOL software = FALSE;
+    RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
+
+    if (!SysBase || !data)
+        return;
+    RDEBUG_OP_BEGIN();
+    result = ValidateSurface(bi, render, dstX, dstY, width, height,
+                             format, &surface);
+    if (result == SURFACE_REJECT) {
+        RDEBUG_OP_END(RADEON_DEBUG_OP_PLANAR);
+        return;
+    }
+    hardware = format == RGBFB_CLUT && minterm == PLANAR_MINTERM_COPY &&
+               result == SURFACE_HARDWARE &&
+               data->AccelState == RADEON_ACCEL_READY &&
+               PreparePlanarSource(bi, bm, srcX, srcY, width, height,
+                                   &source) &&
+               (ULONG)(UWORD)(dstX + surface.XBias) +
+                   (((ULONG)(UWORD)width + 31UL) & ~31UL) <=
+                   ACCEL_MAX_COORD + 1UL;
+
+    if (hardware) {
+        if (SubmitPlanarChunky(bi, &surface, &source, dstX, dstY,
+                               width, height, mask)) {
+            data->AccelPending = RADEON_PENDING_MMIO;
+            RDEBUG_OP_HARDWARE();
+        } else {
+            ObtainSemaphore(&bi->BoardLock);
+            software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
+    } else {
+        software = PrepareSoftwareFallback(
+            bi, data, result == SURFACE_SOFTWARE_OFFBOARD);
+    }
+
+    if (software && bi->BlitPlanar2ChunkyDefault &&
+        bi->BlitPlanar2ChunkyDefault != RadeonBlitPlanar2Chunky)
+        bi->BlitPlanar2ChunkyDefault(bi, bm, render, srcX, srcY, dstX, dstY,
+                                     width, height, minterm, mask);
+    RDEBUG_OP_END(RADEON_DEBUG_OP_PLANAR);
+}
+
+void RadeonBlitPlanar2Direct(__REGA0(struct BoardInfo *bi),
+                             __REGA1(struct BitMap *bm),
+                             __REGA2(struct RenderInfo *render),
+                             __REGA3(struct ColorIndexMapping *cim),
+                             __REGD0(WORD srcX), __REGD1(WORD srcY),
+                             __REGD2(WORD dstX), __REGD3(WORD dstY),
+                             __REGD4(WORD width), __REGD5(WORD height),
+                             __REGD6(UBYTE minterm), __REGD7(UBYTE mask))
+{
+    struct ExecBase *SysBase = bi ? bi->ExecBase : NULL;
+    struct RadeonBoardData *data = RadeonGetBoardData(bi);
+    struct AccelSurface surface;
+    struct PlanarSource source;
+    enum SurfaceResult result;
+    RGBFTYPE format = render ? render->RGBFormat : RGBFB_NONE;
+    ULONG bytesPerPixel = 0;
+    UBYTE constBits = 0;
+    UBYTE dataBits = 0;
+    BOOL hardware;
+    BOOL software = FALSE;
+    RDEBUG_OP_SAMPLE
+    RDEBUG_BOARD_LOCK(bi);
+
+    if (!SysBase || !data)
+        return;
+    RDEBUG_OP_BEGIN();
+    result = ValidateSurface(bi, render, dstX, dstY, width, height,
+                             format, &surface);
+    if (result == SURFACE_REJECT) {
+        RDEBUG_OP_END(RADEON_DEBUG_OP_PLANAR);
+        return;
+    }
+    (void)HardwareDatatype(format, &bytesPerPixel);
+    hardware = cim && format != RGBFB_CLUT && bytesPerPixel &&
+               minterm == PLANAR_MINTERM_COPY &&
+               PreparePlanarSource(bi, bm, srcX, srcY, width, height,
+                                   &source) &&
+               ClassifyPlanarDirect(&source, mask, &constBits, &dataBits) <=
+                   PLANAR_MAX_PASS_PLANES &&
+               result == SURFACE_HARDWARE &&
+               data->AccelState == RADEON_ACCEL_READY &&
+               (ULONG)(UWORD)(dstX + surface.XBias) +
+                   (((ULONG)(UWORD)width + 31UL) & ~31UL) <=
+                   ACCEL_MAX_COORD + 1UL;
+
+    if (hardware) {
+        if (SubmitPlanarDirect(bi, &surface, &source, cim, dstX, dstY,
+                               width, height, constBits, dataBits, format)) {
+            data->AccelPending = RADEON_PENDING_MMIO;
+            RDEBUG_OP_HARDWARE();
+        } else {
+            ObtainSemaphore(&bi->BoardLock);
+            software = RecoverEngine(bi);
+            ReleaseSemaphore(&bi->BoardLock);
+        }
+    } else {
+        software = PrepareSoftwareFallback(
+            bi, data, result == SURFACE_SOFTWARE_OFFBOARD);
+    }
+
+    if (software && bi->BlitPlanar2DirectDefault &&
+        bi->BlitPlanar2DirectDefault != RadeonBlitPlanar2Direct)
+        bi->BlitPlanar2DirectDefault(bi, bm, render, cim, srcX, srcY,
+                                     dstX, dstY, width, height, minterm,
+                                     mask);
+    RDEBUG_OP_END(RADEON_DEBUG_OP_PLANAR);
 }
 
 void RadeonBlitRect(__REGA0(struct BoardInfo *bi),

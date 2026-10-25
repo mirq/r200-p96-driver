@@ -49,7 +49,7 @@ FIELDS = [
 
 # Version 6: four parallel arrays indexed by OPS, appended in this order.
 OPS = ["Fill", "Invert", "Copy", "Pattern", "Template", "Complete",
-       "Line", "Drain"]
+       "Line", "Drain", "Planar"]
 for _array in ("OpCalls", "OpHardware", "OpSoftware", "OpTicks"):
     FIELDS.extend("%s_%s" % (_array, _op) for _op in OPS)
 
@@ -133,7 +133,7 @@ FIELDS.extend([
 # Version 23 held StateBatch emitter rejection detail; version 24 removed
 # the five fields together with the state-batch path.
 
-KNOWN_VERSION = 24
+KNOWN_VERSION = 25
 
 PROBE = {0: "not run", 1: "SUPPORTED", 2: "wrong pixels",
          3: "submit failed", 4: "skipped"}

@@ -147,6 +147,7 @@ case-insensitive and an entry wrapped in parentheses stays inert.
 | `HWSPRITE=<YES\|NO>` | on | 64x64 ARGB RV280 hardware cursor; `NO` disables it, allocation failure falls back to software. |
 | `HWTEXT=<YES\|NO>` | on | Hardware `BlitTemplate` host-data upload for text; `NO` leaves text to rtg.library's CPU default. |
 | `TEXTSTAGE=<YES\|NO>` | **off** | Experimental VRAM glyph staging. **Known broken**: wedges the 2D engine on the reference machine. Do not enable outside diagnosis. |
+| `PLANAR=<YES\|NO>` | on | Hardware `BlitPlanar2Chunky`/`BlitPlanar2Direct` (planar bitmap to RTG screen, the HippoPlayer scope path) as `HOST_DATA0` passes; `NO` leaves planar blits to rtg.library's CPU default. Four or more data planes always use the default. |
 | `OUTPUT=VGA` | VGA | Primary VGA DAC path. |
 | `OUTPUT=DVI` | VGA | Internal-TMDS path for a validated RV280 COMBIOS profile; falls back to VGA when the ROM does not describe a supported connector/TMDS PLL table. |
 

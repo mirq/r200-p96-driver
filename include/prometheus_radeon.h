@@ -26,5 +26,8 @@ struct PrometheusRadeonHandoff {
 #define PROM_RADEON_FEATURE_HWSPRITE   (1UL << 1)
 #define PROM_RADEON_FEATURE_HWTEXT     (1UL << 2)
 #define PROM_RADEON_FEATURE_TEXTSTAGE  (1UL << 3)
+/* Engine-expanded planar blits (BlitPlanar2Chunky/BlitPlanar2Direct).
+ * PLANAR=NO withholds it. */
+#define PROM_RADEON_FEATURE_PLANAR     (1UL << 5)
 
 #endif

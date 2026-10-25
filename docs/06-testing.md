@@ -41,6 +41,7 @@ them; if a refactor moves code the tests cannot find, they fail loudly.
 | `r3dreplay` | 1+ | cpemit submit-path back-pressure replay: pre-serialized clear + two 252-vertex immediate triangle lists per frame; `-pace N` paces fences; renders to the screen at 16-bit, to an offscreen RGB565 bitmap otherwise; counts failed submits | `R3DREPLAY_SUMMARY` with FPS |
 | `vramstream` | 13+ | Segment write throughput (fast RAM store/copy, VRAM store, byte-swapped store, fast->VRAM copy) | throughput table |
 | `p96screen` | 2D | Format-specific fill, pattern, template, text, copy, mask, overlap and readback checks for 8/16/32-bit modes | `FAIL` on any check |
+| `p2ctest` | 2D | Planar-to-chunky correctness: random planar sources of depth 1-8, every mask class, NULL/all-ones planes, unaligned offsets and widths, pixel-exact against a graphics.library reference (CLUT) or a pen table (direct colour), on the front screen and 640x480 8/16-bit screens; `z` mode checks the aperture read-ahead recipe; `x`/`y` pair experiments | `P2CTEST cases=N failures=M ok|FAIL`; exit 10 on FAIL |
 | `p96overlap` | 2D | layers.library split workload: empty vs 19 `ClipRect` overlap, median of seven trials | result table with `ClipRect` counts |
 | `p96windowmove` | 2D | Intuition window move empty vs over a populated target, whole-process and stage timing | `TOTAL`, `STAGES`, `TRIALS`, `RESULT` |
 | `rtgpresent` | - | Startup-sequence helper: RTG screen detection (returns 5/WARN otherwise) | exit code |
@@ -73,6 +74,17 @@ Run the complete `8/16/32/8` sequence before accepting a build. Reject the
 build on any readback, edge, mask, fallback or recovery failure. This gate is
 mandatory for every driver change, including 3D-only ones (the 2D and 3D
 engines share the baseline).
+
+`p2ctest` (planar blits and the aperture read-ahead drop) belongs to the same
+gate when `src/radeon_accel.c` changes. Over the bridge, run it detached with
+a 256 KiB stack and read the log afterwards; the bridge kills a foreground
+command when the tool call times out:
+
+```text
+stack 262144
+run >NIL: Work:r3dopt/p2ctest >T:p2c.log     ; front + 8-bit + 16-bit screens
+run >NIL: Work:r3dopt/p2ctest z >T:p2cz.log  ; read-ahead recipe, expect "0 bad"
+```
 
 ### 3.2 3D gate
 

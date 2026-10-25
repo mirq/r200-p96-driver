@@ -1013,7 +1013,7 @@ static BOOL RadeonFreeCardMem(__REGA0(struct BoardInfo *bi),
 }
 
 void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
-                            BOOL hardwareText)
+                            BOOL hardwareText, BOOL planarBlits)
 {
     struct RadeonBoardData *data = RadeonGetBoardData(bi);
     BOOL cursorReady = hardwareSprite && RadeonInitializeCursor(bi);
@@ -1109,6 +1109,15 @@ void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
             bi->BlitTemplate = RadeonBlitTemplate;
         bi->BlitRectNoMaskComplete = RadeonBlitRectNoMaskComplete;
         bi->DrawLine = RadeonDrawLine;
+        /*
+         * Planar sources expanded by the engine; see radeon_accel.c.
+         * PLANAR=NO withholds them, leaving rtg.library's CPU conversion.
+         */
+        if (planarBlits) {
+            bi->BlitPlanar2Chunky = RadeonBlitPlanar2Chunky;
+            bi->BlitPlanar2Direct = RadeonBlitPlanar2Direct;
+            RLOG("Radeon9200: planar blit acceleration enabled\n");
+        }
         bi->Flags |= BIF_BLITTER;
         RLOG("Radeon9200: rectangle acceleration enabled\n");
     }

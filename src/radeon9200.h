@@ -236,6 +236,21 @@ void RadeonBlitTemplate(__REGA0(struct BoardInfo *bi),
                         __REGD2(WORD width), __REGD3(WORD height),
                         __REGD4(UBYTE mask),
                         __REGD7(RGBFTYPE format));
+void RadeonBlitPlanar2Chunky(__REGA0(struct BoardInfo *bi),
+                             __REGA1(struct BitMap *bm),
+                             __REGA2(struct RenderInfo *render),
+                             __REGD0(WORD srcX), __REGD1(WORD srcY),
+                             __REGD2(WORD dstX), __REGD3(WORD dstY),
+                             __REGD4(WORD width), __REGD5(WORD height),
+                             __REGD6(UBYTE minterm), __REGD7(UBYTE mask));
+void RadeonBlitPlanar2Direct(__REGA0(struct BoardInfo *bi),
+                             __REGA1(struct BitMap *bm),
+                             __REGA2(struct RenderInfo *render),
+                             __REGA3(struct ColorIndexMapping *cim),
+                             __REGD0(WORD srcX), __REGD1(WORD srcY),
+                             __REGD2(WORD dstX), __REGD3(WORD dstY),
+                             __REGD4(WORD width), __REGD5(WORD height),
+                             __REGD6(UBYTE minterm), __REGD7(UBYTE mask));
 void RadeonBlitRectNoMaskComplete(
     __REGA0(struct BoardInfo *bi),
     __REGA1(struct RenderInfo *sourceRender),
@@ -245,7 +260,7 @@ void RadeonBlitRectNoMaskComplete(
     __REGD4(WORD width), __REGD5(WORD height),
     __REGD6(UBYTE opcode), __REGD7(RGBFTYPE format));
 void RadeonInstallCallbacks(struct BoardInfo *bi, BOOL hardwareSprite,
-                            BOOL hardwareText);
+                            BOOL hardwareText, BOOL planarBlits);
 BOOL RadeonInitializeCursor(struct BoardInfo *bi);
 void RadeonShutdownCursor(struct BoardInfo *bi);
 void RadeonRefreshCursorPosition(struct BoardInfo *bi);
