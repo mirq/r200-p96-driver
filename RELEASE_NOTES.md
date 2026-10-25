@@ -1,6 +1,34 @@
-# Radeon9200 Prometheus integration 3.1
+# Radeon9200 Prometheus integration 0.50
 
-Release 3.1 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
+Release 0.50 ships the matched `Radeon9200.chip` and `Prometheus.card` pair.
+The chip reports `$VER: Radeon9200.chip 3.2 (25.10.2026)` and keeps Radeon3D
+interface 20 unchanged. The reference documentation is in
+[`docs/`](docs/README.md).
+
+## Highlights (0.50)
+
+- Hardware planar blits: the chip installs `BlitPlanar2Chunky` and
+  `BlitPlanar2Direct` (new `PLANAR` ToolType, default on, `PLANAR=NO`
+  withholds them). Each selected plane is expanded by the 2D engine through
+  `HOST_DATA0`; CLUT targets take one write-masked pass per plane, direct-colour
+  targets an opaque pass plus transparent passes per plane subset. Four or more
+  data planes on direct-colour targets stay with rtg.library's default, which
+  is faster there. A 330x64 planar blit on the 24-bit screen drops from 24/26/27
+  ms to 1.3/5.6/20 ms for one, two and three planes; on an 8-bit screen an
+  8-plane blit drops from 19 ms to 8.8 ms. HippoPlayer's scope windows run at
+  full rate.
+- Readback fix: the host aperture keeps one read-ahead line, and a line the CPU
+  read before an engine write to it was returned stale on the next readback
+  (WaitBlit, delays and 68060 cache flushes did not clear it). The driver now
+  drops that line after every engine drain, so `ReadPixel` and the software
+  paths after a blit see VRAM. Pre-existing on every engine path.
+- New `p2ctest` correctness suite (`make tools`): planar blits of depth 1-8 with
+  every mask class, NULL and all-ones planes and unaligned offsets, pixel-exact
+  against a graphics.library reference; 164 front-screen and 328 8/16-bit
+  screen cases pass on the reference machine. Debug stats v25 add a Planar
+  op slot.
+
+Release 3.1 (kept below for context) shipped the matched `Radeon9200.chip` and `Prometheus.card` pair.
 The chip reports `$VER: Radeon9200.chip 3.1 (19.10.2026)` and exposes
 Radeon3D interface 20 with the semantic record path removed (the record
 entry points are reserved LVO slots returning FALSE; the client is a

@@ -258,5 +258,5 @@ Switch both monitor ToolTypes before a cold reboot (`BOARDTYPE=Prometheus`,
 Record for every run: git commit, dirty state, artifact sizes and hashes,
 compile-time configuration, CPU/bridge/board/VRAM/ROM, ToolTypes, mode and
 cold/warm state. The chip's `lib_IdString` is
-`Radeon9200.chip 3.1 (19.10.2026)`; the Radeon3D interface number comes from
+`Radeon9200.chip 3.2 (25.10.2026)`; the Radeon3D interface number comes from
 `Radeon3DInfo.Version`, not from the library version.

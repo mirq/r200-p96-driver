@@ -8,7 +8,7 @@
 #include "radeon9200.h"
 
 #define LIB_VERSION 3
-#define LIB_REVISION 1
+#define LIB_REVISION 2
 
 #define USED __attribute__((used))
 
@@ -23,9 +23,9 @@
  */
 static const char LibName[] = "Radeon9200.chip";
 static const char LibIdString[] =
-    "Radeon9200.chip 3.1 (19.10.2026)\r\n";
+    "Radeon9200.chip 3.2 (25.10.2026)\r\n";
 static const char VerTag[] USED =
-    "\0$VER: Radeon9200.chip 3.1 (19.10.2026)";
+    "\0$VER: Radeon9200.chip 3.2 (25.10.2026)";
 
 struct Library *PrometheusBase;
 
