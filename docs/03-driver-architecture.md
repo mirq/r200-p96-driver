@@ -416,8 +416,13 @@ a baseline restore before the next 2D operation.
 
 Supported hardware work:
 
-- `FillRect` (solid brush, ROP3), `InvertRect`, `DrawLine` (Bresenham through
-  the engine), `BlitRect` (screen-to-screen copies, direction chosen for
+- `FillRect` (solid brush, ROP3), `InvertRect`, `DrawLine` (solid lines only:
+  a segment that is the whole line through the engine's two-point line plus a
+  1x1 fill for the last pixel, clipped horizontal/vertical segments as
+  rectangles; clipped diagonal segments, line patterns, `INVERSVID` and
+  `COMPLEMENT` through the saved software callback, see
+  [`07-history.md`](07-history.md#214-drawline-clipped-segments-and-jam1-colour-2026-11-13)),
+  `BlitRect` (screen-to-screen copies, direction chosen for
   overlap), `BlitPattern` (constrained JAM2 patterns), `BlitTemplate`
   (JAM1/JAM2, streamed through `HOST_DATA0` without mid-upload FIFO polls),
   and `BlitRectNoMaskComplete` for all 16 four-bit minterms.

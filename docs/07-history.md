@@ -299,6 +299,49 @@ fix, `p2ctest` passes 164 cases on the 24-bit screen and the 8-bit and 16-bit
 640x480 screens (CLUT readback masked to the pen: rtg.library returns the high
 byte of x in `p96ReadPixel`'s result for x >= 256).
 
+### 2.14 DrawLine: clipped segments and JAM1 colour (2026-11-13)
+
+Two defects in `RadeonDrawLine`, reported from an A3000 with Directory Opus
+and the Workbench clock: the up/down arrows of DOPUS's sliders came out grey
+instead of black, the clock's black minute ticks were missing on its white
+face, and moving the clock behind DOPUS left short line fragments along
+DOPUS's title bar and right border.
+
+- The segment's end was taken as `X + dX`, `Y + dY`. In P96's `struct Line`,
+  `X`/`Y` and `Length` describe the segment to draw (`Length + 1` pixels),
+  while `dX`/`dY`, `sDelta`/`lDelta` and `Xorigin`/`Yorigin` describe the
+  entire line; rtg.library passes a line clipped by layers as several
+  segments. Every clipped segment therefore ran on to the end of the whole
+  line, outside its clip rectangle and over other windows.
+- JAM1 used ROP3 `0x7B`, which takes an unprogrammed source and the
+  destination into account; for a solid line JAM1 and JAM2 both draw every
+  pixel in `FgPen` (ROP3 `0xF0`). The result depended on what was under the
+  line: grey on grey, nothing on white.
+
+`DrawLine` now accelerates only solid lines (`LinePtrn` `0xffff`) without
+`INVERSVID` or `COMPLEMENT`. A diagonal segment goes to the engine only when it
+is the whole line (`Length` equal to the major extent), with the last pixel
+added as a 1x1 fill as Xorg's radeon driver does; the engine's own Bresenham
+setup cannot resume a line mid-way at `twoSDminusLD`, so clipped diagonal
+segments go to the saved software callback, which draws them pixel-exactly.
+Clipped horizontal and vertical segments are drawn from `X`/`Y` over
+`Length + 1` pixels as rectangles. Line patterns and `INVERSVID`, which the
+engine path drew solid, also use the software callback.
+
+Physical validation (contributor's machine, not the reference machine): A3000,
+68060 (Warp7060), Prometheus-type bridge (FireBird), RV280 `1002:5960` rev 1,
+128 MiB VRAM (64 MiB aperture), 128 KiB ROM, internal TMDS/DVI, `CP=YES`,
+Workbench 1920x1080 16-bit. Chip built from this change with only the version
+string changed to 3.3 (57,796 bytes, CRC32 `841BFFCC`; this tree builds 57,796
+bytes, `94EB9815`, with the same code) and the installed Prometheus.card 7.602
+(8,220 bytes, `ED074540`); toolchain the CI's pinned
+`stefanreinauer/amiga-gcc:gcc-v6.5.0b-20251124` image (the unchanged tree
+reproduces the release 0.50 chip `D5A5887D` byte for byte). After a warm reboot the
+slider arrows are black, the minute ticks are drawn, and moving the clock
+behind DOPUS leaves no fragments. Not measured: line drawing speed, and the
+engine's last-pixel behaviour on its own (the 1x1 fill may redraw a pixel the
+engine already drew).
+
 ## 3. Parked and rejected work
 
 ### 3.1 Interface-19 fence coalescing (parked)
@@ -409,6 +452,7 @@ From the measured attribution (see
 | 2026-10-25 | chip + card (planar, deployed) | 58,180 / 7,860 | `0FD8700C` / `A4A97FE1` | `BlitPlanar2Chunky`/`BlitPlanar2Direct` host-data passes (`PLANAR` ToolType) and the aperture read-ahead line drop in `SynchronizeEngine`. Card built from the committed card source plus the `PLANAR` feature bit (bit 5); the owner's uncommitted vblank-interrupt card changes are not in it. Bridge reboot clean, RTG present; `p2ctest` 24-bit 164/164, 640x480 8-bit and 16-bit 328/328, `p2ctest z` 0 bad in all eight variants. `.previous` still holds the pre-planar pair `44A246CD` / `50186050`. |
 | 2026-10-25 | chip + card (release 0.50, deployed) | 57,736 / 7,860 | `D5A5887D` / `B0C45479` | Release 0.50 (tag `v0.50`, lib 3.2): the planar/aperture commit above with the version bump, built from the clean tree (no vblank-interrupt hunks). Bridge reboot clean, RTG present, no recovery notes; gate on the reference machine: p96screen 8/16/32/8 `test` all PASS with exact readback, p2ctest 492/492 (24-bit front screen, 640x480 8-bit and 16-bit). `.previous` still holds the pre-planar pair `44A246CD` / `50186050`. The CI card CRC differs (build time embedded). |
 | 2026-10-20 | chip + card 0.41 (unchanged) + MiniGL consumer | 54,080 / 7,796 | `D6C49D32` / `31D230C4` | MiniGL consumer migrated (`4de79cd`/`fe7b41c`): warpelf `C07A8319`, DLL `16CB8018`, host `0010B189`, minigl.library `1680AD09`, precalc `1F3401F7`, under `DH2:p41`; `LIBS:minigl.library.pre41` kept. One warm (bridge) reboot, `InitPPC` once, `MGLPPC_NOALTIVEC=1`, `MGLPPC_HOSTPRI=-1`: gears FS 640x480x16 3 buffers nosync 600 frames 189.873 / 191.082 / 193.548 (median 191.082), error=0, 2031/511620/600 every run. Closes the "not yet run" item above (section 2.12). |
+| 2026-11-13 | chip (DrawLine fix, contributor machine) | 57,796 | `94EB9815` | Section 2.14: clipped `DrawLine` segments drawn in place, JAM1 lines in `FgPen`. Validated as the same code with the version string 3.3 (`841BFFCC`) with Prometheus.card 7.602 `ED074540` on an A3000/68060, RV280 `1002:5960`, DVI 1920x1080x16, `CP=YES`, warm reboot. |
 
 Matched cards used across these runs: `18A453D6` (known-good), `1DC1ABC0`
 (debug card). The card build embeds a date/time, so card CRCs change per
