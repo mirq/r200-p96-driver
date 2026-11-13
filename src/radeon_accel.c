@@ -2653,6 +2653,24 @@ static BOOL SubmitSolidAxisRect(struct BoardInfo *bi,
     return TRUE;
 }
 
+/*
+ * struct Line (P96 driver documentation): X/Y is the first pixel of the
+ * segment to draw and Length + 1 its pixel count; dX/dY, sDelta/lDelta and
+ * Xorigin/Yorigin describe the ENTIRE line, of which rtg.library may pass
+ * one clipped segment at a time (twoSDminusLD is the Bresenham term at the
+ * segment's start).  Solid horizontal and vertical lines normally arrive as
+ * rectangles, not here.
+ *
+ * The engine draws a two-point line with its own Bresenham setup, and
+ * Xorg's radeon driver adds the last pixel as a 1x1 fill (the two-point
+ * line leaves it out there), so only a segment that is the whole line goes
+ * to the line engine; a clipped
+ * diagonal segment cannot be resumed mid-line there and is drawn by
+ * DrawLineDefault.  Clipped horizontal and vertical segments are exact as
+ * rectangles.  Only solid lines (LinePtrn 0xffff) without INVERSVID or
+ * COMPLEMENT are accelerated; for those JAM1 and JAM2 both draw every pixel
+ * in FgPen (ROP3 0xF0).
+ */
 void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
                     __REGA1(struct RenderInfo *render),
                     __REGA2(struct Line *line),
@@ -2665,10 +2683,11 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
     enum SurfaceResult result;
     LONG startX, startY, endX, endY;
     LONG left, top, right, bottom;
+    LONG length, majorExtent;
     ULONG writeMask;
     ULONG master;
     ULONG pen;
-    BOOL solidAxis;
+    BOOL axis;
     BOOL software = FALSE;
     RDEBUG_OP_SAMPLE
     RDEBUG_BOARD_LOCK(bi);
@@ -2676,13 +2695,31 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
     if (!SysBase || !data || !line)
         return;
     RDEBUG_OP_BEGIN();
-    if (line->DrawMode & 0x02)
+    /* COMPLEMENT, INVERSVID and line patterns: the software drawer */
+    if ((line->DrawMode & 0x06) || line->LinePtrn != 0xffffU)
         goto fallback;
 
     startX = line->X;
     startY = line->Y;
-    endX = startX + line->dX;
-    endY = startY + line->dY;
+    length = (LONG)line->Length;
+    axis = line->dX == 0 || line->dY == 0;
+    if (axis) {
+        /* the segment itself: Length + 1 pixels from X/Y along the line */
+        endX = line->dX > 0 ? startX + length :
+               line->dX < 0 ? startX - length : startX;
+        endY = line->dY > 0 ? startY + length :
+               line->dY < 0 ? startY - length : startY;
+    } else {
+        majorExtent = line->Horizontal ? line->dX : line->dY;
+        if (majorExtent < 0)
+            majorExtent = -majorExtent;
+        /* fewer pixels than the whole line: a clipped piece, which the
+           software drawer continues from twoSDminusLD */
+        if (length != majorExtent)
+            goto fallback;
+        endX = startX + line->dX;
+        endY = startY + line->dY;
+    }
     left = startX < endX ? startX : endX;
     right = startX > endX ? startX : endX;
     top = startY < endY ? startY : endY;
@@ -2697,13 +2734,9 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
 
     if (result == SURFACE_HARDWARE &&
         data->AccelState == RADEON_ACCEL_READY) {
-        solidAxis = (line->dX == 0 || line->dY == 0) &&
-                    line->LinePtrn == 0xffffU &&
-                    !(line->DrawMode & 0x04);
-        if (solidAxis) {
-            writeMask = format == RGBFB_CLUT ? (ULONG)mask :
-                                                  0xffffffffUL;
-            pen = HardwarePen(line->FgPen, format);
+        writeMask = format == RGBFB_CLUT ? (ULONG)mask : 0xffffffffUL;
+        pen = HardwarePen(line->FgPen, format);
+        if (axis) {
             if (SubmitSolidAxisRect(bi, surface,
                                     (WORD)left, (WORD)top,
                                     (WORD)(right - left + 1),
@@ -2719,13 +2752,9 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
             goto complete;
         }
 
-        writeMask = format == RGBFB_CLUT ? (ULONG)mask : 0xffffffffUL;
-        pen = HardwarePen(line->FgPen, format);
         master = RADEON_GMC_DST_PITCH_OFFSET_CNTL |
                  RADEON_GMC_BRUSH_SOLID_COLOR | surface->Datatype |
-                 RADEON_GMC_SRC_DATATYPE_COLOR |
-                 ((line->DrawMode & 0x01) ? RADEON_ROP3_P :
-                                            0x007b0000UL) |
+                 RADEON_GMC_SRC_DATATYPE_COLOR | RADEON_ROP3_P |
                  RADEON_GMC_CLR_CMP_CNTL_DIS;
 
 #ifdef DEBUG
@@ -2739,12 +2768,15 @@ void RadeonDrawLine(__REGA0(struct BoardInfo *bi),
             LineLogged = TRUE;
         }
 #endif
+        /* the last pixel as a 1x1 fill, as Xorg's radeon driver does */
         if (SubmitLine(bi, surface,
                        ((ULONG)(startY + surface->YBias) << 16) |
                            (UWORD)(startX + surface->XBias),
                        ((ULONG)(endY + surface->YBias) << 16) |
                            (UWORD)(endX + surface->XBias),
-                       pen, writeMask, master)) {
+                       pen, writeMask, master) &&
+            SubmitSolidAxisRect(bi, surface, (WORD)endX, (WORD)endY,
+                                1, 1, pen, writeMask)) {
             data->AccelPending = RADEON_PENDING_MMIO;
             RDEBUG_OP_HARDWARE();
         } else {
